@@ -29,13 +29,11 @@ jobs:
             executable: tarc.exe
             cmake_arch_flags: "-A x64"
           
-          # macOS Intel (x86_64) - usa macos-latest con architettura forzata
+          # macOS Universal Binary (funziona su Intel e Apple Silicon)
           - os: macos-latest
-            artifact_name: tarc-macos-intel
+            artifact_name: tarc-macos-universal
             executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
-            # Forza l'uso di Rosetta per compilare per Intel
-            extra_env: "ARCHFLAGS=-arch x86_64"
+            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
 
     steps:
     - name: Checkout code
