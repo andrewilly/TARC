@@ -28,6 +28,7 @@ inline const char* codec_name(Codec c) {
 }
 
 // ─── STRUTTURE BINARIE (packed) ───────────────────────────────────────────────
+// IMPORTANTE: Questa sintassi funziona su TUTTI i compilatori (GCC, Clang, MSVC)
 #pragma pack(push, 1)
 
 struct Header {
