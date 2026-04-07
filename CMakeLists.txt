@@ -79,6 +79,18 @@ target_include_directories(tarc PRIVATE
     ${xxhash_SOURCE_DIR}
 )
 
+# ─── DEFINE PER WINDOWS ─────────────────────────────────────────────────────
+if(WIN32)
+    target_compile_definitions(tarc PRIVATE 
+        _CRT_SECURE_NO_WARNINGS
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(tarc PRIVATE
+        bcrypt
+    )
+endif()
+
 # ─── LINK ────────────────────────────────────────────────────────────────────
 target_link_libraries(tarc PRIVATE
     libzstd_static
