@@ -33,28 +33,19 @@ void show_help() {
     const char* Y = Color::YELLOW;
     const char* D = Color::RED;
 
-    printf("\n %s╔══════════════════════════════════════════════════════════════╗%s\n", C, R);
-    printf(" %s║%s           %sTARC v1.02 - HYBRID COMPRESSION ENGINE%s             %s║%s\n", C, R, B, R, C, R);
-    printf(" %s╠══════════════════════════════════════════════════════════════╣%s\n", C, R);
-
-    auto row = [&](const char* cmd, const char* desc, const char* col) {
-        printf(" %s║  %s%s%s%-12s%s %s%-46s%s%s║%s\n",
-               C, R, col, B, cmd, R,
-               W, desc, R,
-               C, R);
-    };
-
-    row("-c[N]",  "Crea archivio       (Livello 1-22, def: 3)", G);
-    row("-a[N]",  "Aggiungi file       (Livello 1-22)",          Y);
-    row("-x",     "Estrai tutto",                                G);
-    row("-l",     "Elenca contenuto",                            G);
-    row("-t",     "Test integrità      (XXH64)",                 Y);
-    row("-d",     "Elimina file        (Wildcards supportati)",  D);
-
-    printf(" %s╠══════════════════════════════════════════════════════════════╣%s\n", C, R);
-    printf(" %s║  %s%sCodec automatico:%s LZ4 (binari), ZSTD (generico), LZMA (testo) %s║%s\n",
-           C, R, B, R, C, R);
-    printf(" %s╚══════════════════════════════════════════════════════════════╝%s\n\n", C, R);
+    printf("\n");
+    printf(" %s╔══════════════════════════════════════════════════════════════════════════╗%s\n", C, R);
+    printf(" %s║%s           %sTARC v1.02 - HYBRID COMPRESSION ENGINE%s                        %s║%s\n", C, R, B, R, C, R);
+    printf(" %s╠══════════════════════════════════════════════════════════════════════════╣%s\n", C, R);
+    printf(" %s║  %s%s%s%-12s%s %s%-60s%s%s║%s\n", C, R, G, B, "-c[N]", R, W, "Crea archivio       (Livello 1-22, def: 3)", R, C, R);
+    printf(" %s║  %s%s%s%-12s%s %s%-60s%s%s║%s\n", C, R, Y, B, "-a[N]", R, W, "Aggiungi file       (Livello 1-22)", R, C, R);
+    printf(" %s║  %s%s%s%-12s%s %s%-60s%s%s║%s\n", C, R, G, B, "-x",    R, W, "Estrai tutto", R, C, R);
+    printf(" %s║  %s%s%s%-12s%s %s%-60s%s%s║%s\n", C, R, G, B, "-l",    R, W, "Elenca contenuto", R, C, R);
+    printf(" %s║  %s%s%s%-12s%s %s%-60s%s%s║%s\n", C, R, Y, B, "-t",    R, W, "Test integrità      (XXH64)", R, C, R);
+    printf(" %s║  %s%s%s%-12s%s %s%-60s%s%s║%s\n", C, R, D, B, "-d",    R, W, "Elimina file        (Wildcards supportati)", R, C, R);
+    printf(" %s╠══════════════════════════════════════════════════════════════════════════╣%s\n", C, R);
+    printf(" %s║  %s%sCodec automatico:%s LZ4 (binari), ZSTD (generico), LZMA (testo)            %s║%s\n", C, R, B, R, C, R);
+    printf(" %s╚══════════════════════════════════════════════════════════════════════════╝%s\n\n", C, R);
 }
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
