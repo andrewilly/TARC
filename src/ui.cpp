@@ -33,37 +33,24 @@ void show_help() {
     const char* Y = Color::YELLOW;
     const char* D = Color::RED;
 
-    const int BOX_WIDTH = 80;  // Larghezza totale della box
+    printf("\n");
+    printf("  TARC v1.02 - HYBRID COMPRESSION ENGINE\n");
+    printf("  ======================================\n\n");
     
-    std::string top_bottom(BOX_WIDTH - 2, '═');
+    printf("  %s%-12s%s %s- %sCrea archivio       (Livello 1-22, def: 3)%s\n", 
+           G, "-c[N]", R, G, W, R);
+    printf("  %s%-12s%s %s- %sAggiungi file       (Livello 1-22)%s\n", 
+           Y, "-a[N]", R, Y, W, R);
+    printf("  %s%-12s%s %s- %sEstrai tutto%s\n", 
+           G, "-x", R, G, W, R);
+    printf("  %s%-12s%s %s- %sElenca contenuto%s\n", 
+           G, "-l", R, G, W, R);
+    printf("  %s%-12s%s %s- %sTest integrita      (XXH64)%s\n", 
+           Y, "-t", R, Y, W, R);
+    printf("  %s%-12s%s %s- %sElimina file        (Wildcards supportati)%s\n", 
+           D, "-d", R, D, W, R);
     
-    printf("\n %s╔%s╗%s\n", C, top_bottom.c_str(), R);
-    printf(" %s║%s           %sTARC v1.02 - HYBRID COMPRESSION ENGINE%s                        %s║%s\n", 
-           C, R, B, R, C, R);
-    printf(" %s╠%s╣%s\n", C, top_bottom.c_str(), R);
-
-    auto row = [&](const char* cmd, const char* desc, const char* col) {
-        // Calcola spazi per allineare a destra
-        int desc_len = (int)strlen(desc);
-        int spaces = BOX_WIDTH - 16 - desc_len;  // 16 = spaziature fisse
-        printf(" %s║  %s%s%s%-12s%s %s%s%s%*s%s║%s\n",
-               C, R, col, B, cmd, R,
-               W, desc, R,
-               spaces, "",  // Padding per allineare a destra
-               C, R);
-    };
-
-    row("-c[N]",  "Crea archivio       (Livello 1-22, def: 3)", G);
-    row("-a[N]",  "Aggiungi file       (Livello 1-22)",          Y);
-    row("-x",     "Estrai tutto",                                G);
-    row("-l",     "Elenca contenuto",                            G);
-    row("-t",     "Test integrità      (XXH64)",                 Y);
-    row("-d",     "Elimina file        (Wildcards supportati)",  D);
-
-    printf(" %s╠%s╣%s\n", C, top_bottom.c_str(), R);
-    printf(" %s║  %s%sCodec automatico:%s LZ4 (binari), ZSTD (generico), LZMA (testo) %*s%s║%s\n",
-           C, R, B, R, BOX_WIDTH - 69, "", C, R);
-    printf(" %s╚%s╝%s\n\n", C, top_bottom.c_str(), R);
+    printf("\n  Codec automatico: LZ4 (binari), ZSTD (generico), LZMA (testo)\n\n");
 }
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
