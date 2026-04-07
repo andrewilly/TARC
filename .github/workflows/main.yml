@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }} (${{ matrix.arch }})
+    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,43 +19,21 @@ jobs:
         include:
           # Linux x86_64
           - os: ubuntu-latest
-            arch: x86_64
-            cmake_generator: "Unix Makefiles"
-            artifact_name: tarc-linux-x86_64
+            artifact_name: tarc-linux
             executable: tarc
             cmake_arch_flags: ""
           
           # Windows x64
           - os: windows-latest
-            arch: x64
-            cmake_generator: "Visual Studio 17 2022"
-            artifact_name: tarc-windows-x64.exe
+            artifact_name: tarc-windows.exe
             executable: tarc.exe
             cmake_arch_flags: "-A x64"
           
           # macOS Intel (x86_64)
-          - os: macos-13  # macOS 13 con supporto Intel nativo
-            arch: x86_64
-            cmake_generator: "Unix Makefiles"
+          - os: macos-13
             artifact_name: tarc-macos-intel
             executable: tarc
             cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
-          
-          # macOS Apple Silicon (ARM64)
-          - os: macos-latest  # macOS 14/15 con supporto ARM64
-            arch: arm64
-            cmake_generator: "Unix Makefiles"
-            artifact_name: tarc-macos-arm64
-            executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=arm64"
-          
-          # macOS Universal Binary (funziona su entrambi)
-          - os: macos-latest
-            arch: universal
-            cmake_generator: "Unix Makefiles"
-            artifact_name: tarc-macos-universal
-            executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
 
     steps:
     - name: Checkout code
@@ -119,18 +97,16 @@ jobs:
         }
       shell: pwsh
 
-    - name: Verify architecture (macOS)
+    - name: Verify architecture (macOS Intel)
       if: runner.os == 'macOS'
       shell: bash
       run: |
-        echo "Verifying architecture for ${{ matrix.arch }}..."
+        echo "Verificando architettura del binario..."
         file ${{ env.EXECUTABLE_PATH }}
-        if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
-          file ${{ env.EXECUTABLE_PATH }} | grep -q "x86_64" && echo "✅ Intel binary OK" || echo "⚠️ Not Intel binary"
-        elif [[ "${{ matrix.arch }}" == "arm64" ]]; then
-          file ${{ env.EXECUTABLE_PATH }} | grep -q "arm64" && echo "✅ ARM64 binary OK" || echo "⚠️ Not ARM64 binary"
-        elif [[ "${{ matrix.arch }}" == "universal" ]]; then
-          file ${{ env.EXECUTABLE_PATH }} | grep -q "universal" && echo "✅ Universal binary OK" || echo "⚠️ Not universal binary"
+        if file ${{ env.EXECUTABLE_PATH }} | grep -q "x86_64"; then
+          echo "✅ Binario Intel x86_64 corretto"
+        else
+          echo "⚠️ Attenzione: il binario non sembra essere x86_64"
         fi
 
     - name: Test executable
@@ -162,27 +138,33 @@ jobs:
 
     - name: List artifacts
       run: |
+        echo "📦 Artifacts scaricati:"
         ls -la artifacts/
+        echo ""
+        echo "📁 Dettaglio file:"
         find artifacts -type f -exec ls -lh {} \;
 
-    - name: Rename artifacts for release
+    - name: Prepare release files
       run: |
-        # Rinomina per avere nomi chiari
-        mv artifacts/tarc-linux-x86_64/tarc artifacts/tarc-linux-x86_64/tarc-linux-x86_64 2>/dev/null || true
-        mv artifacts/tarc-windows-x64.exe/tarc.exe artifacts/tarc-windows-x64.exe/tarc-windows-x64.exe 2>/dev/null || true
-        mv artifacts/tarc-macos-intel/tarc artifacts/tarc-macos-intel/tarc-macos-intel 2>/dev/null || true
-        mv artifacts/tarc-macos-arm64/tarc artifacts/tarc-macos-arm64/tarc-macos-arm64 2>/dev/null || true
-        mv artifacts/tarc-macos-universal/tarc artifacts/tarc-macos-universal/tarc-macos-universal 2>/dev/null || true
+        # Rinomina i file per la release
+        cp artifacts/tarc-linux/tarc ./tarc-linux-x86_64 2>/dev/null || true
+        cp artifacts/tarc-windows.exe/tarc.exe ./tarc-windows-x64.exe 2>/dev/null || true
+        cp artifacts/tarc-macos-intel/tarc ./tarc-macos-intel 2>/dev/null || true
+        
+        # Rendi eseguibili i file Unix
+        chmod +x tarc-linux-x86_64 2>/dev/null || true
+        chmod +x tarc-macos-intel 2>/dev/null || true
+        
+        echo "✅ File preparati per la release:"
+        ls -lh tarc-*
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          artifacts/tarc-linux-x86_64/tarc-linux-x86_64
-          artifacts/tarc-windows-x64.exe/tarc-windows-x64.exe
-          artifacts/tarc-macos-intel/tarc-macos-intel
-          artifacts/tarc-macos-arm64/tarc-macos-arm64
-          artifacts/tarc-macos-universal/tarc-macos-universal
+          tarc-linux-x86_64
+          tarc-windows-x64.exe
+          tarc-macos-intel
         draft: false
         prerelease: false
         generate_release_notes: true
