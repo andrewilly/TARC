@@ -115,6 +115,32 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
     target_link_options(tarc PRIVATE -s)
 endif()
 
+# ─── DEFINIZIONI SPECIFICHE PER WINDOWS ──────────────────────────────────────
+if(WIN32)
+    target_compile_definitions(tarc PRIVATE 
+        _CRT_SECURE_NO_WARNINGS
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        _USE_MATH_DEFINES
+    )
+    # LZMA su Windows potrebbe aver bisogno di queste librerie
+    target_link_libraries(tarc PRIVATE
+        bcrypt
+        user32
+    )
+endif()
+
+# ─── FLAGS OTTIMIZZAZIONE ────────────────────────────────────────────────────
+if(MSVC)
+    target_compile_options(tarc PRIVATE /O2 /W4 /EHsc)  # Aggiunto /EHsc per eccezioni
+else()
+    target_compile_options(tarc PRIVATE
+        -O3 -Wall -Wextra -Wpedantic
+        $<$<CXX_COMPILER_ID:GNU>:-march=native>
+        $<$<CXX_COMPILER_ID:Clang>:-march=native>
+    )
+endif()
+
 # ─── INFO ────────────────────────────────────────────────────────────────────
 message(STATUS "")
 message(STATUS "  ╔══════════════════════════════╗")
