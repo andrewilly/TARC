@@ -33,7 +33,7 @@ jobs:
           - os: macos-latest
             artifact_name: tarc-macos-universal
             executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
+            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'"
 
     steps:
     - name: Checkout code
@@ -56,18 +56,8 @@ jobs:
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Setup macOS Intel architecture
-      if: runner.os == 'macOS' && matrix.cmake_arch_flags == '-DCMAKE_OSX_ARCHITECTURES=x86_64'
-      run: |
-        echo "Configurazione per macOS Intel x86_64..."
-        # Forza l'uso di Rosetta 2
-        sudo softwareupdate --install-rosetta --agree-to-license || true
-        # Imposta variabili d'ambiente per architettura Intel
-        echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
-        echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
-        echo "CMAKE_OSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
-
-    - name: Configure CMake
+    - name: Configure CMake (Linux/Windows)
+      if: runner.os != 'macOS'
       shell: bash
       run: |
         mkdir -p build
@@ -78,6 +68,19 @@ jobs:
           -DCMAKE_C_STANDARD=11 \
           -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
           ${{ matrix.cmake_arch_flags }}
+
+    - name: Configure CMake (macOS Universal)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        mkdir -p build
+        cd build
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_C_STANDARD=11 \
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
 
     - name: Build Project
       shell: bash
@@ -112,13 +115,12 @@ jobs:
       if: runner.os == 'macOS'
       shell: bash
       run: |
-        echo "Verificando architettura del binario..."
+        echo "Verificando architettura del binario universale..."
         file ${{ env.EXECUTABLE_PATH }}
-        if file ${{ env.EXECUTABLE_PATH }} | grep -q "x86_64"; then
-          echo "✅ Binario Intel x86_64 compilato con successo"
+        if file ${{ env.EXECUTABLE_PATH }} | grep -q "universal"; then
+          echo "✅ Universal binary OK (x86_64 + arm64)"
         else
-          echo "⚠️ Il binario non è x86_64, potrebbe essere ARM64"
-          echo "Architettura rilevata:"
+          echo "⚠️ Il binario non è universale"
           file ${{ env.EXECUTABLE_PATH }}
         fi
 
@@ -162,11 +164,11 @@ jobs:
         # Rinomina i file per la release
         cp artifacts/tarc-linux-x86_64/tarc ./tarc-linux-x86_64 2>/dev/null || true
         cp artifacts/tarc-windows-x64.exe/tarc.exe ./tarc-windows-x64.exe 2>/dev/null || true
-        cp artifacts/tarc-macos-intel/tarc ./tarc-macos-intel 2>/dev/null || true
+        cp artifacts/tarc-macos-universal/tarc ./tarc-macos-universal 2>/dev/null || true
         
         # Rendi eseguibili i file Unix
         chmod +x tarc-linux-x86_64 2>/dev/null || true
-        chmod +x tarc-macos-intel 2>/dev/null || true
+        chmod +x tarc-macos-universal 2>/dev/null || true
         
         echo "✅ File preparati per la release:"
         ls -lh tarc-* || echo "Nessun file trovato"
@@ -177,7 +179,7 @@ jobs:
         files: |
           tarc-linux-x86_64
           tarc-windows-x64.exe
-          tarc-macos-intel
+          tarc-macos-universal
         draft: false
         prerelease: false
         generate_release_notes: true
