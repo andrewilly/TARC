@@ -3,7 +3,9 @@
 #include "ui.h"
 #include <cstring>
 #include <set>
+#include <cmath>  // per std::log2
 #include <algorithm>
+#include <climits>
 #include <filesystem>
 #include <fstream>
 
