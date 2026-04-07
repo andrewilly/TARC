@@ -140,22 +140,27 @@ CompressResult compress_lzma(const char* in,  size_t in_sz,
                               char*       out, size_t out_cap,
                               int         level)
 {
-    size_t out_pos = 0;
     lzma_stream strm = LZMA_STREAM_INIT;
-
+    
     uint32_t preset = std::clamp(level, 0, 9);
-    if (lzma_easy_encoder(&strm, preset, LZMA_CHECK_CRC64) != LZMA_OK)
+    lzma_options_lzma opt;
+    if (lzma_lzma_preset(&opt, preset) != LZMA_OK) {
         return {0, false};
-
+    }
+    
+    if (lzma_stream_encoder(&strm, &opt, LZMA_CHECK_CRC64) != LZMA_OK) {
+        return {0, false};
+    }
+    
     strm.next_in   = reinterpret_cast<const uint8_t*>(in);
     strm.avail_in  = in_sz;
     strm.next_out  = reinterpret_cast<uint8_t*>(out);
     strm.avail_out = out_cap;
-
+    
     lzma_ret ret = lzma_code(&strm, LZMA_FINISH);
-    out_pos = out_cap - strm.avail_out;
+    size_t out_pos = out_cap - strm.avail_out;
     lzma_end(&strm);
-
+    
     if (ret != LZMA_STREAM_END) return {0, false};
     return {out_pos, true};
 }
@@ -164,14 +169,14 @@ bool decompress_lzma(const char* in,  size_t in_sz,
                      char*       out, size_t out_cap)
 {
     lzma_stream strm = LZMA_STREAM_INIT;
-    if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK)
+    if (lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED) != LZMA_OK)
         return false;
-
+    
     strm.next_in   = reinterpret_cast<const uint8_t*>(in);
     strm.avail_in  = in_sz;
     strm.next_out  = reinterpret_cast<uint8_t*>(out);
     strm.avail_out = out_cap;
-
+    
     lzma_ret ret = lzma_code(&strm, LZMA_FINISH);
     lzma_end(&strm);
     return ret == LZMA_STREAM_END;
