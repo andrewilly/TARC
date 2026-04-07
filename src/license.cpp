@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
+#include <iostream>  // ← AGGIUNGI QUESTO! Per std::cin
 
 namespace fs = std::filesystem;
 
@@ -73,6 +74,7 @@ void check_and_activate() {
     printf(" %sLicenza non trovata o non valida.%s\n Inserisci chiave: ",
            Color::RED, Color::RESET);
 
+    // CORREZIONE: std::cin è ora disponibile grazie a #include <iostream>
     if (!(std::cin >> key) || !is_valid(key)) {
         UI::print_error("Chiave non valida. Operazione annullata.");
         std::exit(1);
