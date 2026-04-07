@@ -3,11 +3,11 @@
 #include "ui.h"
 #include <cstring>
 #include <set>
-#include <cmath>  // per std::log2
 #include <algorithm>
-#include <climits>
 #include <filesystem>
 #include <fstream>
+#include <cmath>      // per std::log2
+#include <climits>    // per limiti
 
 // ─── DIPENDENZE COMPRESSIONE ─────────────────────────────────────────────────
 #include "zstd.h"
