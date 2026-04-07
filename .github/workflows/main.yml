@@ -19,21 +19,23 @@ jobs:
         include:
           # Linux x86_64
           - os: ubuntu-latest
-            artifact_name: tarc-linux
+            artifact_name: tarc-linux-x86_64
             executable: tarc
             cmake_arch_flags: ""
           
           # Windows x64
           - os: windows-latest
-            artifact_name: tarc-windows.exe
+            artifact_name: tarc-windows-x64.exe
             executable: tarc.exe
             cmake_arch_flags: "-A x64"
           
-          # macOS Intel (x86_64)
-          - os: macos-13
+          # macOS Intel (x86_64) - usa macos-latest con architettura forzata
+          - os: macos-latest
             artifact_name: tarc-macos-intel
             executable: tarc
             cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
+            # Forza l'uso di Rosetta per compilare per Intel
+            extra_env: "ARCHFLAGS=-arch x86_64"
 
     steps:
     - name: Checkout code
@@ -55,6 +57,17 @@ jobs:
     - name: Setup MSVC (Windows)
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Setup macOS Intel architecture
+      if: runner.os == 'macOS' && matrix.cmake_arch_flags == '-DCMAKE_OSX_ARCHITECTURES=x86_64'
+      run: |
+        echo "Configurazione per macOS Intel x86_64..."
+        # Forza l'uso di Rosetta 2
+        sudo softwareupdate --install-rosetta --agree-to-license || true
+        # Imposta variabili d'ambiente per architettura Intel
+        echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+        echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
+        echo "CMAKE_OSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
 
     - name: Configure CMake
       shell: bash
@@ -97,16 +110,18 @@ jobs:
         }
       shell: pwsh
 
-    - name: Verify architecture (macOS Intel)
+    - name: Verify architecture (macOS)
       if: runner.os == 'macOS'
       shell: bash
       run: |
         echo "Verificando architettura del binario..."
         file ${{ env.EXECUTABLE_PATH }}
         if file ${{ env.EXECUTABLE_PATH }} | grep -q "x86_64"; then
-          echo "✅ Binario Intel x86_64 corretto"
+          echo "✅ Binario Intel x86_64 compilato con successo"
         else
-          echo "⚠️ Attenzione: il binario non sembra essere x86_64"
+          echo "⚠️ Il binario non è x86_64, potrebbe essere ARM64"
+          echo "Architettura rilevata:"
+          file ${{ env.EXECUTABLE_PATH }}
         fi
 
     - name: Test executable
@@ -147,8 +162,8 @@ jobs:
     - name: Prepare release files
       run: |
         # Rinomina i file per la release
-        cp artifacts/tarc-linux/tarc ./tarc-linux-x86_64 2>/dev/null || true
-        cp artifacts/tarc-windows.exe/tarc.exe ./tarc-windows-x64.exe 2>/dev/null || true
+        cp artifacts/tarc-linux-x86_64/tarc ./tarc-linux-x86_64 2>/dev/null || true
+        cp artifacts/tarc-windows-x64.exe/tarc.exe ./tarc-windows-x64.exe 2>/dev/null || true
         cp artifacts/tarc-macos-intel/tarc ./tarc-macos-intel 2>/dev/null || true
         
         # Rendi eseguibili i file Unix
@@ -156,7 +171,7 @@ jobs:
         chmod +x tarc-macos-intel 2>/dev/null || true
         
         echo "✅ File preparati per la release:"
-        ls -lh tarc-*
+        ls -lh tarc-* || echo "Nessun file trovato"
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
