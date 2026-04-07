@@ -11,26 +11,51 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
+          # Linux x86_64
           - os: ubuntu-latest
+            arch: x86_64
             cmake_generator: "Unix Makefiles"
-            artifact_name: tarc-linux
+            artifact_name: tarc-linux-x86_64
             executable: tarc
+            cmake_arch_flags: ""
+          
+          # Windows x64
           - os: windows-latest
+            arch: x64
             cmake_generator: "Visual Studio 17 2022"
-            artifact_name: tarc-windows.exe
+            artifact_name: tarc-windows-x64.exe
             executable: tarc.exe
-            cmake_arch: "-A x64"
-          - os: macos-latest
+            cmake_arch_flags: "-A x64"
+          
+          # macOS Intel (x86_64)
+          - os: macos-13  # macOS 13 con supporto Intel nativo
+            arch: x86_64
             cmake_generator: "Unix Makefiles"
-            artifact_name: tarc-macos
+            artifact_name: tarc-macos-intel
             executable: tarc
+            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
+          
+          # macOS Apple Silicon (ARM64)
+          - os: macos-latest  # macOS 14/15 con supporto ARM64
+            arch: arm64
+            cmake_generator: "Unix Makefiles"
+            artifact_name: tarc-macos-arm64
+            executable: tarc
+            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=arm64"
+          
+          # macOS Universal Binary (funziona su entrambi)
+          - os: macos-latest
+            arch: universal
+            cmake_generator: "Unix Makefiles"
+            artifact_name: tarc-macos-universal
+            executable: tarc
+            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
 
     steps:
     - name: Checkout code
@@ -62,7 +87,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_CXX_STANDARD=17 \
           -DCMAKE_C_STANDARD=11 \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          ${{ matrix.cmake_arch_flags }}
 
     - name: Build Project
       shell: bash
@@ -92,6 +118,20 @@ jobs:
           Get-ChildItem -Path build -Filter "tarc.exe" -Recurse | Select-Object -First 1 | ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append }
         }
       shell: pwsh
+
+    - name: Verify architecture (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        echo "Verifying architecture for ${{ matrix.arch }}..."
+        file ${{ env.EXECUTABLE_PATH }}
+        if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
+          file ${{ env.EXECUTABLE_PATH }} | grep -q "x86_64" && echo "✅ Intel binary OK" || echo "⚠️ Not Intel binary"
+        elif [[ "${{ matrix.arch }}" == "arm64" ]]; then
+          file ${{ env.EXECUTABLE_PATH }} | grep -q "arm64" && echo "✅ ARM64 binary OK" || echo "⚠️ Not ARM64 binary"
+        elif [[ "${{ matrix.arch }}" == "universal" ]]; then
+          file ${{ env.EXECUTABLE_PATH }} | grep -q "universal" && echo "✅ Universal binary OK" || echo "⚠️ Not universal binary"
+        fi
 
     - name: Test executable
       shell: bash
@@ -125,13 +165,24 @@ jobs:
         ls -la artifacts/
         find artifacts -type f -exec ls -lh {} \;
 
+    - name: Rename artifacts for release
+      run: |
+        # Rinomina per avere nomi chiari
+        mv artifacts/tarc-linux-x86_64/tarc artifacts/tarc-linux-x86_64/tarc-linux-x86_64 2>/dev/null || true
+        mv artifacts/tarc-windows-x64.exe/tarc.exe artifacts/tarc-windows-x64.exe/tarc-windows-x64.exe 2>/dev/null || true
+        mv artifacts/tarc-macos-intel/tarc artifacts/tarc-macos-intel/tarc-macos-intel 2>/dev/null || true
+        mv artifacts/tarc-macos-arm64/tarc artifacts/tarc-macos-arm64/tarc-macos-arm64 2>/dev/null || true
+        mv artifacts/tarc-macos-universal/tarc artifacts/tarc-macos-universal/tarc-macos-universal 2>/dev/null || true
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          artifacts/tarc-linux/tarc
-          artifacts/tarc-windows.exe/tarc.exe
-          artifacts/tarc-macos/tarc
+          artifacts/tarc-linux-x86_64/tarc-linux-x86_64
+          artifacts/tarc-windows-x64.exe/tarc-windows-x64.exe
+          artifacts/tarc-macos-intel/tarc-macos-intel
+          artifacts/tarc-macos-arm64/tarc-macos-arm64
+          artifacts/tarc-macos-universal/tarc-macos-universal
         draft: false
         prerelease: false
         generate_release_notes: true
