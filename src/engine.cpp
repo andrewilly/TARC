@@ -144,13 +144,12 @@ CompressResult compress_lzma(const char* in,  size_t in_sz,
 {
     lzma_stream strm = LZMA_STREAM_INIT;
     
+    // Imposta il livello di compressione (0-9)
     uint32_t preset = std::clamp(level, 0, 9);
-    lzma_options_lzma opt;
-    if (lzma_lzma_preset(&opt, preset) != LZMA_OK) {
-        return {0, false};
-    }
     
-    if (lzma_stream_encoder(&strm, &opt, LZMA_CHECK_CRC64) != LZMA_OK) {
+    // Usa l'encoder facile di LZMA (API corretta per tutte le piattaforme)
+    lzma_ret ret = lzma_easy_encoder(&strm, preset, LZMA_CHECK_CRC64);
+    if (ret != LZMA_OK) {
         return {0, false};
     }
     
@@ -159,7 +158,7 @@ CompressResult compress_lzma(const char* in,  size_t in_sz,
     strm.next_out  = reinterpret_cast<uint8_t*>(out);
     strm.avail_out = out_cap;
     
-    lzma_ret ret = lzma_code(&strm, LZMA_FINISH);
+    ret = lzma_code(&strm, LZMA_FINISH);
     size_t out_pos = out_cap - strm.avail_out;
     lzma_end(&strm);
     
@@ -171,8 +170,11 @@ bool decompress_lzma(const char* in,  size_t in_sz,
                      char*       out, size_t out_cap)
 {
     lzma_stream strm = LZMA_STREAM_INIT;
-    if (lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED) != LZMA_OK)
+    
+    // Decoder semplice per LZMA
+    if (lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED) != LZMA_OK) {
         return false;
+    }
     
     strm.next_in   = reinterpret_cast<const uint8_t*>(in);
     strm.avail_in  = in_sz;
@@ -180,8 +182,10 @@ bool decompress_lzma(const char* in,  size_t in_sz,
     strm.avail_out = out_cap;
     
     lzma_ret ret = lzma_code(&strm, LZMA_FINISH);
+    bool ok = (ret == LZMA_STREAM_END);
     lzma_end(&strm);
-    return ret == LZMA_STREAM_END;
+    
+    return ok;
 }
 
 // ─── DISPATCH ────────────────────────────────────────────────────────────────
