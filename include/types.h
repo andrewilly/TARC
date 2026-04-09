@@ -5,7 +5,7 @@
 
 // ─── MAGIC & VERSION ─────────────────────────────────────────────────────────
 #define TARC_MAGIC     "TARC"
-#define TARC_VERSION   102
+#define TARC_VERSION   103
 #define CHUNK_SIZE     (4 * 1024 * 1024)
 #define TARC_EXT       ".tar4"
 
