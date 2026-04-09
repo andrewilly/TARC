@@ -49,6 +49,19 @@ static const std::set<std::string> TEXT_EXTS = {
     ".sql", ".graphql", ".proto"
 };
 
+// Database Access (.mdb, .accdb) → ZSTD con livello alto
+// Questi file hanno pattern ripetitivi (schema, indici, metadata) che comprimono
+// molto bene con ZSTD a livelli alti, ma non sono abbastanza testuali per LZMA.
+// ZSTD offre il miglior compromesso: ratio eccellente + velocità di decompressione.
+static const std::set<std::string> DATABASE_EXTS = {
+    ".mdb",    // Microsoft Access Database (97-2003)
+    ".accdb",  // Microsoft Access Database (2007+)
+    ".mde",    // Microsoft Access MDE Database
+    ".accde",  // Microsoft Access ACCDE Database
+    ".mda",    // Microsoft Access Add-in
+    ".mdw"     // Microsoft Access Workgroup
+};
+
 bool is_already_compressed(const std::string& filename) {
     fs::path p(filename);
     std::string ext = p.extension().string();
@@ -61,6 +74,13 @@ bool is_lzma_candidate(const std::string& filename) {
     std::string ext = p.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     return TEXT_EXTS.count(ext) > 0;
+}
+
+bool is_database_file(const std::string& filename) {
+    fs::path p(filename);
+    std::string ext = p.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return DATABASE_EXTS.count(ext) > 0;
 }
 
 // Stima rapida dell'entropia: campiona i primi 4KB
@@ -81,8 +101,16 @@ bool is_high_entropy(const uint8_t* data, size_t len) {
 }
 
 Codec select_auto(const std::string& filename) {
+    // Priorità 1: File già compressi → LZ4 (overhead minimo)
     if (is_already_compressed(filename)) return Codec::LZ4;
+    
+    // Priorità 2: Database Access → ZSTD (pattern ripetitivi, ratio eccellente)
+    if (is_database_file(filename))      return Codec::ZSTD;
+    
+    // Priorità 3: Testo/Codice sorgente → LZMA (ratio massimo)
     if (is_lzma_candidate(filename))     return Codec::LZMA;
+    
+    // Default: ZSTD (bilanciato)
     return Codec::ZSTD;
 }
 
@@ -285,6 +313,20 @@ TarcResult compress(const std::string&              arch_path,
 
         // Seleziona codec automaticamente
         Codec codec = CodecSelector::select_auto(fpath);
+        
+        // ─── OTTIMIZZAZIONE DATABASE ──────────────────────────────────────────────
+        // I database Access hanno pattern ripetitivi eccellenti per ZSTD.
+        // Aumentiamo il livello di compressione per massimizzare il ratio.
+        int effective_level = level;
+        if (codec == Codec::ZSTD && CodecSelector::is_database_file(fpath)) {
+            // Boost del livello: +3 (capped a 22)
+            effective_level = std::min(level + 3, 22);
+            ZSTD_CCtx_setParameter(zctx, ZSTD_c_compressionLevel, effective_level);
+        } else if (codec == Codec::ZSTD) {
+            // Ripristina il livello originale per altri file ZSTD
+            ZSTD_CCtx_setParameter(zctx, ZSTD_c_compressionLevel, level);
+        }
+        // ───────────────────────────────────────────────────────────────────────────
 
         uint64_t file_offset  = static_cast<uint64_t>(ftell(out));
         uint64_t orig_total   = 0;
