@@ -10,11 +10,28 @@
 #include <cstring>
 
 static int parse_level(const std::string& arg, int def = 3) {
-    if (arg.size() > 2) {
+    // 1. Controllo per i parametri testuali espliciti
+    if (arg == "-cbest") return 22; // Imposta il livello massimo (ZSTD 22 / LZMA Ultra)
+    if (arg == "-cfast") return 1;  // Imposta il livello minimo (LZ4 / ZSTD 1)
+
+    // 2. Controllo per il formato numerico classico (es. -c9)
+    // Verifichiamo che la stringa inizi con "-c" e abbia dei numeri a seguire
+    if (arg.size() > 2 && arg.substr(0, 2) == "-c") {
         std::string ls = arg.substr(2);
-        if (std::all_of(ls.begin(), ls.end(), ::isdigit))
-            return std::clamp(std::stoi(ls), 1, 22);
+        
+        // Verifica che la parte rimanente della stringa sia composta solo da cifre
+        if (!ls.empty() && std::all_of(ls.begin(), ls.end(), ::isdigit)) {
+            try {
+                // Converte in intero e limita il valore nel range supportato [1-22]
+                return std::clamp(std::stoi(ls), 1, 22);
+            } catch (...) {
+                // In caso di errore di conversione (es. overflow), restituisce il default
+                return def;
+            }
+        }
     }
+
+    // Restituisce il valore di default se l'argomento non è riconosciuto
     return def;
 }
 
