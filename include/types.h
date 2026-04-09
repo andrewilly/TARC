@@ -5,16 +5,15 @@
 
 // ─── MAGIC & VERSION ─────────────────────────────────────────────────────────
 #define TARC_MAGIC     "TARC"
-#define TARC_VERSION   103
+#define TARC_VERSION   104  // Aggiornato a 1.04
 #define CHUNK_SIZE     (4 * 1024 * 1024)
 #define TARC_EXT       ".tar4"
 
-// ─── ALGORITMI DI COMPRESSIONE ───────────────────────────────────────────────
 enum class Codec : uint8_t {
-    ZSTD = 0,   // General purpose (default)
-    LZ4  = 1,   // Alta velocità (file già compressi, dati binari)
-    LZMA = 2,   // Ratio massimo (testo, codice sorgente)
-    NONE = 3    // Nessuna compressione (file già compressi)
+    ZSTD = 0,
+    LZ4  = 1,
+    LZMA = 2,
+    NONE = 3
 };
 
 inline const char* codec_name(Codec c) {
@@ -27,40 +26,35 @@ inline const char* codec_name(Codec c) {
     }
 }
 
-// ─── STRUTTURE BINARIE (packed) ───────────────────────────────────────────────
-// IMPORTANTE: Questa sintassi funziona su TUTTI i compilatori (GCC, Clang, MSVC)
 #pragma pack(push, 1)
-
 struct Header {
-    char     magic[4];   // "TARC"
-    uint32_t version;    // versione formato
-    uint64_t toc_offset; // offset della TOC nel file
+    char     magic[4];   
+    uint32_t version;    
+    uint64_t toc_offset; 
 };
 
 struct Entry {
-    uint64_t offset;     // offset dei dati compressi nell'archivio
-    uint64_t orig_size;  // dimensione originale (decompressa)
-    uint64_t comp_size;  // dimensione compressa (inclusi header chunk)
-    uint64_t xxhash;     // hash XXH64 del dato originale
-    uint16_t name_len;   // lunghezza del nome file
-    uint8_t  codec;      // Codec usato (enum Codec)
-    uint8_t  _pad;       // padding allineamento
+    uint64_t offset;     
+    uint64_t orig_size;  
+    uint64_t comp_size;  
+    uint64_t xxhash;     
+    uint64_t timestamp;  // NUOVO: per aggiornamento intelligente
+    uint16_t name_len;   
+    uint8_t  codec;      
+    uint8_t  _pad;       
 };
 
 struct ChunkHeader {
-    uint32_t raw_size;   // dimensione originale del chunk
-    uint32_t comp_size;  // dimensione compressa del chunk
+    uint32_t raw_size;   
+    uint32_t comp_size;  
 };
-
 #pragma pack(pop)
 
-// ─── STRUTTURA LOGICA ─────────────────────────────────────────────────────────
 struct FileEntry {
     Entry       meta;
     std::string name;
 };
 
-// ─── RISULTATO OPERAZIONI ─────────────────────────────────────────────────────
 struct TarcResult {
     bool        ok      = true;
     std::string message;
