@@ -20,7 +20,7 @@ static int parse_level(const std::string& arg, int def = 3) {
 
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
-    UI::show_banner(); // Mostra v1.04 definita in types.h
+    UI::show_banner();
     License::check_and_activate();
 
     if (argc < 2) {
@@ -44,7 +44,6 @@ int main(int argc, char* argv[]) {
 
     std::string arch = IO::ensure_ext(argv[2]);
 
-    // ─── CREA / AGGIUNGI (SMART UPDATE) ──────────────────────────────────────
     if (cmd == "-c" || cmd == "-a") {
         bool append = (cmd == "-a");
         if (argc < 4) {
@@ -55,28 +54,33 @@ int main(int argc, char* argv[]) {
         for (int i = 3; i < argc; ++i) IO::expand_path(argv[i], targets);
 
         auto res = Engine::compress(arch, targets, append, level);
-        UI::print_summary(res, append ? "Aggiornamento" : "Creazione");
+        UI::print_summary(res, append ? "Aggiunta" : "Creazione");
         return res.ok ? 0 : 1;
     }
 
-    // ─── ESTRAI ──────────────────────────────────────────────────────────────
     if (cmd == "-x") {
         auto res = Engine::extract(arch, false);
         UI::print_summary(res, "Estrazione");
         return res.ok ? 0 : 1;
     }
 
-    // ─── TEST ────────────────────────────────────────────────────────────────
     if (cmd == "-t") {
         auto res = Engine::extract(arch, true);
-        UI::print_summary(res, "Verifica integrità");
+        UI::print_summary(res, "Test integrità");
         return res.ok ? 0 : 1;
     }
 
-    // ─── LISTA ───────────────────────────────────────────────────────────────
     if (cmd == "-l") {
         auto res = Engine::list(arch);
-        if (!res.ok) UI::print_error("Impossibile leggere l'archivio.");
+        if (!res.ok) UI::print_error("Errore lettura archivio.");
+        return res.ok ? 0 : 1;
+    }
+
+    if (cmd == "-d") {
+        std::vector<std::string> targets;
+        for (int i = 3; i < argc; ++i) IO::expand_path(argv[i], targets);
+        auto res = Engine::remove_files(arch, targets);
+        UI::print_summary(res, "Eliminazione");
         return res.ok ? 0 : 1;
     }
 
