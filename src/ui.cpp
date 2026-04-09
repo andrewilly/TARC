@@ -34,7 +34,7 @@ void show_help() {
     const char* D = Color::RED;
 
     printf("\n");
-    printf("  TARC v1.02 - HYBRID COMPRESSION ENGINE\n");
+    printf("  TARC v1.03 - HYBRID COMPRESSION ENGINE\n");
     printf("  ======================================\n\n");
     
     printf("  %s%-12s%s %s- %sCrea archivio       (Livello 1-22, def: 3)%s\n", 
