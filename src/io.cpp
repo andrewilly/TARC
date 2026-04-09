@@ -59,13 +59,20 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (!f) return false;
     rewind(f);
     if (!read_bytes(f, &h, sizeof(Header))) return false;
+
+    // Verifica Magic Number
     if (memcmp(h.magic, TARC_MAGIC, 4) != 0) return false;
+
+    // Retrocompatibilità: Accetta versione 103 e 104
+    if (h.version < 103) return false;
+
     if (fseek(f, (long)h.toc_offset, SEEK_SET) != 0) return false;
 
     uint32_t count = 0;
     if (!read_bytes(f, &count, sizeof(count))) return false;
 
     toc.clear();
+    toc.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         FileEntry fe;
         if (!read_bytes(f, &fe.meta, sizeof(Entry))) break;
@@ -78,14 +85,18 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 
 void write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (!f) return;
+    
+    h.version = TARC_VERSION; 
     h.toc_offset = (uint64_t)ftell(f);
     uint32_t count = (uint32_t)toc.size();
     write_bytes(f, &count, sizeof(count));
+    
     for (auto& fe : toc) {
         fe.meta.name_len = (uint16_t)fe.name.size();
         write_bytes(f, &fe.meta, sizeof(Entry));
         write_bytes(f, fe.name.data(), fe.name.size());
     }
+    
     rewind(f);
     write_bytes(f, &h, sizeof(Header));
 }
