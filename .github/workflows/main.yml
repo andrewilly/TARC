@@ -17,19 +17,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
           - os: ubuntu-latest
             artifact_name: tarc-linux-x86_64
             executable: tarc
             cmake_arch_flags: ""
-          
-          # Windows x64
+
           - os: windows-latest
             artifact_name: tarc-windows-x64.exe
             executable: tarc.exe
             cmake_arch_flags: "-A x64"
-          
-          # macOS Universal Binary (funziona su Intel e Apple Silicon)
+
           - os: macos-latest
             artifact_name: tarc-macos-universal
             executable: tarc
@@ -38,8 +35,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        submodules: false
 
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
@@ -69,7 +64,7 @@ jobs:
           -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
           ${{ matrix.cmake_arch_flags }}
 
-    - name: Configure CMake (macOS Universal)
+    - name: Configure CMake (macOS)
       if: runner.os == 'macOS'
       shell: bash
       run: |
@@ -96,33 +91,22 @@ jobs:
         elif [ -f "build/Release/tarc" ]; then
           echo "EXECUTABLE_PATH=build/Release/tarc" >> $GITHUB_ENV
         else
-          find build -name "tarc" -executable -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
+          find build -name "tarc" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
         fi
 
     - name: Find executable (Windows)
       if: runner.os == 'Windows'
+      shell: pwsh
       run: |
         if (Test-Path "build/Release/tarc.exe") {
-          echo "EXECUTABLE_PATH=build/Release/tarc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $env:GITHUB_ENV
         } elseif (Test-Path "build/tarc.exe") {
-          echo "EXECUTABLE_PATH=build/tarc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "EXECUTABLE_PATH=build/tarc.exe" >> $env:GITHUB_ENV
         } else {
-          Get-ChildItem -Path build -Filter "tarc.exe" -Recurse | Select-Object -First 1 | ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append }
+          Get-ChildItem -Path build -Filter "tarc.exe" -Recurse |
+          Select-Object -First 1 |
+          ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" >> $env:GITHUB_ENV }
         }
-      shell: pwsh
-
-    - name: Verify architecture (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: |
-        echo "Verificando architettura del binario universale..."
-        file ${{ env.EXECUTABLE_PATH }}
-        if file ${{ env.EXECUTABLE_PATH }} | grep -q "universal"; then
-          echo "✅ Universal binary OK (x86_64 + arm64)"
-        else
-          echo "⚠️ Il binario non è universale"
-          file ${{ env.EXECUTABLE_PATH }}
-        fi
 
     - name: Test executable
       shell: bash
@@ -144,41 +128,40 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-    
+
     steps:
-    - name: Download all artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
 
-    - name: List artifacts
-      run: |
-        echo "📦 Artifacts scaricati:"
-        ls -la artifacts/
-        echo ""
-        echo "📁 Dettaglio file:"
-        find artifacts -type f -exec ls -lh {} \;
-
     - name: Prepare release files
       run: |
-        # Rinomina i file per la release
-        cp artifacts/tarc-linux-x86_64/tarc ./tarc-linux-x86_64 2>/dev/null || true
-        cp artifacts/tarc-windows-x64.exe/tarc.exe ./tarc-windows-x64.exe 2>/dev/null || true
-        cp artifacts/tarc-macos-universal/tarc ./tarc-macos-universal 2>/dev/null || true
-        
-        # Rendi eseguibili i file Unix
-        chmod +x tarc-linux-x86_64 2>/dev/null || true
-        chmod +x tarc-macos-universal 2>/dev/null || true
-        
-        echo "✅ File preparati per la release:"
-        ls -lh tarc-* || echo "Nessun file trovato"
+        VERSION=${GITHUB_REF#refs/tags/}
+        echo "📦 Versione: $VERSION"
 
-     - name: Create GitHub Release
-       uses: softprops/action-gh-release@v1
-       with:
-         files: artifacts/**/*
-         draft: false
-         prerelease: false
-         generate_release_notes: true
-       env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        find artifacts -type f -name "tarc" | grep linux | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
+        find artifacts -type f -name "tarc.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
+        find artifacts -type f -name "tarc" | grep macos | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
+
+        chmod +x tarc-$VERSION-* 2>/dev/null || true
+
+        echo "✅ File pronti:"
+        ls -lh tarc-$VERSION-* || echo "❌ Nessun file trovato"
+
+    - name: Generate checksums
+      run: |
+        sha256sum tarc-* > checksums.txt
+        cat checksums.txt
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          tarc-*
+          checksums.txt
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
