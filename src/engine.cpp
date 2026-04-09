@@ -26,9 +26,9 @@ namespace CodecSelector {
 
 static const std::set<std::string> COMPRESSED_EXTS = {
     ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz4", ".zst", ".br", ".tar",
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic",
+    ".jpg", ".jpeg", ".avif", ".heic",
     ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv",
-    ".mp3", ".aac", ".ogg", ".flac", ".opus", ".pdf", ".docx", ".xlsx", ".pptx"
+    ".mp3", ".aac", ".ogg", ".flac", ".opus", ".pptx"
 };
 
 static const std::set<std::string> TEXT_EXTS = {
