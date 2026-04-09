@@ -34,7 +34,7 @@ void show_help() {
     const char* D = Color::RED;
 
     printf("\n");
-    printf("  TARC v1.03 - HYBRID COMPRESSION ENGINE\n");
+    printf("  TARC v1.04 - HYBRID COMPRESSION ENGINE\n");
     printf("  ======================================\n\n");
     
     printf("  %s%-12s%s %s- %sCrea archivio       (Livello 1-22, def: 3)%s\n", 
@@ -60,7 +60,7 @@ void show_banner() {
     printf("%s%s     ██║   ███████║██████╔╝██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s     ██║   ██╔══██║██╔══██╗██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s     ██║   ██║  ██║██║  ██║╚██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.03\n\n", Color::BOLD, Color::DIM, Color::RESET);
+    printf("%s%s     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.04\n\n", Color::BOLD, Color::DIM, Color::RESET);
 }
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
