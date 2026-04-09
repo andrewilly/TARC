@@ -60,7 +60,7 @@ void show_banner() {
     printf("%s%s     ██║   ███████║██████╔╝██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s     ██║   ██╔══██║██╔══██╗██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s     ██║   ██║  ██║██║  ██║╚██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.02\n\n", Color::BOLD, Color::DIM, Color::RESET);
+    printf("%s%s     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.03\n\n", Color::BOLD, Color::DIM, Color::RESET);
 }
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
