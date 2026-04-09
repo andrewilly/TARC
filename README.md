@@ -106,6 +106,35 @@ tarc -d     archivio  file...    Elimina file (wildcards supportati)
 
 ## Changelog
 
+### TARC v1.04 — Smart Hybrid Archiver
+
+TARC (Tiny Advanced Resilient Compressor) è un archiver ibrido ad alte prestazioni che seleziona automaticamente il miglior codec in base al contenuto e allo stato del file.
+
+## 🌟 Caratteristiche Speciali v1.04
+- **Smart Update**: Backup incrementali ultra-veloci basati su timestamp e XXH64.
+- **Hybrid Engine**: Selezione tra ZSTD, LZMA, LZ4 o NONE basata su estensione ed entropia.
+- **Database Boost**: Ottimizzazione specifica per Microsoft Access (`.mdb`, `.accdb`) con incremento automatico del ratio.
+- **Integrità Totale**: Verifica per ogni singolo file tramite hash XXH64.
+
+## 📊 Algoritmo Ibrido
+
+| Codec | Target Principale | Caratteristica |
+|-------|-------------------|----------------|
+| **LZMA** | Codice sorgente, Testo, SQL | Massimo Ratio (preset 0-9) |
+| **ZSTD** | Database, Documenti, Binari | Bilanciato (livello 1-22) |
+| **LZ4** | Immagini, Video, Log | Velocità estrema |
+| **NONE** | Dati ad alta entropia | Pass-through (zero CPU) |
+
+## 🛠 Utilizzo
+
+### Creazione e Aggiornamento
+```bash
+# Crea un nuovo archivio (default livello 3)
+tarc -c backup.tar4 ./progetto
+
+# Aggiornamento intelligente (aggiunge solo file modificati)
+tarc -a backup.tar4 ./progetto
+
 ### v1.03 (Database Edition)
 - ✨ Aggiunto supporto ottimizzato per database `.mdb` e `.accdb`
 - 🚀 Boost automatico livello ZSTD (+3) per file database
