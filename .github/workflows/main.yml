@@ -173,15 +173,12 @@ jobs:
         echo "✅ File preparati per la release:"
         ls -lh tarc-* || echo "Nessun file trovato"
 
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          tarc-linux-x86_64
-          tarc-windows-x64.exe
-          tarc-macos-universal
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     - name: Create GitHub Release
+       uses: softprops/action-gh-release@v1
+       with:
+         files: artifacts/**/*
+         draft: false
+         prerelease: false
+         generate_release_notes: true
+       env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
