@@ -1,9 +1,7 @@
 #include "ui.h"
-#include "types.h" // Inserito per leggere TARC_VERSION automaticamente
-#include <iostream>
+#include "types.h"
 #include <cstdio>
-#include <vector>
-#include <string>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -11,86 +9,147 @@
 
 namespace UI {
 
+// ─── VTP ─────────────────────────────────────────────────────────────────────
 void enable_vtp() {
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD dwMode = 0;
-    GetConsoleMode(hOut, &dwMode);
-    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    SetConsoleMode(hOut, dwMode);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= 0x0004;
+            SetConsoleMode(hOut, dwMode);
+        }
+    }
+    SetConsoleOutputCP(65001);
 #endif
 }
 
-void show_banner() {
-    // Utilizza TARC_VERSION definita in types.h per automatizzare il numero versione
-    printf("%sTARC Archiver %s- v%d.0%d%s\n", Color::CYAN, Color::BOLD, 1, TARC_VERSION % 100, Color::RESET);
-    printf("Compressione Multi-Algoritmo (ZSTD, LZ4, LZMA)\n\n");
-}
-
+// ─── HELP ─────────────────────────────────────────────────────────────────────
 void show_help() {
-    const char* G = Color::GREEN;
+    const char* C = Color::CYAN;
     const char* R = Color::RESET;
+    const char* B = Color::BOLD;
+    const char* W = Color::WHITE;
+    const char* G = Color::GREEN;
     const char* Y = Color::YELLOW;
+    const char* D = Color::RED;
 
-    printf("%sUTILIZZO:%s\n", Y, R);
-    printf("  tarc <comando> <archivio> [file...]\n\n");
-
-    printf("%sCOMANDI:%s\n", Y, R);
-    printf("  %s-c[1-22]%s  Crea nuovo archivio (es: -c9 per livello 9)\n", G, R);
-    printf("  %s-cbest%s    Livello massimo: compressione ultra (LZMA/ZSTD 22)\n", G, R);
-    printf("  %s-cfast%s    Livello minimo: massima velocità (LZ4)\n", G, R);
-    printf("  %s-a%s        Smart Update: aggiunge o aggiorna solo i file modificati\n", G, R);
-    printf("  %s-x%s        Estrae tutti i file\n", G, R);
-    printf("  %s-t%s        Test di integrità dell'archivio\n", G, R);
-    printf("  %s-l%s        Elenca il contenuto\n", G, R);
-    printf("  %s-d%s        Elimina file dall'archivio\n\n", G, R);
-
-    printf("%sESEMPI:%s\n", Y, R);
-    printf("  tarc -cbest backup.tarc documenti/*.pdf\n");
-    printf("  tarc -a backup.tarc cartella_lavoro/\n");
+    printf("\n");
+    // Versione automatizzata nell'header dell'help
+    printf("  TARC v1.0%d - HYBRID COMPRESSION ENGINE\n", TARC_VERSION % 100);
+    printf("  ======================================\n\n");
+    
+    printf("  %s%-12s%s %s- %sCrea archivio        (Livello 1-22, def: 3)%s\n", 
+           G, "-c[N]", R, G, W, R);
+    printf("  %s%-12s%s %s- %sLivello Massimo      (Best compression)%s\n", 
+           G, "-cbest", R, G, W, R);
+    printf("  %s%-12s%s %s- %sVelocità Massima     (Fastest)%s\n", 
+           G, "-cfast", R, G, W, R);
+    printf("  %s%-12s%s %s- %sAggiungi file        (Livello 1-22)%s\n", 
+           Y, "-a[N]", R, Y, W, R);
+    printf("  %s%-12s%s %s- %sEstrai tutto%s\n", 
+           G, "-x", R, G, W, R);
+    printf("  %s%-12s%s %s- %sElenca contenuto%s\n", 
+           G, "-l", R, G, W, R);
+    printf("  %s%-12s%s %s- %sTest integrita       (XXH64)%s\n", 
+           Y, "-t", R, Y, W, R);
+    printf("  %s%-12s%s %s- %sElimina file         (Wildcards supportati)%s\n", 
+           D, "-d", R, D, W, R);
+    
+    printf("\n  Codec automatico: LZ4 (binari), ZSTD (generico), LZMA (testo)\n\n");
 }
 
-void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
-    const char* c_name = "NONE";
-    if (codec == Codec::ZSTD) c_name = "ZSTD";
-    else if (codec == Codec::LZ4)  c_name = "LZ4 ";
-    else if (codec == Codec::LZMA) c_name = "LZMA";
+// ─── BANNER ──────────────────────────────────────────────────────────────────
+void show_banner() {
+    printf("%s%s  ████████╗ █████╗ ██████╗  ██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    printf("%s%s  ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    printf("%s%s     ██║   ███████║██████╔╝██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    printf("%s%s     ██║   ██╔══██║██╔══██╗██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    printf("%s%s     ██║   ██║  ██║██║  ██║╚██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    // Versione automatizzata alla fine del banner ASCII
+    printf("%s%s     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.0%d\n\n", Color::BOLD, Color::DIM, Color::RESET, TARC_VERSION % 100);
+}
 
-    printf("  %s+ %-30s %s [%-4s] %s%3.0f%%%s\n", 
-           Color::GREEN, name.c_str(), Color::CYAN, c_name, 
-           Color::BOLD, ratio * 100.0f, Color::RESET);
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
+std::string human_size(uint64_t b) {
+    char buf[32];
+    if      (b > 1073741824ULL) snprintf(buf, sizeof(buf), "%.2f GB", b / 1073741824.0);
+    else if (b > 1048576ULL)    snprintf(buf, sizeof(buf), "%.2f MB", b / 1048576.0);
+    else if (b > 1024ULL)       snprintf(buf, sizeof(buf), "%.2f KB", b / 1024.0);
+    else                        snprintf(buf, sizeof(buf), "%llu B",  (unsigned long long)b);
+    return buf;
+}
+
+std::string compress_ratio(uint64_t orig, uint64_t comp) {
+    if (orig == 0) return "  -  ";
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f%%", 100.0 * (1.0 - (double)comp / (double)orig));
+    return buf;
+}
+
+// ─── PRINT OPERATIONS ────────────────────────────────────────────────────────
+void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
+    char ratio_str[16];
+    snprintf(ratio_str, sizeof(ratio_str), "%.1f%%", ratio * 100.0f);
+
+    printf("%s[+]%s [%s%s%s] %-38s %10s  %s→%s %s\n",
+           Color::GREEN, Color::RESET,
+           Color::YELLOW, codec_name(codec), Color::RESET,
+           name.c_str(),
+           human_size(size).c_str(),
+           Color::DIM, Color::RESET,
+           ratio_str);
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
-    if (test) {
-        printf("  %s[%s]%s %-35s %s\n", 
-               ok ? Color::GREEN : Color::RED, 
-               ok ? " OK " : "FAIL", 
-               Color::RESET, name.c_str(), ok ? "" : "(Errore Hash!)");
-    } else {
-        printf("  %s> %-35s %sOK%s\n", Color::CYAN, name.c_str(), Color::GREEN, Color::RESET);
+    if (!ok) {
+        printf("%s[CORROTTO]%s %s\n", Color::RED, Color::RESET, name.c_str());
+        return;
     }
+    printf("%s[%s]%s %-42s %10s\n",
+           Color::CYAN,
+           test ? "OK" : " x",
+           Color::RESET,
+           name.c_str(),
+           human_size(size).c_str());
+}
+
+void print_delete(const std::string& name) {
+    printf("%s[-]%s Rimosso: %s\n", Color::RED, Color::RESET, name.c_str());
 }
 
 void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {
-    float r = orig > 0 ? (1.0f - (float)comp / orig) * 100.0f : 0;
-    printf("  %-35s %10llu -> %10llu [%2.0f%%]\n", name.c_str(), orig, comp, r);
+    printf("  [%s%s%s] %-42s %10s  %s(%s)%s\n",
+           Color::YELLOW, codec_name(codec), Color::RESET,
+           name.c_str(),
+           human_size(orig).c_str(),
+           Color::DIM, compress_ratio(orig, comp).c_str(), Color::RESET);
 }
 
-void print_summary(const TarcResult& res, const std::string& op) {
-    if (res.ok) {
-        printf("\n%s%s completata con successo.%s\n", Color::GREEN, op.c_str(), Color::RESET);
+void print_summary(const TarcResult& r, const std::string& op) {
+    if (!r.ok) {
+        printf("\n%s❌ %s fallito: %s%s\n", Color::RED, op.c_str(), r.message.c_str(), Color::RESET);
+        return;
+    }
+    if (r.bytes_in > 0 && r.bytes_out > 0) {
+        printf("\n%s✔ %s completato.%s  %s → %s  (%sratio: %s%s)\n",
+               Color::GREEN, op.c_str(), Color::RESET,
+               human_size(r.bytes_in).c_str(),
+               human_size(r.bytes_out).c_str(),
+               Color::DIM,
+               compress_ratio(r.bytes_in, r.bytes_out).c_str(),
+               Color::RESET);
     } else {
-        printf("\n%sErrore durante %s: %s%s\n", Color::RED, op.c_str(), res.message.c_str(), Color::RESET);
+        printf("\n%s✔ %s completato.%s\n", Color::GREEN, op.c_str(), Color::RESET);
     }
 }
 
 void print_error(const std::string& msg) {
-    printf("%sERRORE: %s%s\n", Color::RED, msg.c_str(), Color::RESET);
+    printf("%s❌ %s%s\n", Color::RED, msg.c_str(), Color::RESET);
 }
 
 void print_warning(const std::string& msg) {
-    printf("%sATTENZIONE: %s%s\n", Color::YELLOW, msg.c_str(), Color::RESET);
+    printf("%s⚠  %s%s\n", Color::YELLOW, msg.c_str(), Color::RESET);
 }
 
 } // namespace UI
