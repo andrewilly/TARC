@@ -12,6 +12,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# MULTI-THREADING SUPPORT
+find_package(Threads REQUIRED)
+
 # FETCH CONTENT
 include(FetchContent)
 
@@ -56,7 +59,7 @@ set(HAVE_LIBINTL_H       OFF CACHE BOOL "" FORCE)
 set(HAVE_LIBINTL         OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(liblzma)
 
-# ── brotli [NEW v1.05] ───────────────────────────────────────────────────────
+# ── brotli ───────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     brotli
     GIT_REPOSITORY https://github.com/google/brotli.git
@@ -96,7 +99,7 @@ target_include_directories(tarc PRIVATE
     ${xxhash_SOURCE_DIR}
 )
 
-# LINK (Aggiunte le librerie brotli)
+# LINK (Aggiunto Threads::Threads)
 target_link_libraries(tarc PRIVATE
     libzstd_static
     lz4_static
@@ -105,6 +108,7 @@ target_link_libraries(tarc PRIVATE
     brotlidec
     brotlicommon
     xxhash_lib
+    Threads::Threads
 )
 
 # FLAGS OTTIMIZZAZIONE
@@ -131,7 +135,7 @@ endif()
 
 if(UNIX AND NOT APPLE)
     target_compile_definitions(tarc PRIVATE _GNU_SOURCE)
-    target_link_libraries(tarc PRIVATE pthread dl)
+    target_link_libraries(tarc PRIVATE dl)
 endif()
 
 # STRIP RELEASE
@@ -145,6 +149,7 @@ message(STATUS "  ╔═══════════════════�
 message(STATUS "  ║         TARC v${PROJECT_VERSION} - BUILD CONFIG       ║")
 message(STATUS "  ╠════════════════════════════════════════════╣")
 message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  ║  Parallel   : Enabled (Multi-threaded)")
 message(STATUS "  ║  Codecs     : ZSTD + LZ4 + LZMA + BROTLI")
 message(STATUS "  ╚════════════════════════════════════════════╝")
 message(STATUS "")
