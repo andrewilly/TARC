@@ -26,21 +26,11 @@ namespace fs = std::filesystem;
 
 namespace CodecSelector {
     Codec select(const std::string& path, int level) {
-        // Se livello 9 (-cbest), usiamo LZMA Extreme per battere 7zip/WinRAR
         if (level >= 9) return Codec::LZMA;
-
         std::string ext = fs::path(path).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        
-        // File già compressi: LZ4 per non perdere tempo
-        if (ext == ".zip" || ext == ".7z" || ext == ".rar" || ext == ".jpg" || 
-            ext == ".mp4" || ext == ".png" || ext == ".pdf") 
-            return Codec::LZ4;
-        
-        // Livelli medio-alti: Brotli (ottimo rapporto velocità/dimensione)
+        if (ext == ".zip" || ext == ".7z" || ext == ".rar" || ext == ".jpg" || ext == ".mp4") return Codec::LZ4;
         if (level >= 7) return Codec::BR;
-        
-        // Default: ZSTD
         return Codec::ZSTD;
     }
 }
@@ -72,11 +62,28 @@ static CompressedChunk worker_compress(Codec codec, std::vector<char> src, int l
         if (c_sz > 0) { res.comp_size = (uint32_t)c_sz; res.is_compressed = (c_sz < (size_t)res.raw_size); }
     }
     else if (codec == Codec::LZMA) {
-        // Preset 9 + Extreme per pareggiare 7zip "Ultra"
-        uint32_t preset = 9 | LZMA_PRESET_EXTREME;
+        // --- CONFIGURAZIONE AVANZATA LZMA ---
+        lzma_options_lzma opt;
+        lzma_lzma_preset(&opt, 9); // Preset base 9
+        
+        // Impostiamo il dizionario a 128MB per pareggiare 7zip Ultra
+        opt.dict_size = 128 * 1024 * 1024; 
+        
+        lzma_filter filters[] = {
+            { LZMA_FILTER_LZMA2, &opt },
+            { LZMA_VLI_UNKNOWN, NULL }
+        };
+
         size_t out_pos = 0;
-        lzma_ret ret = lzma_easy_buffer_encode(preset, LZMA_CHECK_CRC64, NULL, (const uint8_t*)src.data(), src.size(), (uint8_t*)res.data.data(), &out_pos, res.data.size());
-        if (ret == LZMA_OK) { res.comp_size = (uint32_t)out_pos; res.is_compressed = (out_pos < src.size()); }
+        // encode con filtri personalizzati per applicare il dict_size
+        lzma_ret ret = lzma_stream_buffer_encode(filters, LZMA_CHECK_CRC64, NULL, 
+                       (const uint8_t*)src.data(), src.size(), 
+                       (uint8_t*)res.data.data(), &out_pos, res.data.size());
+        
+        if (ret == LZMA_OK) { 
+            res.comp_size = (uint32_t)out_pos; 
+            res.is_compressed = (out_pos < src.size()); 
+        }
     }
     else if (codec == Codec::BR) {
         size_t out_sz = res.data.size();
@@ -97,7 +104,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<FileEntry> toc;
 
     FILE* f = fopen(archive_path.c_str(), append && fs::exists(archive_path) ? "rb+" : "wb");
-    if (!f) { result.ok = false; result.message = "Errore apertura file."; return result; }
+    if (!f) { result.ok = false; result.message = "Impossibile aprire l'archivio."; return result; }
 
     if (append && IO::read_toc(f, h, toc)) { 
         fseek(f, (long)h.toc_offset, SEEK_SET); 
@@ -107,10 +114,14 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         IO::write_bytes(f, &h, sizeof(h)); 
     }
 
-    size_t max_threads = std::max(1u, std::thread::hardware_concurrency());
+    // Usiamo thread multipli solo se non siamo in modalità Ultra, per evitare di finire la RAM
+    size_t max_threads = (level >= 9) ? 1 : std::max(1u, std::thread::hardware_concurrency());
+    
     std::queue<std::future<CompressedChunk>> pipeline;
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 256 * 1024 * 1024; // Aumentato a 256MB per miglior compressione SOLID
+    
+    // Blocco Solid a 516MB per massimizzare la ricerca dei pattern
+    const size_t SOLID_BLOCK_SIZE = 516 * 1024 * 1024; 
     Codec current_block_codec = Codec::ZSTD;
 
     for (const auto& path : files) {
@@ -150,7 +161,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
         toc.push_back(fe);
         result.bytes_in += fe.meta.orig_size;
-        UI::print_add(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, 0.0f); // 0% temporaneo (bufferizzato)
+        UI::print_add(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, 0.0f);
     }
 
     if (!solid_buffer.empty()) {
@@ -196,7 +207,8 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
         if (c == Codec::ZSTD) ZSTD_decompress(d_buf.data(), ch.raw_size, c_buf.data(), ch.comp_size);
         else if (c == Codec::LZ4) LZ4_decompress_safe(c_buf.data(), d_buf.data(), ch.comp_size, ch.raw_size);
         else if (c == Codec::LZMA) {
-             uint64_t mem = 512*1024*1024; size_t ip=0, op=0;
+             uint64_t mem = 1024*1024*1024; // Allocata 1GB per la decompressione Ultra
+             size_t ip=0, op=0;
              lzma_stream_buffer_decode(&mem, 0, NULL, (uint8_t*)c_buf.data(), &ip, ch.comp_size, (uint8_t*)d_buf.data(), &op, ch.raw_size);
         }
         else if (c == Codec::BR) {
