@@ -329,28 +329,47 @@ TarcResult list(const std::string& archive_path) {
 
 TarcResult remove(const std::string& archive_path, const std::vector<std::string>& patterns) {
     TarcResult result;
-    FILE* f = fopen(archive_path.c_str(), "rb");
+    FILE* f = fopen(archive_path.c_str(), "rb+");
+    if (!f) { result.ok = false; result.message = "Impossibile aprire l'archivio"; return result; }
+
     Header h; std::vector<FileEntry> toc;
-    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; return result; }
-    
+    if (!IO::read_toc(f, h, toc)) { fclose(f); result.ok = false; return result; }
+
     std::vector<FileEntry> next_toc;
     for (auto& fe : toc) {
         bool keep = true;
-        for (const auto& p : patterns) {
-            if (fe.name == p) { keep = false; break; }
+        for (auto& p : patterns) {
+            if (fe.name.find(p) != std::string::npos) {
+                keep = false;
+                UI::print_delete(fe.name);
+                break;
+            }
         }
         if (keep) next_toc.push_back(fe);
-        else UI::print_delete(fe.name);
+    }
+
+    if (next_toc.size() == toc.size()) {
+        fclose(f);
+        result.ok = true;
+        result.message = "Nessun file rimosso.";
+        return result;
+    }
+
+    // Riscrivi la TOC aggiornata
+    h.toc_offset = ftell(f); // Opzionale: potresti voler compattare, ma per ora riscriviamo alla fine
+    fseek(f, h.toc_offset, SEEK_SET);
+    
+    for (auto& fe : next_toc) {
+        IO::write_entry(f, fe);
     }
     
-    if (next_toc.size() == toc.size()) { fclose(f); result.ok = true; return result; }
+    // Aggiorna l'header iniziale
+    fseek(f, 0, SEEK_SET);
+    IO::write_bytes(f, &h, sizeof(h));
 
-    std::string tmp_path = archive_path + ".tmp";
-    FILE* nf = fopen(tmp_path.c_str(), "wb");
-    IO::write_bytes(nf, &h, sizeof(h));
-    
-    std::vector<char> buffer(CHUNK_SIZE);
-    for (auto& fe : next_toc) {
-        uint64_t old_off = fe.meta.offset;
-        fe.meta.offset = (uint64_t)ftell(nf);
-        fseek(f, (long)old_off, SEEK_SET);
+    fclose(f);
+    result.ok = true;
+    return result;
+}
+
+} // namespace Engine
