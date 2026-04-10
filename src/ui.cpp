@@ -1,4 +1,5 @@
 #include "ui.h"
+#include <iostream>  // <--- Fondamentale per std::cout
 #include "types.h"
 #include <cstdio>
 #include <cstring>
@@ -57,7 +58,7 @@ void show_help() {
 //    printf("%s%s      ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.0%d\n\n", Color::BOLD, Color::DIM, Color::RESET, TARC_VERSION % 100);
 //}
 
-void UI::show_banner() {
+void show_banner() {
     std::cout << "==========================================\n";
     std::cout << "          TARC STRIKE v1.10               \n";
     std::cout << "      Solid Compression Engine            \n";
