@@ -6,7 +6,7 @@
 #define TARC_MAGIC     "STRK"
 #define TARC_VERSION   110  // v1.10 Strike
 #define CHUNK_SIZE     (4 * 1024 * 1024)
-#define TARC_EXT       ".tar4"
+#define TARC_EXT       ".strk"
 
 enum class Codec : uint8_t {
     ZSTD = 0,
