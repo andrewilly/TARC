@@ -6,31 +6,27 @@
 // ─── SELEZIONE AUTOMATICA CODEC ──────────────────────────────────────────────
 namespace CodecSelector {
 
-    // Estensioni che beneficiano di LZMA (ratio estremo)
-    bool is_lzma_candidate(const std::string& filename);
+    // Seleziona automaticamente il codec migliore in base all'estensione e al livello.
+    // [MOD v1.05] Ora integra Brotli per i livelli "Ultra" e gestisce la logica Solid.
+    Codec select(const std::string& path, int level);
 
-    // Estensioni già compresse (LZ4 veloce o NONE)
-    bool is_already_compressed(const std::string& filename);
-
-    // Seleziona automaticamente il codec migliore per il file dato.
-    // Logica:
-    //   - File già compressi (.zip, .jpg, .mp4 ...): LZ4 (overhead minimo)
-    //   - File testuali/codice (.txt, .cpp, .json ...): LZMA (ratio massimo)
-    //   - Tutto il resto: ZSTD (bilanciato)
-    Codec select_auto(const std::string& filename);
-
-    // Stima velocemente se un buffer sembra già compresso
-    // (analisi entropia sui primi N byte)
+    // Stima se un buffer ha alta entropia (usato per decidere se saltare la compressione)
     bool is_high_entropy(const uint8_t* data, size_t len);
 
 } // namespace CodecSelector
 
-// ─── ENGINE ──────────────────────────────────────────────────────────────────
+// ─── ENGINE (MODALITÀ SOLID & PARALLEL) ──────────────────────────────────────
 namespace Engine {
 
-    // Comprimi/aggiungi files nell'archivio.
-    // level: livello compressione (1-22 per ZSTD/LZMA, ignorato per LZ4)
-    // append: true = modalità -a, false = crea nuovo archivio
+    /**
+     * Comprimi/aggiungi files nell'archivio.
+     * [SOLID] I file vengono concatenati in blocchi da 16MB per massimizzare il ratio.
+     * [PARALLEL] I blocchi vengono compressi usando tutti i core disponibili.
+     * * @param arch_path Percorso dell'archivio .tar4
+     * @param files     Lista dei percorsi dei file da aggiungere
+     * @param append    Se true, aggiunge alla fine (disabilita Solid per quel blocco)
+     * @param level     Livello di compressione (1-22). 22 attiva Brotli/LZMA Extreme.
+     */
     TarcResult compress(
         const std::string&              arch_path,
         const std::vector<std::string>& files,
@@ -38,20 +34,29 @@ namespace Engine {
         int                             level
     );
 
-    // Estrai o testa l'archivio.
-    // test_only: true = verifica hash senza scrivere su disco
+    /**
+     * Estrai o testa l'archivio.
+     * [SOLID] Legge l'archivio sequenzialmente per ricostruire i file dai blocchi.
+     * * @param arch_path Percorso dell'archivio da leggere
+     * @param test_only Se true, verifica solo l'integrità tramite XXH64
+     */
     TarcResult extract(
         const std::string& arch_path,
         bool               test_only
     );
 
-    // Elimina file dall'archivio (riscrive il file compattato).
+    /**
+     * Elimina file dall'archivio tramite pattern matching.
+     * Nota: In modalità Solid, questa operazione richiede la ricostruzione dei blocchi.
+     */
     TarcResult remove_files(
         const std::string&              arch_path,
-        const std::vector<std::string>& targets
+        const std::vector<std::string>& patterns
     );
 
-    // Lista il contenuto dell'archivio.
+    /**
+     * Lista il contenuto dell'archivio mostrando ratio e codec usato per ogni file.
+     */
     TarcResult list(const std::string& arch_path);
 
 } // namespace Engine
