@@ -54,7 +54,7 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     return true;
 }
 
-void write_toc(FILE* f, Header& h, const std::vector<FileEntry>& toc) {
+void write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     h.toc_offset = ftell(f);
     h.file_count = (uint32_t)toc.size();
 
