@@ -55,7 +55,7 @@ void expand_path(const std::string& pattern, std::vector<std::string>& out) {
     }
 }
 
-bool IO::write_entry(FILE* f, const FileEntry& fe) {
+bool write_entry(FILE* f, const FileEntry& fe) {
     Entry e;
     e.offset = fe.meta.offset;
     e.orig_size = fe.meta.orig_size;
