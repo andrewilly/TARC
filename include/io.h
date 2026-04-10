@@ -23,4 +23,7 @@ namespace IO {
     bool read_bytes(FILE* f, void* buf, size_t size);
     bool write_bytes(FILE* f, const void* buf, size_t size);
 
+    // ... altre funzioni ...
+    bool write_entry(FILE* f, const FileEntry& entry);
+
 } // namespace IO
