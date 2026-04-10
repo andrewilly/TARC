@@ -9,8 +9,8 @@
 #include <fstream>
 #include <future>
 #include <queue>
+#include <iostream>
 
-// ─── DIPENDENZE COMPRESSIONE ─────────────────────────────────────────────────
 #include "zstd.h"
 #include "lz4.h"
 #include "lz4hc.h"
@@ -25,16 +25,10 @@ extern "C" {
 namespace fs = std::filesystem;
 
 namespace CodecSelector {
-    static const std::set<std::string> COMPRESSED_EXTS = {
-        ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz4", ".zst", ".br", ".tar",
-        ".jpg", ".jpeg", ".avif", ".heic", ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv"
-    };
-
     Codec select(const std::string& path, int level) {
         std::string ext = fs::path(path).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        if (COMPRESSED_EXTS.count(ext)) return Codec::LZ4;
-        // Se il livello è alto, forziamo i codec pesanti
+        if (ext == ".zip" || ext == ".7z" || ext == ".rar" || ext == ".jpg" || ext == ".mp4") return Codec::LZ4;
         if (level >= 18) return Codec::BR; 
         if (level >= 10) return Codec::LZMA;
         return Codec::ZSTD;
@@ -50,7 +44,6 @@ struct CompressedChunk {
     bool is_compressed;
 };
 
-// Worker con parametri "Ultra"
 static CompressedChunk worker_compress(Codec codec, std::vector<char> src, int level) {
     CompressedChunk res;
     res.raw_size = (uint32_t)src.size();
@@ -68,18 +61,14 @@ static CompressedChunk worker_compress(Codec codec, std::vector<char> src, int l
         if (c_sz > 0) { res.comp_size = (uint32_t)c_sz; res.is_compressed = (c_sz < (size_t)res.raw_size); }
     }
     else if (codec == Codec::LZMA) {
-        // LZMA Extreme Mode (come 7zip -mx9)
         uint32_t preset = std::clamp(level, 0, 9) | LZMA_PRESET_EXTREME;
         size_t out_pos = 0;
         lzma_ret ret = lzma_easy_buffer_encode(preset, LZMA_CHECK_CRC64, NULL, (const uint8_t*)src.data(), src.size(), (uint8_t*)res.data.data(), &out_pos, res.data.size());
         if (ret == LZMA_OK) { res.comp_size = (uint32_t)out_pos; res.is_compressed = (out_pos < src.size()); }
     }
     else if (codec == Codec::BR) {
-        // BROTLI ULTRA CONFIG
         size_t out_sz = res.data.size();
-        int quality = std::clamp(level, 0, 11); // Max 11
-        // Finestra di 24-bit (16MB) per trovare ridondanze distanti
-        if (BrotliEncoderCompress(quality, 24, BROTLI_MODE_GENERIC, src.size(), (const uint8_t*)src.data(), &out_sz, (uint8_t*)res.data.data())) {
+        if (BrotliEncoderCompress(std::clamp(level, 0, 11), 24, BROTLI_MODE_GENERIC, src.size(), (const uint8_t*)src.data(), &out_sz, (uint8_t*)res.data.data())) {
             res.comp_size = (uint32_t)out_sz; res.is_compressed = (out_sz < src.size());
         }
     }
@@ -91,20 +80,34 @@ static CompressedChunk worker_compress(Codec codec, std::vector<char> src, int l
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& files, bool append, int level) {
     TarcResult result;
-    Header h; std::vector<FileEntry> toc;
-    
-    FILE* f = fopen(archive_path.c_str(), append && fs::exists(archive_path) ? "rb+" : "wb");
-    if (!f) { result.ok = false; return result; }
+    Header h; 
+    std::vector<FileEntry> toc;
 
-    if (append && IO::read_toc(f, h, toc)) { fseek(f, (long)h.toc_offset, SEEK_SET); }
-    else { memcpy(h.magic, TARC_MAGIC, 4); h.version = TARC_VERSION; IO::write_bytes(f, &h, sizeof(h)); }
+    // Assicuriamoci che la cartella esista
+    fs::path p(archive_path);
+    if (p.has_parent_path() && !fs::exists(p.parent_path())) {
+        fs::create_directories(p.parent_path());
+    }
+
+    FILE* f = fopen(archive_path.c_str(), append && fs::exists(archive_path) ? "rb+" : "wb");
+    if (!f) { 
+        result.ok = false; 
+        result.message = "Impossibile aprire l'archivio in scrittura. Controlla i permessi."; 
+        return result; 
+    }
+
+    if (append && IO::read_toc(f, h, toc)) { 
+        fseek(f, (long)h.toc_offset, SEEK_SET); 
+    } else { 
+        memcpy(h.magic, TARC_MAGIC, 4); 
+        h.version = TARC_VERSION; 
+        IO::write_bytes(f, &h, sizeof(h)); 
+    }
 
     size_t max_threads = std::max(1u, std::thread::hardware_concurrency());
     std::queue<std::future<CompressedChunk>> pipeline;
-    
-    // Buffer Solid: accumula dati da più file prima di comprimere
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 16 * 1024 * 1024; // Blocchi da 16MB come 7zip
+    const size_t SOLID_BLOCK_SIZE = 8 * 1024 * 1024; // Ridotto a 8MB per stabilità
 
     for (const auto& path : files) {
         if (!fs::is_regular_file(path)) continue;
@@ -113,7 +116,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.name = fs::relative(path).string();
         fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(path).time_since_epoch()).count();
         fe.meta.orig_size = fs::file_size(path);
-        fe.meta.offset = ftell(f); // In modalità Solid, l'offset punta all'inizio del blocco comune
+        fe.meta.offset = ftell(f);
 
         FILE* in = fopen(path.c_str(), "rb");
         if (!in) continue;
@@ -122,18 +125,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fread(file_data.data(), 1, fe.meta.orig_size, in);
         fclose(in);
 
-        // Hash del singolo file
         XXH64_state_t* hs = XXH64_createState(); XXH64_reset(hs, 0);
         XXH64_update(hs, file_data.data(), file_data.size());
         fe.meta.xxhash = XXH64_digest(hs); XXH64_freeState(hs);
 
-        // Aggiungi al buffer solido
         solid_buffer.insert(solid_buffer.end(), file_data.begin(), file_data.end());
-        
-        Codec current_codec = CodecSelector::select(path, level);
-        fe.meta.codec = (uint8_t)current_codec;
+        fe.meta.codec = (uint8_t)CodecSelector::select(path, level);
 
-        // Se il buffer solido è pieno, lancia la compressione
         if (solid_buffer.size() >= SOLID_BLOCK_SIZE) {
             while (pipeline.size() >= max_threads) {
                 auto cc = pipeline.front().get(); pipeline.pop();
@@ -142,18 +140,17 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 IO::write_bytes(f, cc.data.data(), cc.comp_size);
                 result.bytes_out += cc.comp_size;
             }
-            pipeline.push(std::async(std::launch::async, worker_compress, current_codec, std::move(solid_buffer), level));
+            pipeline.push(std::async(std::launch::async, worker_compress, (Codec)fe.meta.codec, std::move(solid_buffer), level));
             solid_buffer.clear();
         }
 
         toc.push_back(fe);
-        UI::print_add(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, 0.0f); // Ratio calcolato alla fine
+        UI::print_add(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, 1.0f);
         result.bytes_in += fe.meta.orig_size;
     }
 
-    // Svuota buffer rimanente
     if (!solid_buffer.empty()) {
-        pipeline.push(std::async(std::launch::async, worker_compress, Codec::BR, std::move(solid_buffer), level));
+        pipeline.push(std::async(std::launch::async, worker_compress, Codec::ZSTD, std::move(solid_buffer), level));
     }
 
     while (!pipeline.empty()) {
@@ -164,25 +161,33 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         result.bytes_out += cc.comp_size;
     }
 
-    ChunkHeader end = {0, 0}; IO::write_bytes(f, &end, sizeof(end));
-    IO::write_toc(f, h, toc); fclose(f);
-    result.ok = true; return result;
+    ChunkHeader end = {0, 0}; 
+    IO::write_bytes(f, &end, sizeof(end));
+    
+    // Scrittura TOC finale
+    if (!IO::write_toc(f, h, toc)) {
+        fclose(f);
+        result.ok = false;
+        result.message = "Errore durante la scrittura della Table of Contents.";
+        return result;
+    }
+
+    fclose(f);
+    result.ok = true; 
+    return result;
 }
 
-// Nota: Extract deve essere aggiornato per gestire i blocchi solidi (lettura sequenziale)
 TarcResult extract(const std::string& archive_path, bool test_only) {
     TarcResult result;
     FILE* f = fopen(archive_path.c_str(), "rb");
     Header h; std::vector<FileEntry> toc;
-    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; return result; }
+    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; result.message="Archivio corrotto o illeggibile"; return result; }
     
     ZSTD_DCtx* dctx = ZSTD_createDCtx();
     std::vector<char> c_buf, d_buf;
 
-    // In modalità Solid, leggiamo l'archivio sequenzialmente e distribuiamo i byte ai file
     fseek(f, sizeof(Header), SEEK_SET);
     size_t current_file_idx = 0;
-    std::vector<char> current_decompressed_block;
     size_t block_pos = 0;
 
     while (current_file_idx < toc.size()) {
@@ -191,9 +196,8 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
 
         c_buf.resize(ch.comp_size);
         d_buf.resize(ch.raw_size);
-        IO::read_bytes(f, c_buf.data(), ch.comp_size);
+        if (!IO::read_bytes(f, c_buf.data(), ch.comp_size)) break;
 
-        // Decompressione (Logica identica a prima)
         auto& fe_sample = toc[current_file_idx];
         if (fe_sample.meta.codec == (uint8_t)Codec::ZSTD) ZSTD_decompressDCtx(dctx, d_buf.data(), ch.raw_size, c_buf.data(), ch.comp_size);
         else if (fe_sample.meta.codec == (uint8_t)Codec::LZ4) LZ4_decompress_safe(c_buf.data(), d_buf.data(), ch.comp_size, ch.raw_size);
@@ -206,7 +210,6 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
             BrotliDecoderDecompress(ch.comp_size, (uint8_t*)c_buf.data(), &dsz, (uint8_t*)d_buf.data());
         } else { memcpy(d_buf.data(), c_buf.data(), ch.raw_size); }
 
-        // Distribuiamo i dati decompressi ai rispettivi file
         size_t d_pos = 0;
         while (d_pos < d_buf.size() && current_file_idx < toc.size()) {
             auto& fe = toc[current_file_idx];
@@ -214,14 +217,14 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
             size_t to_write = std::min(remaining_file, d_buf.size() - d_pos);
 
             if (!test_only) {
-                fs::create_directories(fs::path(fe.name).parent_path());
+                fs::path out_p(fe.name);
+                if (out_p.has_parent_path()) fs::create_directories(out_p.parent_path());
                 FILE* out = fopen(fe.name.c_str(), block_pos == 0 ? "wb" : "ab");
                 if(out) { fwrite(d_buf.data() + d_pos, 1, to_write, out); fclose(out); }
             }
 
             d_pos += to_write;
             block_pos += to_write;
-
             if (block_pos >= fe.meta.orig_size) {
                 UI::print_extract(fe.name, fe.meta.orig_size, test_only, true);
                 current_file_idx++;
@@ -246,10 +249,8 @@ TarcResult list(const std::string& archive_path) {
     fclose(f); result.ok = true; return result;
 }
 
-TarcResult remove_files(const std::string& archive_path, const std::vector<std::string>& patterns) {
-    // Nota: La rimozione in un archivio SOLID richiede la ricostruzione completa. 
-    // Per ora restituiamo errore per sicurezza.
-    TarcResult r; r.ok = false; r.message = "Rimozione non supportata in modalità SOLID";
+TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
+    TarcResult r; r.ok = false; r.message = "Rimozione non disponibile in modalita SOLID";
     return r;
 }
 
