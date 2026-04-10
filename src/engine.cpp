@@ -83,7 +83,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     Header h; 
     std::vector<FileEntry> toc;
 
-    // Assicuriamoci che la cartella esista
     fs::path p(archive_path);
     if (p.has_parent_path() && !fs::exists(p.parent_path())) {
         fs::create_directories(p.parent_path());
@@ -92,7 +91,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     FILE* f = fopen(archive_path.c_str(), append && fs::exists(archive_path) ? "rb+" : "wb");
     if (!f) { 
         result.ok = false; 
-        result.message = "Impossibile aprire l'archivio in scrittura. Controlla i permessi."; 
+        result.message = "Impossibile aprire l'archivio in scrittura."; 
         return result; 
     }
 
@@ -107,7 +106,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     size_t max_threads = std::max(1u, std::thread::hardware_concurrency());
     std::queue<std::future<CompressedChunk>> pipeline;
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 8 * 1024 * 1024; // Ridotto a 8MB per stabilità
+    const size_t SOLID_BLOCK_SIZE = 8 * 1024 * 1024;
 
     for (const auto& path : files) {
         if (!fs::is_regular_file(path)) continue;
@@ -122,8 +121,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (!in) continue;
 
         std::vector<char> file_data(fe.meta.orig_size);
-        fread(file_data.data(), 1, fe.meta.orig_size, in);
+        size_t read_bytes = fread(file_data.data(), 1, fe.meta.orig_size, in);
         fclose(in);
+        if (read_bytes != fe.meta.orig_size) continue;
 
         XXH64_state_t* hs = XXH64_createState(); XXH64_reset(hs, 0);
         XXH64_update(hs, file_data.data(), file_data.size());
@@ -164,13 +164,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     ChunkHeader end = {0, 0}; 
     IO::write_bytes(f, &end, sizeof(end));
     
-    // Scrittura TOC finale
-    if (!IO::write_toc(f, h, toc)) {
-        fclose(f);
-        result.ok = false;
-        result.message = "Errore durante la scrittura della Table of Contents.";
-        return result;
-    }
+    // Correzione errore di tipo: IO::write_toc restituisce void
+    IO::write_toc(f, h, toc);
 
     fclose(f);
     result.ok = true; 
@@ -181,7 +176,7 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
     TarcResult result;
     FILE* f = fopen(archive_path.c_str(), "rb");
     Header h; std::vector<FileEntry> toc;
-    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; result.message="Archivio corrotto o illeggibile"; return result; }
+    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; result.message="Archivio corrotto"; return result; }
     
     ZSTD_DCtx* dctx = ZSTD_createDCtx();
     std::vector<char> c_buf, d_buf;
@@ -203,7 +198,8 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
         else if (fe_sample.meta.codec == (uint8_t)Codec::LZ4) LZ4_decompress_safe(c_buf.data(), d_buf.data(), ch.comp_size, ch.raw_size);
         else if (fe_sample.meta.codec == (uint8_t)Codec::LZMA) {
              uint64_t mem = 256*1024*1024; size_t ip=0, op=0;
-             lzma_stream_buffer_decode(&mem, 0, NULL, (uint8_t*)c_buf.data(), &ip, ch.comp_size, (uint8_t*)d_buf.data(), &op, ch.raw_size);
+             // Ignoriamo il valore di ritorno esplicitamente per pulire il warning
+             (void)lzma_stream_buffer_decode(&mem, 0, NULL, (uint8_t*)c_buf.data(), &ip, ch.comp_size, (uint8_t*)d_buf.data(), &op, ch.raw_size);
         }
         else if (fe_sample.meta.codec == (uint8_t)Codec::BR) {
             size_t dsz = ch.raw_size;
