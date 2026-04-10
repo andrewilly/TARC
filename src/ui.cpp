@@ -49,8 +49,8 @@ void show_help() {
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
 void show_banner() {
-    printf("%s%s  ████████╗ █████╗ ██████╗  ██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s  ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    printf("%s%s   ████████╗ █████╗ ██████╗  ██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+    printf("%s%s   ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s      ██║   ███████║██████╔╝██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s      ██║   ██╔══██║██╔══██╗██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
     printf("%s%s      ██║   ██║  ██║██║  ██║╚██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
