@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#define TARC_MAGIC     "TARC"
+#define TARC_MAGIC     "STRK"
 #define TARC_VERSION   105  // Aggiornato v1.05
 #define CHUNK_SIZE     (4 * 1024 * 1024)
 #define TARC_EXT       ".tar4"
