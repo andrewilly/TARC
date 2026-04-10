@@ -110,7 +110,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     size_t max_threads = std::max(1u, std::thread::hardware_concurrency());
     std::queue<std::future<CompressedChunk>> pipeline;
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 16 * 1024 * 1024; // Aumentato a 16MB per miglior compressione SOLID
+    const size_t SOLID_BLOCK_SIZE = 256 * 1024 * 1024; // Aumentato a 256MB per miglior compressione SOLID
     Codec current_block_codec = Codec::ZSTD;
 
     for (const auto& path : files) {
