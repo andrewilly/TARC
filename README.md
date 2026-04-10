@@ -106,6 +106,12 @@ tarc -d     archivio  file...    Elimina file (wildcards supportati)
 
 ## Changelog
 
+### v1.05 (Brotli & 7-Zip Engine)
+- 🚀 **Brotli Support**: Integrazione algoritmo Google per compressione testi superiore.
+- 💎 **LZMA Ultra**: Ottimizzato il motore 7-Zip per file binari pesanti.
+- 🤖 **Auto-best**: Il comando `-cbest` analizza ora se usare Brotli o LZMA in base all'estensione.
+- 🔄 **Full Compatibility**: Pieno supporto in lettura per archivi v1.03 e v1.04.
+
 ### TARC v1.04 — Smart Hybrid Archiver
 
 TARC (Tiny Advanced Resilient Compressor) è un archiver ibrido ad alte prestazioni che seleziona automaticamente il miglior codec in base al contenuto e allo stato del file.
