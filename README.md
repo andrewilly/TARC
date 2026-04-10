@@ -106,6 +106,32 @@ tarc -d     archivio  file...    Elimina file (wildcards supportati)
 
 ## Changelog
 
+## 📝 Changelog - v1.10 (The Strike Update)
+
+### 🚀 Novità Principali
+* **Supporto Brotli (BR):** Integrato l'algoritmo di compressione Google Brotli. Offre un rapporto di compressione superiore a ZSTD per file di testo e asset web, con velocità di decompressione fulminea.
+* **Smart Update (Incremental):** Aggiunto il supporto ai timestamp nei metadati. Il motore ora può confrontare le date di modifica dei file per saltare la ricompressione di file non modificati.
+* **Nuova Struttura Header (v1.10):** Ottimizzato l'header binario per includere il `file_count` nativamente, migliorando la velocità di caricamento della Table of Contents (TOC).
+
+### 🛠 Miglioramenti Tecnici
+* **Allineamento Binario:** Implementato `#pragma pack(push, 1)` su tutte le strutture critiche per garantire la compatibilità dei file `.tar4` tra diverse architetture (x86/ARM).
+* **Gestione TOC:** Rifattorizzato il sistema di I/O per la gestione della tabella dei contenuti, ora più robusto contro i crash durante la scrittura.
+* **Pulizia Codice:** Unificato il sistema di naming dei codec e migliorata la gestione dei buffer per i nomi dei file (supporto per percorsi lunghi).
+
+### 🐛 Bug Fixes
+* Risolto un problema di memoria nel linker durante la fase di creazione dell'eseguibile su sistemi Unix/macOS.
+* Corretto il calcolo dell'offset nei metadati degli archivi contenenti file di dimensioni superiori a 4GB.
+* Sincronizzati i tipi di dato `uint64_t` per prevenire overflow su file estremamente grandi.
+
+### 📊 Confronto Codec Aggiornato
+| Codec | Nome | Punti di Forza |
+| :--- | :--- | :--- |
+| **ZSTD** | Zstandard | Equilibrio perfetto velocità/compressione |
+| **LZ4** | LZ4 | Velocità estrema (quasi real-time) |
+| **7ZIP** | LZMA | Massima compressione possibile (lento) |
+| **BROT** | Brotli | Ottimale per file piccoli e dati testuali |
+| **NONE** | Store | Solo archiviazione senza compressione |
+
 ### v1.05 (Brotli & 7-Zip Engine)
 - 🚀 **Brotli Support**: Integrazione algoritmo Google per compressione testi superiore.
 - 💎 **LZMA Ultra**: Ottimizzato il motore 7-Zip per file binari pesanti.
