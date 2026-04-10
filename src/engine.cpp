@@ -26,20 +26,21 @@ namespace fs = std::filesystem;
 
 namespace CodecSelector {
     Codec select(const std::string& path, int level) {
-        // Se l'utente ha chiesto il massimo (-cbest / -c9), usiamo Brotli (il cuore di Strike)
-        if (level >= 9) return Codec::BR;
+        // Se livello 9 (-cbest), usiamo LZMA Extreme per battere 7zip/WinRAR
+        if (level >= 9) return Codec::LZMA;
 
         std::string ext = fs::path(path).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         
-        // Per file già compressi, usiamo LZ4 (velocità)
-        if (ext == ".zip" || ext == ".7z" || ext == ".rar" || ext == ".jpg" || ext == ".mp4" || ext == ".png") 
+        // File già compressi: LZ4 per non perdere tempo
+        if (ext == ".zip" || ext == ".7z" || ext == ".rar" || ext == ".jpg" || 
+            ext == ".mp4" || ext == ".png" || ext == ".pdf") 
             return Codec::LZ4;
         
-        // Se livello alto (ma non max), usiamo LZMA
-        if (level >= 7) return Codec::LZMA;
+        // Livelli medio-alti: Brotli (ottimo rapporto velocità/dimensione)
+        if (level >= 7) return Codec::BR;
         
-        // Default bilanciato
+        // Default: ZSTD
         return Codec::ZSTD;
     }
 }
@@ -61,7 +62,6 @@ static CompressedChunk worker_compress(Codec codec, std::vector<char> src, int l
     res.is_compressed = false;
 
     if (codec == Codec::ZSTD) {
-        // Mappiamo il livello 1-9 al range ZSTD 1-22
         int zstd_lvl = (level >= 9) ? 22 : (level * 2);
         c_sz = ZSTD_compress(res.data.data(), res.data.size(), src.data(), src.size(), zstd_lvl);
         if (!ZSTD_isError(c_sz)) { res.comp_size = (uint32_t)c_sz; res.is_compressed = (c_sz < res.raw_size); }
@@ -72,14 +72,14 @@ static CompressedChunk worker_compress(Codec codec, std::vector<char> src, int l
         if (c_sz > 0) { res.comp_size = (uint32_t)c_sz; res.is_compressed = (c_sz < (size_t)res.raw_size); }
     }
     else if (codec == Codec::LZMA) {
-        uint32_t preset = std::clamp(level, 0, 9) | LZMA_PRESET_EXTREME;
+        // Preset 9 + Extreme per pareggiare 7zip "Ultra"
+        uint32_t preset = 9 | LZMA_PRESET_EXTREME;
         size_t out_pos = 0;
         lzma_ret ret = lzma_easy_buffer_encode(preset, LZMA_CHECK_CRC64, NULL, (const uint8_t*)src.data(), src.size(), (uint8_t*)res.data.data(), &out_pos, res.data.size());
         if (ret == LZMA_OK) { res.comp_size = (uint32_t)out_pos; res.is_compressed = (out_pos < src.size()); }
     }
     else if (codec == Codec::BR) {
         size_t out_sz = res.data.size();
-        // Mappiamo livello 9 a 11 (max Brotli)
         int br_lvl = (level >= 9) ? 11 : level;
         if (BrotliEncoderCompress(br_lvl, 24, BROTLI_MODE_GENERIC, src.size(), (const uint8_t*)src.data(), &out_sz, (uint8_t*)res.data.data())) {
             res.comp_size = (uint32_t)out_sz; res.is_compressed = (out_sz < src.size());
@@ -97,24 +97,20 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<FileEntry> toc;
 
     FILE* f = fopen(archive_path.c_str(), append && fs::exists(archive_path) ? "rb+" : "wb");
-    if (!f) { 
-        result.ok = false; 
-        result.message = "Impossibile aprire l'archivio."; 
-        return result; 
-    }
+    if (!f) { result.ok = false; result.message = "Errore apertura file."; return result; }
 
     if (append && IO::read_toc(f, h, toc)) { 
         fseek(f, (long)h.toc_offset, SEEK_SET); 
     } else { 
         memcpy(h.magic, "STRK", 4); 
-        h.version = TARC_VERSION; 
+        h.version = 110; 
         IO::write_bytes(f, &h, sizeof(h)); 
     }
 
     size_t max_threads = std::max(1u, std::thread::hardware_concurrency());
     std::queue<std::future<CompressedChunk>> pipeline;
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 8 * 1024 * 1024;
+    const size_t SOLID_BLOCK_SIZE = 16 * 1024 * 1024; // Aumentato a 16MB per miglior compressione SOLID
     Codec current_block_codec = Codec::ZSTD;
 
     for (const auto& path : files) {
@@ -127,7 +123,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         
         FILE* in = fopen(path.c_str(), "rb");
         if (!in) continue;
-
         std::vector<char> file_data(fe.meta.orig_size);
         fread(file_data.data(), 1, fe.meta.orig_size, in);
         fclose(in);
@@ -155,7 +150,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
         toc.push_back(fe);
         result.bytes_in += fe.meta.orig_size;
-        UI::print_add(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, 1.0f);
+        UI::print_add(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, 0.0f); // 0% temporaneo (bufferizzato)
     }
 
     if (!solid_buffer.empty()) {
@@ -183,17 +178,7 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
     TarcResult result;
     FILE* f = fopen(archive_path.c_str(), "rb");
     Header h; std::vector<FileEntry> toc;
-    
-    if (!f || !IO::read_toc(f, h, toc)) { 
-        if(f) fclose(f); 
-        result.ok = false; 
-        result.message="Archivio corrotto o Magic non valido."; 
-        return result; 
-    }
-
-    if (memcmp(h.magic, "STRK", 4) != 0) {
-        fclose(f); result.ok = false; result.message = "Formato non Strike."; return result;
-    }
+    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; return result; }
     
     std::vector<char> c_buf, d_buf;
     fseek(f, sizeof(Header), SEEK_SET);
@@ -203,7 +188,6 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
     while (current_file_idx < toc.size()) {
         ChunkHeader ch;
         if (!IO::read_bytes(f, &ch, sizeof(ch)) || ch.raw_size == 0) break;
-
         c_buf.resize(ch.comp_size);
         d_buf.resize(ch.raw_size);
         IO::read_bytes(f, c_buf.data(), ch.comp_size);
@@ -225,19 +209,16 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
             auto& fe = toc[current_file_idx];
             size_t remaining_file = fe.meta.orig_size - block_pos;
             size_t to_write = std::min(remaining_file, d_buf.size() - d_pos);
-
             if (!test_only) {
                 fs::path out_p(fe.name);
                 if (out_p.has_parent_path()) fs::create_directories(out_p.parent_path());
                 FILE* out = fopen(fe.name.c_str(), block_pos == 0 ? "wb" : "ab");
                 if(out) { fwrite(d_buf.data() + d_pos, 1, to_write, out); fclose(out); }
             }
-            d_pos += to_write;
-            block_pos += to_write;
+            d_pos += to_write; block_pos += to_write;
             if (block_pos >= fe.meta.orig_size) {
                 UI::print_extract(fe.name, fe.meta.orig_size, test_only, true);
-                current_file_idx++;
-                block_pos = 0;
+                current_file_idx++; block_pos = 0;
             }
         }
     }
@@ -249,16 +230,15 @@ TarcResult list(const std::string& archive_path) {
     FILE* f = fopen(archive_path.c_str(), "rb");
     Header h; std::vector<FileEntry> toc;
     if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; return result; }
-    
     for (const auto& fe : toc) {
-        UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.comp_size, (Codec)fe.meta.codec);
+        UI::print_list_entry(fe.name, fe.meta.orig_size, 0, (Codec)fe.meta.codec);
         result.bytes_in += fe.meta.orig_size;
     }
     fclose(f); result.ok = true; return result;
 }
 
 TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
-    TarcResult r; r.ok = false; r.message = "Rimozione non disponibile in modalita SOLID (.strk)";
+    TarcResult r; r.ok = false; r.message = "Operazione non supportata in modo SOLID.";
     return r;
 }
 
