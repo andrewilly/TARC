@@ -3,9 +3,8 @@
 #include <string>
 #include <vector>
 
-// ─── MAGIC & VERSION ─────────────────────────────────────────────────────────
 #define TARC_MAGIC     "TARC"
-#define TARC_VERSION   104  // Aggiornato a 1.04
+#define TARC_VERSION   105  // Aggiornato v1.05
 #define CHUNK_SIZE     (4 * 1024 * 1024)
 #define TARC_EXT       ".tar4"
 
@@ -13,18 +12,21 @@ enum class Codec : uint8_t {
     ZSTD = 0,
     LZ4  = 1,
     LZMA = 2,
-    NONE = 3
+    NONE = 3,
+    BR   = 4  // Nuova implementazione Brotli
 };
 
 inline const char* codec_name(Codec c) {
     switch (c) {
         case Codec::ZSTD: return "ZSTD";
         case Codec::LZ4:  return "LZ4 ";
-        case Codec::LZMA: return "LZMA";
+        case Codec::LZMA: return "7ZIP";
         case Codec::NONE: return "NONE";
+        case Codec::BR:   return "BROT";
         default:          return "????";
     }
 }
+// ... resto del file invariato ...
 
 #pragma pack(push, 1)
 struct Header {
