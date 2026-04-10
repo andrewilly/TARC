@@ -11,7 +11,7 @@
 
 static int parse_level(const std::string& arg, int def = 3) {
     // 1. Controllo per i parametri testuali espliciti
-    if (arg == "-cbest") return 22; // Imposta il livello massimo (ZSTD 22 / LZMA Ultra)
+    if (arg == "-cbest") return 9; // Imposta il livello massimo (ZSTD 22 / LZMA Ultra)
     if (arg == "-cfast") return 1;  // Imposta il livello minimo (LZ4 / ZSTD 1)
 
     // 2. Controllo per il formato numerico classico (es. -c9)
