@@ -1,5 +1,4 @@
 #include "io.h"
-#include <cstring>
 #include <filesystem>
 #include <algorithm>
 
@@ -7,113 +6,76 @@ namespace fs = std::filesystem;
 
 namespace IO {
 
-bool read_bytes(FILE* f, void* buf, size_t size) {
-    if (!f) return false;
-    return fread(buf, 1, size, f) == size;
-}
-
-bool write_bytes(FILE* f, const void* buf, size_t size) {
-    if (!f) return false;
-    return fwrite(buf, 1, size, f) == size;
-}
-
-std::string ensure_ext(const std::string& path) {
-    const std::string ext = TARC_EXT;
-    if (path.size() < ext.size() ||
-        path.compare(path.size() - ext.size(), ext.size(), ext) != 0)
-        return path + ext;
-    return path;
-}
-
-void expand_path(const std::string& pattern, std::vector<std::string>& out) {
-    fs::path p(pattern);
-    if (fs::exists(p)) {
-        if (fs::is_directory(p)) {
-            for (auto const& entry : fs::recursive_directory_iterator(p)) {
-                if (fs::is_regular_file(entry)) out.push_back(entry.path().string());
-            }
-        } else {
-            out.push_back(p.string());
-        }
-        return;
+// Funzione aggiornata per il nuovo standard .strk
+std::string ensure_ext(const std::string& filename) {
+    std::string ext = ".strk";
+    if (filename.size() < ext.size() || 
+        filename.compare(filename.size() - ext.size(), ext.size(), ext) != 0) {
+        return filename + ext;
     }
-    
-    fs::path dir = p.has_parent_path() ? p.parent_path() : fs::current_path();
-    std::string filename = p.filename().string();
-    
-    if (filename.find('*') != std::string::npos) {
-        std::string suffix = filename.substr(filename.find('*') + 1);
-        if (fs::exists(dir)) {
-            for (auto const& entry : fs::directory_iterator(dir)) {
-                std::string ename = entry.path().filename().string();
-                if (suffix.empty() || (ename.size() >= suffix.size() && 
-                    ename.compare(ename.size() - suffix.size(), suffix.size(), suffix) == 0)) {
-                    out.push_back(entry.path().string());
-                }
-            }
-        }
-    }
+    return filename;
 }
 
-bool write_entry(FILE* f, const FileEntry& fe) {
-    Entry e;
-    e.offset = fe.meta.offset;
-    e.orig_size = fe.meta.orig_size;
-    e.comp_size = fe.meta.comp_size;
-    e.xxhash = fe.meta.xxhash;
-    e.timestamp = fe.meta.timestamp;
-    e.name_len = (uint16_t)fe.name.size();
-    e.codec = fe.meta.codec;
-
-    if (!write_bytes(f, &e, sizeof(e))) return false;
-    if (!write_bytes(f, fe.name.c_str(), e.name_len)) return false;
-    return true;
+bool read_bytes(FILE* f, void* buffer, size_t size) {
+    if (!f || !buffer) return false;
+    return fread(buffer, 1, size, f) == size;
 }
 
+bool write_bytes(FILE* f, const void* buffer, size_t size) {
+    if (!f || !buffer) return false;
+    return fwrite(buffer, 1, size, f) == size;
+}
+
+// Aggiornata per gestire correttamente l'header STRK
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
-    if (!f) return false;
-    rewind(f);
+    fseek(f, 0, SEEK_SET);
     if (!read_bytes(f, &h, sizeof(Header))) return false;
 
-    // Verifica Magic Number
-    if (memcmp(h.magic, TARC_MAGIC, 4) != 0) return false;
+    // Se il magic non è STRK, è un file incompatibile
+    if (std::memcmp(h.magic, "STRK", 4) != 0) return false;
 
-    // Retrocompatibilità: Accetta versione 103 e 104
-    if (h.version < 103) return false;
-
-    if (fseek(f, (long)h.toc_offset, SEEK_SET) != 0) return false;
-
-    uint32_t count = 0;
-    if (!read_bytes(f, &count, sizeof(count))) return false;
-
-    toc.clear();
-    toc.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
+    fseek(f, h.toc_offset, SEEK_SET);
+    for (uint32_t i = 0; i < h.file_count; ++i) {
         FileEntry fe;
-        if (!read_bytes(f, &fe.meta, sizeof(Entry))) break;
-        fe.name.resize(fe.meta.name_len);
-        if (!read_bytes(f, fe.name.data(), fe.meta.name_len)) break;
-        toc.push_back(std::move(fe));
+        uint32_t name_len;
+        if (!read_bytes(f, &name_len, sizeof(name_len))) return false;
+        
+        std::vector<char> name_buf(name_len);
+        if (!read_bytes(f, name_buf.data(), name_len)) return false;
+        fe.name.assign(name_buf.begin(), name_buf.end());
+        
+        if (!read_bytes(f, &fe.meta, sizeof(FileMeta))) return false;
+        toc.push_back(fe);
     }
     return true;
 }
 
-void write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
-    if (!f) return;
-    
-    h.version = TARC_VERSION; 
-    h.toc_offset = (uint64_t)ftell(f);
-    uint32_t count = (uint32_t)toc.size();
-    write_bytes(f, &count, sizeof(count));
-    
-    for (auto& fe : toc) {
-        fe.meta.name_len = (uint16_t)fe.name.size();
-        write_bytes(f, &fe.meta, sizeof(Entry));
-        write_bytes(f, fe.name.data(), fe.name.size());
+void write_toc(FILE* f, Header& h, const std::vector<FileEntry>& toc) {
+    h.toc_offset = ftell(f);
+    h.file_count = (uint32_t)toc.size();
+
+    for (const auto& fe : toc) {
+        uint32_t name_len = (uint32_t)fe.name.size();
+        write_bytes(f, &name_len, sizeof(name_len));
+        write_bytes(f, fe.name.data(), name_len);
+        write_bytes(f, &fe.meta, sizeof(FileMeta));
     }
-    
-    rewind(f);
+
+    // Aggiorna l'header all'inizio del file con l'offset finale della TOC
+    fseek(f, 0, SEEK_SET);
     write_bytes(f, &h, sizeof(Header));
+}
+
+void expand_path(const std::string& path, std::vector<std::string>& files) {
+    if (fs::is_regular_file(path)) {
+        files.push_back(path);
+    } else if (fs::is_directory(path)) {
+        for (const auto& entry : fs::recursive_directory_iterator(path)) {
+            if (fs::is_regular_file(entry)) {
+                files.push_back(entry.path().string());
+            }
+        }
+    }
 }
 
 } // namespace IO
