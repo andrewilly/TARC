@@ -34,29 +34,20 @@ void show_help() {
     const char* Y = Color::YELLOW;
     const char* D = Color::RED;
 
+void show_help() {
+    // ... variabili colori invariate ...
     printf("\n");
-    // Versione automatizzata nell'header dell'help
     printf("  TARC v1.0%d - HYBRID COMPRESSION ENGINE\n", TARC_VERSION % 100);
     printf("  ======================================\n\n");
     
-    printf("  %s%-12s%s %s- %sCrea archivio        (Livello 1-22, def: 3)%s\n", 
-           G, "-c[N]", R, G, W, R);
-    printf("  %s%-12s%s %s- %sLivello Massimo      (Best compression)%s\n", 
-           G, "-cbest", R, G, W, R);
-    printf("  %s%-12s%s %s- %sVelocità Massima     (Fastest)%s\n", 
-           G, "-cfast", R, G, W, R);
-    printf("  %s%-12s%s %s- %sAggiungi file        (Livello 1-22)%s\n", 
-           Y, "-a[N]", R, Y, W, R);
-    printf("  %s%-12s%s %s- %sEstrai tutto%s\n", 
-           G, "-x", R, G, W, R);
-    printf("  %s%-12s%s %s- %sElenca contenuto%s\n", 
-           G, "-l", R, G, W, R);
-    printf("  %s%-12s%s %s- %sTest integrita       (XXH64)%s\n", 
-           Y, "-t", R, Y, W, R);
-    printf("  %s%-12s%s %s- %sElimina file         (Wildcards supportati)%s\n", 
-           D, "-d", R, D, W, R);
+    printf("  %s%-12s%s %s- %sCrea/Aggiorna      (Livello 1-22)%s\n", G, "-c / -a", R, G, W, R);
+    printf("  %s%-12s%s %s- %sLivello Massimo   (7ZIP + BROTLI)%s\n", G, "-cbest", R, G, W, R);
+    printf("  %s%-12s%s %s- %sVelocità Massima  (LZ4)%s\n", G, "-cfast", R, G, W, R);
+    printf("  %s%-12s%s %s- %sEstrai tutto      (Ripristino percorsi)%s\n", C, "-x", R, C, W, R);
+    printf("  %s%-12s%s %s- %sElenca contenuto   (Dettagli codec)%s\n", G, "-l", R, G, W, R);
+    printf("  %s%-12s%s %s- %sTest integrita    (XXH64)%s\n", Y, "-t", R, Y, W, R);
     
-    printf("\n  Codec automatico: LZ4 (binari), ZSTD (generico), LZMA (testo)\n\n");
+    printf("\n  Codec: LZ4 (Rapido), ZSTD (Equilibrato), 7ZIP (Ultra), BROT (Testo)\n\n");
 }
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
