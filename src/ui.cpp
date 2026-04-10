@@ -48,13 +48,20 @@ void show_help() {
 }
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
-void show_banner() {
-    printf("%s%s   ████████╗ █████╗ ██████╗  ██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s   ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s      ██║   ███████║██████╔╝██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s      ██║   ██╔══██║██╔══██╗██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s      ██║   ██║  ██║██║  ██║╚██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
-    printf("%s%s      ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.0%d\n\n", Color::BOLD, Color::DIM, Color::RESET, TARC_VERSION % 100);
+//void show_banner() {
+//    printf("%s%s   ████████╗ █████╗ ██████╗  ██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+//    printf("%s%s   ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+//    printf("%s%s      ██║   ███████║██████╔╝██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+//    printf("%s%s      ██║   ██╔══██║██╔══██╗██║      %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+//    printf("%s%s      ██║   ██║  ██║██║  ██║╚██████╗ %s\n", Color::BOLD, Color::CYAN, Color::RESET);
+//    printf("%s%s      ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ %sv1.0%d\n\n", Color::BOLD, Color::DIM, Color::RESET, TARC_VERSION % 100);
+//}
+
+void UI::show_banner() {
+    std::cout << "==========================================\n";
+    std::cout << "          TARC STRIKE v1.10               \n";
+    std::cout << "      Solid Compression Engine            \n";
+    std::cout << "==========================================\n\n";
 }
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
