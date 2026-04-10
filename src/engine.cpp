@@ -15,8 +15,8 @@
 #include "lz4.h"
 #include "lz4hc.h"
 #include "lzma.h"
-#include <brotli/encode.h> // [NEW v1.05]
-#include <brotli/decode.h> // [NEW v1.05]
+#include <brotli/encode.h>
+#include <brotli/decode.h>
 
 extern "C" {
     #include "xxhash.h"
@@ -42,7 +42,7 @@ static const std::set<std::string> DB_EXTS = {
     ".mdb", ".accdb", ".mde", ".accde", ".mda", ".mdw"
 };
 
-static double calculate_entropy(const uint8_t* data, size_t size) {
+[[maybe_unused]] static double calculate_entropy(const uint8_t* data, size_t size) {
     if (size == 0) return 0;
     size_t counts[256] = {0};
     for (size_t i = 0; i < size; ++i) counts[data[i]]++;
@@ -62,7 +62,6 @@ Codec select(const std::string& path, int level) {
 
     if (COMPRESSED_EXTS.count(ext)) return Codec::LZ4;
     
-    // [MOD v1.05] Se il livello è alto (es. -cbest), prediligi Brotli o LZMA per il testo
     if (TEXT_EXTS.count(ext)) {
         if (level >= 15) return Codec::BR; 
         return Codec::LZMA;
@@ -75,7 +74,7 @@ Codec select(const std::string& path, int level) {
 
 namespace Engine {
 
-// ─── HELPER COMPRESSIONE CHUNK [MOD v1.05] ───────────────────────────────────
+// ─── HELPER COMPRESSIONE CHUNK ───────────────────────────────────────────────
 static std::pair<bool, size_t> compress_chunk(Codec codec, const void* src, size_t src_sz, void* dst, size_t dst_cap, int level) {
     size_t c_sz = 0;
     
@@ -88,7 +87,6 @@ static std::pair<bool, size_t> compress_chunk(Codec codec, const void* src, size
         else c_sz = LZ4_compress_default((const char*)src, (char*)dst, (int)src_sz, (int)dst_cap);
         if (c_sz <= 0) return {false, 0};
     }
-    // [NEW v1.05] Implementazione effettiva compressione LZMA
     else if (codec == Codec::LZMA) {
         uint32_t preset = (level > 9) ? 9 : (level < 0 ? 0 : level); 
         size_t out_pos = 0;
@@ -98,10 +96,9 @@ static std::pair<bool, size_t> compress_chunk(Codec codec, const void* src, size
         if (ret != LZMA_OK) return {false, 0};
         c_sz = out_pos;
     }
-    // [NEW v1.05] Implementazione compressione BROTLI
     else if (codec == Codec::BR) {
         size_t out_sz = dst_cap;
-        int br_qual = std::min(11, level / 2); // Mappa 1-22 su 1-11
+        int br_qual = std::min(11, level / 2);
         if (!BrotliEncoderCompress(br_qual, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
                                    src_sz, (const uint8_t*)src, &out_sz, (uint8_t*)dst)) {
             return {false, 0};
@@ -122,8 +119,8 @@ static uint64_t get_file_timestamp(const std::string& path) {
     } catch (...) { return 0; }
 }
 
-// ─── CREATE / ADD ────────────────────────────────────────────────────────────
-TarcResult create(const std::string& archive_path, const std::vector<std::string>& files, int level, bool append) {
+// ─── COMPRESS (ex create) ────────────────────────────────────────────────────
+TarcResult compress(const std::string& archive_path, const std::vector<std::string>& files, bool append, int level) {
     TarcResult result;
     Header h; 
     std::vector<FileEntry> toc;
@@ -176,7 +173,6 @@ TarcResult create(const std::string& archive_path, const std::vector<std::string
         fe.meta.timestamp = ts;
         
         Codec codec = CodecSelector::select(path, level);
-        // Boost per Database
         int active_level = level;
         std::string ext = fs::path(path).extension().string();
         if (CodecSelector::DB_EXTS.count(ext)) {
@@ -237,7 +233,7 @@ TarcResult create(const std::string& archive_path, const std::vector<std::string
     return result;
 }
 
-// ─── EXTRACT / TEST [MOD v1.05] ──────────────────────────────────────────────
+// ─── EXTRACT / TEST ──────────────────────────────────────────────────────────
 TarcResult extract(const std::string& archive_path, bool test_only) {
     TarcResult result;
     FILE* f = fopen(archive_path.c_str(), "rb");
@@ -266,22 +262,20 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
             if (!IO::read_bytes(f, &ch, sizeof(ch)) || ch.raw_size == 0) break;
             IO::read_bytes(f, c_buf.data(), ch.comp_size);
 
-            // [NEW v1.05] Logica di decompressione completa
             if (fe.meta.codec == (uint8_t)Codec::ZSTD) {
                 ZSTD_decompressDCtx(dctx, d_buf.data(), ch.raw_size, c_buf.data(), ch.comp_size);
             } 
             else if (fe.meta.codec == (uint8_t)Codec::LZ4) {
                 LZ4_decompress_safe(c_buf.data(), d_buf.data(), (int)ch.comp_size, (int)ch.raw_size);
             }
-            // [NEW v1.05] Decompressione LZMA (7-Zip)
             else if (fe.meta.codec == (uint8_t)Codec::LZMA) {
-                uint64_t memlimit = 100 * 1024 * 1024; // 100MB
+                uint64_t memlimit = 100 * 1024 * 1024;
                 size_t in_pos = 0, out_pos = 0;
-                lzma_stream_buffer_decode(&memlimit, 0, NULL, (const uint8_t*)c_buf.data(), 
-                                          &in_pos, ch.comp_size, (uint8_t*)d_buf.data(), 
-                                          &out_pos, ch.raw_size);
+                lzma_ret ret = lzma_stream_buffer_decode(&memlimit, 0, NULL, (const uint8_t*)c_buf.data(), 
+                                                         &in_pos, ch.comp_size, (uint8_t*)d_buf.data(), 
+                                                         &out_pos, ch.raw_size);
+                (void)ret;
             }
-            // [NEW v1.05] Decompressione BROTLI (Google)
             else if (fe.meta.codec == (uint8_t)Codec::BR) {
                 size_t decoded_sz = ch.raw_size;
                 BrotliDecoderDecompress(ch.comp_size, (const uint8_t*)c_buf.data(), 
@@ -327,7 +321,8 @@ TarcResult list(const std::string& archive_path) {
     return result;
 }
 
-TarcResult remove(const std::string& archive_path, const std::vector<std::string>& patterns) {
+// ─── REMOVE_FILES (ex remove) ────────────────────────────────────────────────
+TarcResult remove_files(const std::string& archive_path, const std::vector<std::string>& patterns) {
     TarcResult result;
     FILE* f = fopen(archive_path.c_str(), "rb+");
     if (!f) { result.ok = false; result.message = "Impossibile aprire l'archivio"; return result; }
@@ -355,15 +350,13 @@ TarcResult remove(const std::string& archive_path, const std::vector<std::string
         return result;
     }
 
-    // Riscrivi la TOC aggiornata
-    h.toc_offset = ftell(f); // Opzionale: potresti voler compattare, ma per ora riscriviamo alla fine
+    h.toc_offset = ftell(f); 
     fseek(f, h.toc_offset, SEEK_SET);
     
     for (auto& fe : next_toc) {
         IO::write_entry(f, fe);
     }
     
-    // Aggiorna l'header iniziale
     fseek(f, 0, SEEK_SET);
     IO::write_bytes(f, &h, sizeof(h));
 
