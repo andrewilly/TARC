@@ -55,6 +55,21 @@ void expand_path(const std::string& pattern, std::vector<std::string>& out) {
     }
 }
 
+bool IO::write_entry(FILE* f, const FileEntry& fe) {
+    Entry e;
+    e.offset = fe.meta.offset;
+    e.orig_size = fe.meta.orig_size;
+    e.comp_size = fe.meta.comp_size;
+    e.xxhash = fe.meta.xxhash;
+    e.timestamp = fe.meta.timestamp;
+    e.name_len = (uint16_t)fe.name.size();
+    e.codec = fe.meta.codec;
+
+    if (!write_bytes(f, &e, sizeof(e))) return false;
+    if (!write_bytes(f, fe.name.c_str(), e.name_len)) return false;
+    return true;
+}
+
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (!f) return false;
     rewind(f);
