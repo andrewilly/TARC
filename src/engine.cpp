@@ -98,8 +98,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     if (append && IO::read_toc(f, h, toc)) { 
         fseek(f, (long)h.toc_offset, SEEK_SET); 
     } else { 
-        memcpy(h.magic, TARC_MAGIC, 4); 
-        h.version = TARC_VERSION; 
+        // Nuovo identificatore Solid Tarc Strike
+        memcpy(h.magic, "STRK", 4); 
+        h.version = 105; 
         IO::write_bytes(f, &h, sizeof(h)); 
     }
 
@@ -164,7 +165,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     ChunkHeader end = {0, 0}; 
     IO::write_bytes(f, &end, sizeof(end));
     
-    // Correzione errore di tipo: IO::write_toc restituisce void
     IO::write_toc(f, h, toc);
 
     fclose(f);
@@ -176,7 +176,21 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
     TarcResult result;
     FILE* f = fopen(archive_path.c_str(), "rb");
     Header h; std::vector<FileEntry> toc;
-    if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; result.message="Archivio corrotto"; return result; }
+    
+    if (!f || !IO::read_toc(f, h, toc)) { 
+        if(f) fclose(f); 
+        result.ok = false; 
+        result.message="Archivio corrotto o illeggibile."; 
+        return result; 
+    }
+
+    // CONTROLLO COMPATIBILITÀ MAGIC NUMBER
+    if (memcmp(h.magic, "STRK", 4) != 0) {
+        fclose(f);
+        result.ok = false;
+        result.message = "Formato .tar4 legacy non supportato. Usare la versione 1.04 o convertire in .strk";
+        return result;
+    }
     
     ZSTD_DCtx* dctx = ZSTD_createDCtx();
     std::vector<char> c_buf, d_buf;
@@ -198,7 +212,6 @@ TarcResult extract(const std::string& archive_path, bool test_only) {
         else if (fe_sample.meta.codec == (uint8_t)Codec::LZ4) LZ4_decompress_safe(c_buf.data(), d_buf.data(), ch.comp_size, ch.raw_size);
         else if (fe_sample.meta.codec == (uint8_t)Codec::LZMA) {
              uint64_t mem = 256*1024*1024; size_t ip=0, op=0;
-             // Ignoriamo il valore di ritorno esplicitamente per pulire il warning
              (void)lzma_stream_buffer_decode(&mem, 0, NULL, (uint8_t*)c_buf.data(), &ip, ch.comp_size, (uint8_t*)d_buf.data(), &op, ch.raw_size);
         }
         else if (fe_sample.meta.codec == (uint8_t)Codec::BR) {
@@ -238,6 +251,14 @@ TarcResult list(const std::string& archive_path) {
     FILE* f = fopen(archive_path.c_str(), "rb");
     Header h; std::vector<FileEntry> toc;
     if (!f || !IO::read_toc(f, h, toc)) { if(f) fclose(f); result.ok = false; return result; }
+    
+    // Anche qui, controllo magic per coerenza
+    if (memcmp(h.magic, "STRK", 4) != 0) {
+        fclose(f);
+        result.ok = false;
+        return result;
+    }
+
     for (const auto& fe : toc) {
         UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.comp_size, (Codec)fe.meta.codec);
         result.bytes_in += fe.meta.orig_size;
@@ -246,7 +267,7 @@ TarcResult list(const std::string& archive_path) {
 }
 
 TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
-    TarcResult r; r.ok = false; r.message = "Rimozione non disponibile in modalita SOLID";
+    TarcResult r; r.ok = false; r.message = "Rimozione non disponibile in modalita SOLID (.strk)";
     return r;
 }
 
