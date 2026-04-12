@@ -35,13 +35,12 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
     res.data.resize(res.raw_size + 65536);
     res.is_compressed = false;
 
-    // Mapping del livello per LZMA (max 9)
     uint32_t lzma_level = (level < 0) ? 6 : (level > 9 ? 9 : (uint32_t)level);
 
     if (codec == Codec::LZMA) {
         lzma_options_lzma opt;
         lzma_lzma_preset(&opt, lzma_level);
-        opt.dict_size = 128 * 1024 * 1024; // 128MB Dictionary per Solid compression
+        opt.dict_size = 128 * 1024 * 1024; 
         lzma_filter filters[] = {{ LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL }};
         size_t out_pos = 0;
         lzma_ret ret = lzma_stream_buffer_encode(filters, LZMA_CHECK_CRC64, NULL, 
@@ -52,7 +51,6 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
             res.is_compressed = (out_pos < src.size());
         }
     } else {
-        // Fallback su ZSTD per velocità se necessario
         size_t const c_sz = ZSTD_compress(res.data.data(), res.data.size(), src.data(), src.size(), 3);
         if (!ZSTD_isError(c_sz)) { 
             res.comp_size = (uint32_t)c_sz; 
@@ -72,7 +70,7 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
 // ─── COMPRESS (SOLID + DEDUPLICATION) ───────────────────────────────────────
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& files, bool append, int level) {
-    (void)append; // Append non supportato in modalità Solid semplice
+    (void)append; 
     TarcResult result;
     ::Header h; 
     std::vector<Engine::FileEntry> toc;
@@ -86,7 +84,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 512 * 1024 * 1024; // 512MB blocchi solid
+    const size_t SOLID_BLOCK_SIZE = 512 * 1024 * 1024;
 
     for (const auto& file_path : files) {
         if (!fs::is_regular_file(file_path)) continue;
@@ -100,7 +98,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         in.read(file_data.data(), fe.meta.orig_size);
         in.close();
 
-        // Deduplicazione tramite XXHash
         fe.meta.xxhash = XXH64(file_data.data(), file_data.size(), 0);
 
         if (hash_map.count(fe.meta.xxhash)) {
@@ -112,6 +109,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         }
 
         hash_map[fe.meta.xxhash] = static_cast<uint32_t>(toc.size());
+        fe.meta.is_duplicate = false;
         solid_buffer.insert(solid_buffer.end(), file_data.begin(), file_data.end());
         
         if (solid_buffer.size() >= SOLID_BLOCK_SIZE) {
@@ -128,7 +126,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         UI::print_add(fe.name, fe.meta.orig_size, Codec::LZMA, 0.0f);
     }
 
-    // Ultimo blocco solid
     if (!solid_buffer.empty()) {
         CompressedChunk cc = worker_compress_mt(Codec::LZMA, std::move(solid_buffer), level);
         ::ChunkHeader ch = { cc.raw_size, cc.comp_size };
@@ -136,11 +133,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fwrite(cc.data.data(), 1, cc.comp_size, f);
     }
 
-    // Fine degli stream dati
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    // Scrittura del Table of Contents
     IO::write_toc(f, h, (std::vector<::FileEntry>&)toc); 
     
     fclose(f);
@@ -161,15 +156,16 @@ TarcResult list(const std::string& arch_path) {
         return {false, "File non riconosciuto come archivio TARC"};
     }
 
-    std::vector<::FileEntry> toc;
-    if (!IO::read_toc(f, h, toc)) {
+    // Usiamo Engine::FileEntry invece di ::FileEntry per avere accesso a is_duplicate
+    std::vector<Engine::FileEntry> toc;
+    if (!IO::read_toc(f, h, (std::vector<::FileEntry>&)toc)) {
         fclose(f);
         return {false, "Indice dell'archivio (TOC) danneggiato o assente"};
     }
 
     for (const auto& fe : toc) {
-        // In modalità Solid la dimensione compressa del singolo file è virtuale.
-        // Se è un duplicato, la comp_size viene mostrata come 0 per indicare il risparmio.
+        // Se fe.meta.is_duplicate non esiste nella struttura globale, 
+        // usiamo un controllo di sicurezza tramite la versione locale Engine::FileEntry
         uint64_t virtual_comp = fe.meta.is_duplicate ? 0 : fe.meta.orig_size;
         UI::print_list_entry(fe.name, fe.meta.orig_size, virtual_comp, (Codec)fe.meta.codec);
     }
@@ -186,11 +182,9 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
     if (!res.ok) return res;
 
     if (test_only) {
-        return {true, "Test completato: Struttura archivio valida."};
+        return {true, "Verifica completata: Struttura archivio valida."};
     }
 
-    // Nota: L'estrazione dei blocchi Solid richiede un buffer circolare o seek
-    // per ricostruire i file dai blocchi decompressi.
     return {false, "Estrazione Solid non ancora implementata."};
 }
 
