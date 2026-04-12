@@ -29,17 +29,19 @@ struct CompressedChunk {
     bool is_compressed;
 };
 
-// Worker per la compressione effettiva dei blocchi Solid
 static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, int level) {
     CompressedChunk res;
     res.raw_size = (uint32_t)src.size();
     res.data.resize(res.raw_size + 65536);
     res.is_compressed = false;
 
+    // Mapping del livello per LZMA (max 9)
+    uint32_t lzma_level = (level < 0) ? 6 : (level > 9 ? 9 : (uint32_t)level);
+
     if (codec == Codec::LZMA) {
         lzma_options_lzma opt;
-        lzma_lzma_preset(&opt, 9);
-        opt.dict_size = 128 * 1024 * 1024; // 128MB Dictionary per Solid
+        lzma_lzma_preset(&opt, lzma_level);
+        opt.dict_size = 128 * 1024 * 1024; // 128MB Dictionary per Solid compression
         lzma_filter filters[] = {{ LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL }};
         size_t out_pos = 0;
         lzma_ret ret = lzma_stream_buffer_encode(filters, LZMA_CHECK_CRC64, NULL, 
@@ -50,7 +52,7 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
             res.is_compressed = (out_pos < src.size());
         }
     } else {
-        // Default ZSTD per i livelli standard
+        // Fallback su ZSTD per velocità se necessario
         size_t const c_sz = ZSTD_compress(res.data.data(), res.data.size(), src.data(), src.size(), 3);
         if (!ZSTD_isError(c_sz)) { 
             res.comp_size = (uint32_t)c_sz; 
@@ -67,37 +69,38 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
     return res;
 }
 
-// ─── COMPRESS (MODALITÀ SOLID + DEDUPLICAZIONE) ──────────────────────────────
+// ─── COMPRESS (SOLID + DEDUPLICATION) ───────────────────────────────────────
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& files, bool append, int level) {
+    (void)append; // Append non supportato in modalità Solid semplice
     TarcResult result;
     ::Header h; 
     std::vector<Engine::FileEntry> toc;
     std::map<uint64_t, uint32_t> hash_map;
 
     FILE* f = fopen(archive_path.c_str(), "wb");
-    if (!f) return {false, "Errore: Impossibile creare il file archivio"};
+    if (!f) return {false, "Errore: Impossibile creare l'archivio"};
 
     memcpy(h.magic, "STRK", 4);
     h.version = 110;
     fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 512 * 1024 * 1024; // 512MB Solid Block
+    const size_t SOLID_BLOCK_SIZE = 512 * 1024 * 1024; // 512MB blocchi solid
 
-    for (uint32_t i = 0; i < files.size(); ++i) {
-        if (!fs::is_regular_file(files[i])) continue;
+    for (const auto& file_path : files) {
+        if (!fs::is_regular_file(file_path)) continue;
         
         Engine::FileEntry fe;
-        fe.name = fs::relative(files[i]).string();
-        fe.meta.orig_size = fs::file_size(files[i]);
+        fe.name = fs::relative(file_path).string();
+        fe.meta.orig_size = fs::file_size(file_path);
         
-        std::ifstream in(files[i], std::ios::binary);
+        std::ifstream in(file_path, std::ios::binary);
         std::vector<char> file_data(fe.meta.orig_size);
         in.read(file_data.data(), fe.meta.orig_size);
         in.close();
 
-        // Calcolo XXH64 per deduplicazione
+        // Deduplicazione tramite XXHash
         fe.meta.xxhash = XXH64(file_data.data(), file_data.size(), 0);
 
         if (hash_map.count(fe.meta.xxhash)) {
@@ -125,6 +128,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         UI::print_add(fe.name, fe.meta.orig_size, Codec::LZMA, 0.0f);
     }
 
+    // Ultimo blocco solid
     if (!solid_buffer.empty()) {
         CompressedChunk cc = worker_compress_mt(Codec::LZMA, std::move(solid_buffer), level);
         ::ChunkHeader ch = { cc.raw_size, cc.comp_size };
@@ -132,11 +136,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fwrite(cc.data.data(), 1, cc.comp_size, f);
     }
 
-    // Segnale fine stream dati
+    // Fine degli stream dati
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    // Scrittura Indice (TOC) - Cast necessario per compatibilità con io.h
+    // Scrittura del Table of Contents
     IO::write_toc(f, h, (std::vector<::FileEntry>&)toc); 
     
     fclose(f);
@@ -144,7 +148,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-// ─── LIST (VISUALIZZAZIONE CONTENUTO) ────────────────────────────────────────
+// ─── LIST (LISTA FILE) ──────────────────────────────────────────────────────
 
 TarcResult list(const std::string& arch_path) {
     TarcResult result;
@@ -154,20 +158,20 @@ TarcResult list(const std::string& arch_path) {
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "STRK", 4) != 0) {
         fclose(f);
-        return {false, "Formato file non valido"};
+        return {false, "File non riconosciuto come archivio TARC"};
     }
 
     std::vector<::FileEntry> toc;
     if (!IO::read_toc(f, h, toc)) {
         fclose(f);
-        return {false, "Errore nella lettura del Table of Contents (TOC)"};
+        return {false, "Indice dell'archivio (TOC) danneggiato o assente"};
     }
 
-    UI::print_list_header();
     for (const auto& fe : toc) {
-        // Visualizza ratio 100% se è un duplicato (spazio risparmiato totalmente)
-        float ratio = fe.meta.is_duplicate ? 100.0f : 0.0f;
-        UI::print_list_item(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, ratio);
+        // In modalità Solid la dimensione compressa del singolo file è virtuale.
+        // Se è un duplicato, la comp_size viene mostrata come 0 per indicare il risparmio.
+        uint64_t virtual_comp = fe.meta.is_duplicate ? 0 : fe.meta.orig_size;
+        UI::print_list_entry(fe.name, fe.meta.orig_size, virtual_comp, (Codec)fe.meta.codec);
     }
 
     fclose(f);
@@ -175,25 +179,26 @@ TarcResult list(const std::string& arch_path) {
     return result;
 }
 
-// ─── EXTRACT (TEST E ESTRAZIONE) ────────────────────────────────────────────
+// ─── EXTRACT / TEST ─────────────────────────────────────────────────────────
 
 TarcResult extract(const std::string& arch_path, bool test_only) {
-    // Il comando -t usa questa funzione. Per ora validiamo il TOC e la struttura.
     TarcResult res = list(arch_path);
     if (!res.ok) return res;
 
     if (test_only) {
-        UI::print_info("Verifica integrità completata: Archivio strutturalmente valido.");
-        return {true, ""};
+        return {true, "Test completato: Struttura archivio valida."};
     }
 
-    return {false, "Estrazione Solid non ancora supportata in questa versione."};
+    // Nota: L'estrazione dei blocchi Solid richiede un buffer circolare o seek
+    // per ricostruire i file dai blocchi decompressi.
+    return {false, "Estrazione Solid non ancora implementata."};
 }
 
-// ─── ALTRE OPERAZIONI ────────────────────────────────────────────────────────
+// ─── REMOVE ─────────────────────────────────────────────────────────────────
 
 TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns) {
-    return {false, "Rimozione file non supportata in modalità Solid (richiede ricostruzione)"};
+    (void)arch_path; (void)patterns;
+    return {false, "La rimozione file non è supportata in modalità Solid."};
 }
 
 } // namespace Engine
