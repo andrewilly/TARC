@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-#include "types.h" // Qui dentro ci sono già Header, TarcResult, ecc.
+#include "types.h"
 
 namespace CodecSelector {
     Codec select(const std::string& path, int level);
@@ -11,20 +11,22 @@ namespace CodecSelector {
 
 namespace Engine {
 
-    // Usiamo le strutture definite in types.h per coerenza globale
-    // Aggiungiamo solo i campi necessari alla deduplicazione se non ci sono in types.h
-    // Se FileMeta è già in types.h, assicurati che abbia is_duplicate e duplicate_of_idx
+    // Definiamo la nostra struttura Meta interna per essere sicuri che abbia i campi
+    struct FileMeta {
+        uint64_t orig_size;
+        uint64_t timestamp;
+        uint64_t xxhash;
+        uint8_t  codec;
+        bool     is_duplicate = false;      // <--- IL CAMPO MANCANTE
+        uint32_t duplicate_of_idx = 0;      // <--- IL CAMPO MANCANTE
+    };
 
-    /**
-     * Comprimi/aggiungi files nell'archivio.
-     */
-    TarcResult compress(
-        const std::string&              arch_path,
-        const std::vector<std::string>& files,
-        bool                            append,
-        int                             level
-    );
+    struct FileEntry {
+        std::string name;
+        FileMeta meta;
+    };
 
+    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
     TarcResult extract(const std::string& arch_path, bool test_only);
     TarcResult list(const std::string& arch_path);
     TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
