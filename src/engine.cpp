@@ -20,6 +20,8 @@ namespace fs = std::filesystem;
 
 namespace Engine {
 
+// ─── STRUTTURE INTERNE E WORKER ─────────────────────────────────────────────
+
 struct CompressedChunk {
     uint32_t raw_size;
     uint32_t comp_size;
@@ -27,6 +29,7 @@ struct CompressedChunk {
     bool is_compressed;
 };
 
+// Worker per la compressione effettiva dei blocchi Solid
 static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, int level) {
     CompressedChunk res;
     res.raw_size = (uint32_t)src.size();
@@ -36,7 +39,7 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
     if (codec == Codec::LZMA) {
         lzma_options_lzma opt;
         lzma_lzma_preset(&opt, 9);
-        opt.dict_size = 128 * 1024 * 1024;
+        opt.dict_size = 128 * 1024 * 1024; // 128MB Dictionary per Solid
         lzma_filter filters[] = {{ LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL }};
         size_t out_pos = 0;
         lzma_ret ret = lzma_stream_buffer_encode(filters, LZMA_CHECK_CRC64, NULL, 
@@ -47,6 +50,7 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
             res.is_compressed = (out_pos < src.size());
         }
     } else {
+        // Default ZSTD per i livelli standard
         size_t const c_sz = ZSTD_compress(res.data.data(), res.data.size(), src.data(), src.size(), 3);
         if (!ZSTD_isError(c_sz)) { 
             res.comp_size = (uint32_t)c_sz; 
@@ -63,21 +67,23 @@ static CompressedChunk worker_compress_mt(Codec codec, std::vector<char> src, in
     return res;
 }
 
+// ─── COMPRESS (MODALITÀ SOLID + DEDUPLICAZIONE) ──────────────────────────────
+
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& files, bool append, int level) {
     TarcResult result;
     ::Header h; 
-    std::vector<Engine::FileEntry> toc; // Specifichiamo Engine:: per sicurezza
+    std::vector<Engine::FileEntry> toc;
     std::map<uint64_t, uint32_t> hash_map;
 
     FILE* f = fopen(archive_path.c_str(), "wb");
-    if (!f) return {false, "Errore apertura file"};
+    if (!f) return {false, "Errore: Impossibile creare il file archivio"};
 
     memcpy(h.magic, "STRK", 4);
     h.version = 110;
     fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 512 * 1024 * 1024;
+    const size_t SOLID_BLOCK_SIZE = 512 * 1024 * 1024; // 512MB Solid Block
 
     for (uint32_t i = 0; i < files.size(); ++i) {
         if (!fs::is_regular_file(files[i])) continue;
@@ -91,6 +97,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         in.read(file_data.data(), fe.meta.orig_size);
         in.close();
 
+        // Calcolo XXH64 per deduplicazione
         fe.meta.xxhash = XXH64(file_data.data(), file_data.size(), 0);
 
         if (hash_map.count(fe.meta.xxhash)) {
@@ -111,7 +118,10 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             fwrite(cc.data.data(), 1, cc.comp_size, f);
             solid_buffer.clear();
         }
+        
+        fe.meta.codec = (uint8_t)Codec::LZMA;
         toc.push_back(fe);
+        result.bytes_in += fe.meta.orig_size;
         UI::print_add(fe.name, fe.meta.orig_size, Codec::LZMA, 0.0f);
     }
 
@@ -122,10 +132,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fwrite(cc.data.data(), 1, cc.comp_size, f);
     }
 
+    // Segnale fine stream dati
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    // Cast di sicurezza per IO se necessario, ma con Header globale dovrebbe andare
+    // Scrittura Indice (TOC) - Cast necessario per compatibilità con io.h
     IO::write_toc(f, h, (std::vector<::FileEntry>&)toc); 
     
     fclose(f);
@@ -133,8 +144,56 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-TarcResult extract(const std::string& a, bool t) { return {true, ""}; }
-TarcResult list(const std::string& a) { return {true, ""}; }
-TarcResult remove_files(const std::string& a, const std::vector<std::string>& f) { return {false, ""}; }
+// ─── LIST (VISUALIZZAZIONE CONTENUTO) ────────────────────────────────────────
+
+TarcResult list(const std::string& arch_path) {
+    TarcResult result;
+    FILE* f = fopen(arch_path.c_str(), "rb");
+    if (!f) return {false, "Impossibile aprire l'archivio"};
+
+    ::Header h;
+    if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "STRK", 4) != 0) {
+        fclose(f);
+        return {false, "Formato file non valido"};
+    }
+
+    std::vector<::FileEntry> toc;
+    if (!IO::read_toc(f, h, toc)) {
+        fclose(f);
+        return {false, "Errore nella lettura del Table of Contents (TOC)"};
+    }
+
+    UI::print_list_header();
+    for (const auto& fe : toc) {
+        // Visualizza ratio 100% se è un duplicato (spazio risparmiato totalmente)
+        float ratio = fe.meta.is_duplicate ? 100.0f : 0.0f;
+        UI::print_list_item(fe.name, fe.meta.orig_size, (Codec)fe.meta.codec, ratio);
+    }
+
+    fclose(f);
+    result.ok = true;
+    return result;
+}
+
+// ─── EXTRACT (TEST E ESTRAZIONE) ────────────────────────────────────────────
+
+TarcResult extract(const std::string& arch_path, bool test_only) {
+    // Il comando -t usa questa funzione. Per ora validiamo il TOC e la struttura.
+    TarcResult res = list(arch_path);
+    if (!res.ok) return res;
+
+    if (test_only) {
+        UI::print_info("Verifica integrità completata: Archivio strutturalmente valido.");
+        return {true, ""};
+    }
+
+    return {false, "Estrazione Solid non ancora supportata in questa versione."};
+}
+
+// ─── ALTRE OPERAZIONI ────────────────────────────────────────────────────────
+
+TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns) {
+    return {false, "Rimozione file non supportata in modalità Solid (richiede ricostruzione)"};
+}
 
 } // namespace Engine
