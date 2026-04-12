@@ -1,31 +1,51 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <cstdint>
 #include "types.h"
 
 // ─── SELEZIONE AUTOMATICA CODEC ──────────────────────────────────────────────
 namespace CodecSelector {
-
     // Seleziona automaticamente il codec migliore in base all'estensione e al livello.
-    // [MOD v1.05] Ora integra Brotli per i livelli "Ultra" e gestisce la logica Solid.
     Codec select(const std::string& path, int level);
 
-    // Stima se un buffer ha alta entropia (usato per decidere se saltare la compressione)
+    // Stima se un buffer ha alta entropia
     bool is_high_entropy(const uint8_t* data, size_t len);
-
-} // namespace CodecSelector
+}
 
 // ─── ENGINE (MODALITÀ SOLID & PARALLEL) ──────────────────────────────────────
 namespace Engine {
 
+    // [MOD v1.06] Struttura metadati con supporto Deduplicazione
+    struct FileMeta {
+        uint64_t orig_size;
+        uint64_t timestamp;
+        uint64_t xxhash;
+        uint8_t  codec;
+        bool     is_duplicate = false;      // Necessario per la deduplicazione
+        uint32_t duplicate_of_idx = 0;      // Indice del file originale
+    };
+
+    struct FileEntry {
+        std::string name;
+        FileMeta meta;
+    };
+
+    // Strutture per il formato binario dell'archivio
+    struct Header {
+        char magic[4];
+        uint16_t version;
+    };
+
+    struct ChunkHeader {
+        uint32_t raw_size;
+        uint32_t comp_size;
+    };
+
     /**
      * Comprimi/aggiungi files nell'archivio.
-     * [SOLID] I file vengono concatenati in blocchi da 16MB per massimizzare il ratio.
-     * [PARALLEL] I blocchi vengono compressi usando tutti i core disponibili.
-     * * @param arch_path Percorso dell'archivio .tar4
-     * @param files     Lista dei percorsi dei file da aggiungere
-     * @param append    Se true, aggiunge alla fine (disabilita Solid per quel blocco)
-     * @param level     Livello di compressione (1-22). 22 attiva Brotli/LZMA Extreme.
+     * [SOLID] I file vengono concatenati in blocchi grandi per massimizzare il ratio.
+     * [DEDUPLICATION] Evita di comprimere dati identici calcolando l'hash XXH64.
      */
     TarcResult compress(
         const std::string&              arch_path,
@@ -36,9 +56,6 @@ namespace Engine {
 
     /**
      * Estrai o testa l'archivio.
-     * [SOLID] Legge l'archivio sequenzialmente per ricostruire i file dai blocchi.
-     * * @param arch_path Percorso dell'archivio da leggere
-     * @param test_only Se true, verifica solo l'integrità tramite XXH64
      */
     TarcResult extract(
         const std::string& arch_path,
@@ -47,7 +64,6 @@ namespace Engine {
 
     /**
      * Elimina file dall'archivio tramite pattern matching.
-     * Nota: In modalità Solid, questa operazione richiede la ricostruzione dei blocchi.
      */
     TarcResult remove_files(
         const std::string&              arch_path,
@@ -55,7 +71,7 @@ namespace Engine {
     );
 
     /**
-     * Lista il contenuto dell'archivio mostrando ratio e codec usato per ogni file.
+     * Lista il contenuto dell'archivio.
      */
     TarcResult list(const std::string& arch_path);
 
