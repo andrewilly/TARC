@@ -10,28 +10,29 @@ namespace fs = std::filesystem;
 
 namespace IO {
 
-// Aggiunge .tar4 se manca (usata nel main)
+// Aggiornato all'estensione del nuovo progetto Solid: .strk
 std::string ensure_ext(const std::string& path) {
-    if (path.length() < 5 || path.substr(path.length() - 5) != ".tar4") {
-        return path + ".tar4";
+    if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {
+        return path + ".strk";
     }
     return path;
 }
 
-// Esplora cartelle e pattern (usata nel main)
+// Esplora cartelle e pattern (Risolve l'errore del linker in main.cpp)
 void expand_path(const std::string& pattern, std::vector<std::string>& out) {
     try {
-        if (fs::is_directory(pattern)) {
-            for (const auto& entry : fs::recursive_directory_iterator(pattern)) {
+        fs::path p(pattern);
+        if (fs::is_directory(p)) {
+            for (const auto& entry : fs::recursive_directory_iterator(p)) {
                 if (fs::is_regular_file(entry)) {
                     out.push_back(entry.path().string());
                 }
             }
-        } else if (fs::exists(pattern)) {
+        } else if (fs::exists(p)) {
             out.push_back(pattern);
         }
     } catch (...) {
-        // Silenzioso se il path non è accessibile
+        // Silenzioso in caso di percorsi inaccessibili
     }
 }
 
@@ -83,8 +84,9 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
         }
         out.close();
 
+        // Ripristino timestamp originale
         auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
-        fs::last_write_time(path, fs::file_time_type(sys_time.time_since_epoch()));
+        fs::last_write_time(p, fs::file_time_type(sys_time.time_since_epoch()));
         
         return true;
     } catch (...) {
