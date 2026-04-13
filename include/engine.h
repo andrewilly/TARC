@@ -27,7 +27,7 @@ namespace Engine {
     };
 
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
-    TarcResult extract(const std::string& arch_path, bool test_only);
+    TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {}, bool test_only = false);
     TarcResult list(const std::string& arch_path);
     TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
 
