@@ -10,7 +10,6 @@
 #include <iostream>
 #include <chrono>
 #include <future>
-#include <regex>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -26,25 +25,29 @@ namespace fs = std::filesystem;
 
 namespace Engine {
 
+// Normalizza i percorsi per l'interno dell'archivio
 std::string normalize_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     return path;
 }
 
-bool wildcard_match(const std::string& text, const std::string& pattern) {
-    if (pattern == "*" || pattern == "*.*" || pattern.empty()) return true;
-    try {
-        std::string n_text = normalize_path(text);
-        std::string n_pattern = normalize_path(pattern);
-        if (n_pattern.back() == '/') return n_text.compare(0, n_pattern.size(), n_pattern) == 0;
-        
-        std::string r = n_pattern;
-        r = std::regex_replace(r, std::regex("\\."), "\\."); 
-        r = std::regex_replace(r, std::regex("\\*"), ".*");  
-        r = std::regex_replace(r, std::regex("\\?"), ".");   
-        std::regex re(r, std::regex_constants::icase);
-        return std::regex_match(n_text, re) || n_text.compare(0, n_pattern.size(), n_pattern) == 0;
-    } catch (...) { return false; }
+// Funzione di match stile v1.05 (semplice e veloce)
+bool wildcard_match(const std::string& filename, const std::string& pattern) {
+    if (pattern == "*" || pattern == "*.*") return true;
+
+    std::string f = filename;
+    std::string p = pattern;
+    // Case-insensitive per Windows
+    std::transform(f.begin(), f.end(), f.begin(), ::tolower);
+    std::transform(p.begin(), p.end(), p.begin(), ::tolower);
+
+    if (p.substr(0, 1) == "*") {
+        std::string suffix = p.substr(1); // es: ".mdb"
+        if (f.size() >= suffix.size()) {
+            return f.compare(f.size() - suffix.size(), suffix.size(), suffix) == 0;
+        }
+    }
+    return f == p;
 }
 
 struct ChunkResult {
@@ -53,6 +56,7 @@ struct ChunkResult {
     bool success;
 };
 
+// Worker per compressione LZMA in thread separato
 ChunkResult compress_worker(std::vector<char> raw_data, int level) {
     ChunkResult res;
     res.raw_size = (uint32_t)raw_data.size();
@@ -60,9 +64,11 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level) {
     res.compressed_data.resize(max_out);
     size_t out_pos = 0;
     uint32_t preset = (level < 0) ? 6 : (uint32_t)level;
+    
     lzma_ret ret = lzma_easy_buffer_encode(preset, LZMA_CHECK_CRC64, NULL, 
                                           (const uint8_t*)raw_data.data(), raw_data.size(), 
                                           (uint8_t*)res.compressed_data.data(), &out_pos, max_out);
+    
     res.success = (ret == LZMA_OK);
     if (res.success) res.compressed_data.resize(out_pos);
     return res;
@@ -75,31 +81,49 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::map<uint64_t, uint32_t> hash_map;
     std::vector<std::string> expanded_files;
 
+    // --- LOGICA DI SCANSIONE RIPRISTINATA (v1.05) ---
     for (const auto& in : inputs) {
-        if (in.find_first_of("*?") != std::string::npos) {
-            fs::path p(in);
-            fs::path dir = p.has_parent_path() ? p.parent_path() : ".";
-            std::string pattern = p.filename().string();
-            if (fs::exists(dir)) {
-                for (auto& entry : fs::directory_iterator(dir)) {
-                    if (wildcard_match(entry.path().filename().string(), pattern))
-                        expanded_files.push_back(entry.path().string());
+        std::string input_path = in;
+        size_t last_slash = input_path.find_last_of("\\/");
+        std::string folder = ".";
+        std::string pattern = input_path;
+
+        if (last_slash != std::string::npos) {
+            folder = input_path.substr(0, last_slash);
+            pattern = input_path.substr(last_slash + 1);
+        }
+
+        // Caso Wildcard (es: *.mdb)
+        if (pattern.find('*') != std::string::npos || pattern.find('?') != std::string::npos) {
+            if (fs::exists(folder) && fs::is_directory(folder)) {
+                for (auto& entry : fs::directory_iterator(folder)) {
+                    if (entry.is_regular_file()) {
+                        std::string fname = entry.path().filename().string();
+                        if (wildcard_match(fname, pattern)) {
+                            expanded_files.push_back(entry.path().string());
+                        }
+                    }
                 }
             }
-        } else if (fs::is_directory(in)) {
-            for (auto& entry : fs::recursive_directory_iterator(in)) {
+        } 
+        // Caso Directory
+        else if (fs::exists(input_path) && fs::is_directory(input_path)) {
+            for (auto& entry : fs::recursive_directory_iterator(input_path)) {
                 if (entry.is_regular_file()) expanded_files.push_back(entry.path().string());
             }
-        } else if (fs::exists(in)) {
-            expanded_files.push_back(in);
+        }
+        // Caso File Singolo
+        else if (fs::exists(input_path)) {
+            expanded_files.push_back(input_path);
         }
     }
 
     if (expanded_files.empty()) return {false, "Nessun file trovato"};
 
+    // --- PREPARAZIONE ARCHIVIO ---
     std::string temp_path = archive_path + ".tmp";
     FILE* f = fopen(temp_path.c_str(), "wb");
-    if (!f) return {false, "Errore file temporaneo"};
+    if (!f) return {false, "Errore apertura file temporaneo"};
 
     ::Header h;
     memset(&h, 0, sizeof(h));
@@ -107,7 +131,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     h.version = 110;
     fwrite(&h, sizeof(h), 1, f);
 
-    size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
+    // Gestione Chunk Solid (v1.10)
+    size_t CHUNK_THRESHOLD = 64 * 1024 * 1024; // 64MB per stabilità
     std::vector<char> solid_buf;
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
@@ -123,17 +148,16 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return res.success;
     };
 
+    // --- LOOP DI COMPRESSIONE ---
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         std::string disk_path = expanded_files[i];
-        if (!fs::is_regular_file(disk_path)) continue;
-
         UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
         
         uintmax_t fsize = fs::file_size(disk_path);
-        std::ifstream in(disk_path, std::ios::binary);
+        std::ifstream in_f(disk_path, std::ios::binary);
         std::vector<char> data(fsize);
-        if (fsize > 0) in.read(data.data(), fsize);
-        in.close();
+        if (fsize > 0) in_f.read(data.data(), fsize);
+        in_f.close();
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
         ::FileEntry fe;
@@ -143,12 +167,14 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.codec = (uint8_t)Codec::LZMA;
         fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(disk_path).time_since_epoch()).count();
 
+        // Deduplicazione
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
         } else {
             hash_map[h64] = (uint32_t)final_toc.size();
             fe.meta.is_duplicate = 0;
+            
             if (!solid_buf.empty() && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
                 if (worker_active) write_worker(future_chunk);
                 future_chunk = std::async(std::launch::async, compress_worker, std::move(solid_buf), level);
@@ -161,6 +187,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         final_toc.push_back(fe);
     }
 
+    // Chiusura ultimi buffer
     if (worker_active) write_worker(future_chunk);
     if (!solid_buf.empty()) {
         ChunkResult last = compress_worker(std::move(solid_buf), level);
@@ -175,19 +202,12 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    // CORREZIONE: Passiamo correttamente Header a write_toc
     h.toc_offset = (uint64_t)ftell(f);
-    bool toc_ok = IO::write_toc(f, h, final_toc);
+    IO::write_toc(f, h, final_toc);
     
-    // CORREZIONE: Riscrittura Header iniziale con l'offset corretto
     fseek(f, 0, SEEK_SET);
     fwrite(&h, sizeof(h), 1, f);
     fclose(f);
-
-    if (!toc_ok) {
-        fs::remove(temp_path);
-        return {false, "Errore scrittura TOC"};
-    }
 
     fs::rename(temp_path, archive_path);
     result.ok = true;
@@ -197,7 +217,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only) {
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
-    if (!f) return {false, "Impossibile aprire l'archivio"};
+    if (!f) return {false, "Impossibile aprire archivio"};
 
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Header corrotto"}; }
