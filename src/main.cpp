@@ -76,13 +76,13 @@ int main(int argc, char* argv[]) {
     }
 
     if (cmd == "-x") {
-        auto res = Engine::extract(arch, false);
+        auto res = Engine::extract(arch, {}, false);
         UI::print_summary(res, "Estrazione");
         return res.ok ? 0 : 1;
     }
 
     if (cmd == "-t") {
-        auto res = Engine::extract(arch, true);
+        auto res = Engine::extract(arch, {}, true);
         UI::print_summary(res, "Test integrità");
         return res.ok ? 0 : 1;
     }
