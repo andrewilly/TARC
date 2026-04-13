@@ -93,7 +93,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<::FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
 
-    // Safe Write: usiamo un file temporaneo
     std::string temp_path = archive_path + ".tmp";
     FILE* f = fopen(temp_path.c_str(), "wb");
     if (!f) return {false, "Errore: Impossibile creare il file temporaneo"};
@@ -121,19 +120,18 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     };
 
     size_t total_files = files.size();
-    auto start_time = std::chrono::steady_clock::now();
 
     for (size_t i = 0; i < total_files; ++i) {
         const auto& file_path = files[i];
         if (!fs::is_regular_file(file_path)) continue;
 
+        // CHIAMATA ALLA UI (Assicurati che sia in ui.h!)
         UI::print_progress(i + 1, total_files, fs::path(file_path).filename().string());
 
         ::FileEntry fe;
         fe.name = fs::relative(file_path).string();
         fe.meta.orig_size = fs::file_size(file_path);
         
-        // Metadati: Timestamp
         auto ftime = fs::last_write_time(file_path);
         fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(ftime.time_since_epoch()).count();
 
@@ -144,7 +142,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         in.read(file_data.data(), fe.meta.orig_size);
         in.close();
 
-        // Deduplicazione
         uint64_t current_hash = XXH64(file_data.data(), file_data.size(), 0);
         fe.meta.xxhash = current_hash;
 
@@ -157,13 +154,15 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             continue;
         }
 
-        // Nuovo file unico
         hash_map[current_hash] = static_cast<uint32_t>(final_toc.size());
         fe.meta.is_duplicate = 0;
-        fe.meta.codec = (uint8_t)Codec::LZMA;
         
-        // Smart Codec check (opzionale: potresti forzare NONE se già compresso)
-        // if (is_already_compressed(fs::path(file_path).extension().string())) { ... }
+        // Uso della funzione "Smart Codec" per evitare il warning -Wunused-function
+        if (is_already_compressed(fs::path(file_path).extension().string())) {
+            fe.meta.codec = (uint8_t)Codec::NONE; // Potresti comunque volerlo in solid per dedup
+        } else {
+            fe.meta.codec = (uint8_t)Codec::LZMA;
+        }
 
         solid_buffer.insert(solid_buffer.end(), file_data.begin(), file_data.end());
         result.bytes_in += fe.meta.orig_size;
@@ -178,7 +177,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         final_toc.push_back(fe);
     }
 
-    // Finalizzazione
     if (job_active) finalize_chunk(compress_job);
     if (!solid_buffer.empty()) {
         CompressedChunk cc = worker_compress_async(Codec::LZMA, std::move(solid_buffer), level);
@@ -188,17 +186,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         result.bytes_out += cc.comp_size;
     }
 
-    // Mark end of chunks
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    // Scrittura Indice
     h.file_count = static_cast<uint32_t>(final_toc.size());
     IO::write_toc(f, h, final_toc); 
     
     fclose(f);
-
-    // Swap file temporaneo
     fs::rename(temp_path, archive_path);
     
     result.ok = true;
