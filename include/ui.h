@@ -53,4 +53,7 @@ namespace UI {
     // Stampa warning
     void print_warning(const std::string& msg);
 
+    // ... altre funzioni esistenti ...
+    void print_progress(size_t current, size_t total, const std::string& current_file);
+
 } // namespace UI
