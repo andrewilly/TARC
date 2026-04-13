@@ -75,32 +75,58 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::map<uint64_t, uint32_t> hash_map;
     std::vector<std::string> expanded_files;
 
-    // --- SCANSIONE ROBUSTA v1.12 ---
+// --- SCANSIONE ULTRA-RESILIENTE v1.13 ---
     for (const auto& in : inputs) {
-        std::string path_str = in;
-        if (path_str.empty()) continue;
+        if (in.empty()) continue;
 
-        size_t last_slash = path_str.find_last_of("\\/");
-        std::string folder = (last_slash == std::string::npos) ? "." : path_str.substr(0, last_slash);
-        std::string pattern = (last_slash == std::string::npos) ? path_str : path_str.substr(last_slash + 1);
+        std::string raw_path = in;
+        // Rimuoviamo eventuali virgolette residue che il batch potrebbe aver passato male
+        raw_path.erase(std::remove(raw_path.begin(), raw_path.end(), '\"'), raw_path.end());
+        
+        // Normalizziamo i separatori per la ricerca
+        std::replace(raw_path.begin(), raw_path.end(), '/', '\\');
 
-        if (pattern.find('*') != std::string::npos) {
-            if (fs::exists(folder) && fs::is_directory(folder)) {
-                for (auto& entry : fs::directory_iterator(folder)) {
-                    if (entry.is_regular_file() && wildcard_match(entry.path().filename().string(), pattern)) {
-                        expanded_files.push_back(entry.path().string());
+        size_t last_slash = raw_path.find_last_of("\\");
+        std::string folder = ".";
+        std::string pattern = raw_path;
+
+        if (last_slash != std::string::npos) {
+            folder = raw_path.substr(0, last_slash);
+            pattern = raw_path.substr(last_slash + 1);
+            
+            // Caso speciale: se la cartella è "C:", aggiungiamo lo slash per renderla "C:\"
+            if (folder.size() == 2 && folder[1] == ':') folder += "\\";
+        }
+
+        // Se il pattern ha wildcard (* o ?)
+        if (pattern.find_first_of("*?") != std::string::npos) {
+            try {
+                if (fs::exists(folder) && fs::is_directory(folder)) {
+                    for (auto& entry : fs::directory_iterator(folder)) {
+                        if (entry.is_regular_file()) {
+                            std::string fname = entry.path().filename().string();
+                            if (wildcard_match(fname, pattern)) {
+                                expanded_files.push_back(entry.path().string());
+                            }
+                        }
                     }
                 }
-            }
-        } else if (fs::is_directory(path_str)) {
-            for (auto& entry : fs::recursive_directory_iterator(path_str)) {
-                if (entry.is_regular_file()) expanded_files.push_back(entry.path().string());
-            }
-        } else if (fs::exists(path_str)) {
-            expanded_files.push_back(path_str);
+            } catch (...) { continue; }
+        } 
+        // Se è una directory senza wildcard
+        else if (fs::exists(raw_path) && fs::is_directory(raw_path)) {
+            try {
+                for (auto& entry : fs::recursive_directory_iterator(raw_path)) {
+                    if (entry.is_regular_file()) expanded_files.push_back(entry.path().string());
+                }
+            } catch (...) { continue; }
+        }
+        // Se è un file singolo
+        else if (fs::exists(raw_path)) {
+            expanded_files.push_back(raw_path);
         }
     }
-
+    
     if (expanded_files.empty()) return {false, "Nessun file trovato"};
 
     // Nota: Se append è true, qui andrebbe caricato il TOC esistente. 
