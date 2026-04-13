@@ -234,10 +234,82 @@ TarcResult list(const std::string& arch_path) {
 // ─── EXTRACT / TEST ─────────────────────────────────────────────────────────
 
 TarcResult extract(const std::string& arch_path, bool test_only) {
-    (void)test_only;
-    // L'estrazione Solid richiede la lettura sequenziale dei blocchi e il dispatch dei file
-    // Implementazione prevista per la Fase 3
-    return list(arch_path); 
+    TarcResult result;
+    FILE* f = fopen(arch_path.c_str(), "rb");
+    if (!f) return {false, "Impossibile aprire l'archivio"};
+
+    ::Header h;
+    if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "STRK", 4) != 0) {
+        fclose(f);
+        return {false, "File non riconosciuto"};
+    }
+
+    std::vector<::FileEntry> toc;
+    if (!IO::read_toc(f, h, toc)) {
+        fclose(f);
+        return {false, "Errore lettura indice"};
+    }
+
+    // Posizionati all'inizio dei dati (subito dopo l'header)
+    fseek(f, sizeof(::Header), SEEK_SET);
+
+    std::vector<char> decompressed_block;
+    size_t block_cursor = 0;
+    size_t file_idx = 0;
+
+    for (size_t i = 0; i < toc.size(); ++i) {
+        auto& fe = toc[i];
+        UI::print_progress(i + 1, toc.size(), fe.name);
+
+        if (fe.meta.is_duplicate) {
+            // Gestione Deduplicazione: copia il file già estratto
+            if (!test_only) {
+                std::string source = toc[fe.meta.duplicate_of_idx].name;
+                fs::copy(source, fe.name, fs::copy_options::overwrite_existing);
+            }
+            continue;
+        }
+
+        // Se abbiamo esaurito il blocco attuale, leggiamo il prossimo
+        if (block_cursor >= decompressed_block.size()) {
+            ::ChunkHeader ch;
+            if (fread(&ch, sizeof(ch), 1, f) != 1 || (ch.raw_size == 0 && ch.comp_size == 0)) {
+                // Fine dei blocchi
+            } else {
+                std::vector<char> comp_buf(ch.comp_size);
+                fread(comp_buf.data(), 1, ch.comp_size, f);
+                
+                decompressed_block.resize(ch.raw_size);
+                if (ch.raw_size == ch.comp_size) {
+                    decompressed_block = std::move(comp_buf);
+                } else {
+                    // Decomprimi (usiamo LZMA come default nel nostro motore solid)
+                    size_t src_pos = 0;
+                    size_t dst_pos = 0;
+                    lzma_ret ret = lzma_stream_buffer_decode(NULL, UINT64_MAX, NULL,
+                                                           (uint8_t*)comp_buf.data(), &src_pos, ch.comp_size,
+                                                           (uint8_t*)decompressed_block.data(), &dst_pos, ch.raw_size);
+                    if (ret != LZMA_OK) {
+                        fclose(f);
+                        return {false, "Errore decompressione blocco"};
+                    }
+                }
+                block_cursor = 0;
+            }
+        }
+
+        // Estrai il file dal blocco decompresso
+        if (!test_only) {
+            IO::write_file_to_disk(fe.name, decompressed_block.data() + block_cursor, fe.meta.orig_size, fe.meta.timestamp);
+        }
+
+        block_cursor += fe.meta.orig_size;
+        result.bytes_out += fe.meta.orig_size;
+    }
+
+    fclose(f);
+    result.ok = true;
+    return result;
 }
 
 // ─── REMOVE ─────────────────────────────────────────────────────────────────
