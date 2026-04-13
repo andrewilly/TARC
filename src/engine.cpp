@@ -75,59 +75,51 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::map<uint64_t, uint32_t> hash_map;
     std::vector<std::string> expanded_files;
 
-// --- SCANSIONE ULTRA-RESILIENTE v1.13 ---
+    // --- LOGICA DI SCANSIONE v1.15 (Ultra-Resiliente) ---
     for (const auto& in : inputs) {
-        if (in.empty()) continue;
-
         std::string raw_path = in;
-        // Rimuoviamo eventuali virgolette residue che il batch potrebbe aver passato male
+
+        // 1. Rimuove le virgolette se passate dal Batch (es: "C:\*.mdb" -> C:\*.mdb)
         raw_path.erase(std::remove(raw_path.begin(), raw_path.end(), '\"'), raw_path.end());
-        
-        // Normalizziamo i separatori per la ricerca
+        if (raw_path.empty()) continue;
+
+        // 2. Normalizza i separatori per Windows
         std::replace(raw_path.begin(), raw_path.end(), '/', '\\');
 
+        // 3. Separa cartella e pattern
         size_t last_slash = raw_path.find_last_of("\\");
-        std::string folder = ".";
-        std::string pattern = raw_path;
+        std::string folder = (last_slash == std::string::npos) ? "." : raw_path.substr(0, last_slash);
+        std::string pattern = (last_slash == std::string::npos) ? raw_path : raw_path.substr(last_slash + 1);
 
-        if (last_slash != std::string::npos) {
-            folder = raw_path.substr(0, last_slash);
-            pattern = raw_path.substr(last_slash + 1);
-            
-            // Caso speciale: se la cartella è "C:", aggiungiamo lo slash per renderla "C:\"
-            if (folder.size() == 2 && folder[1] == ':') folder += "\\";
-        }
+        // Gestione Drive Root (C: -> C:\)
+        if (folder.size() == 2 && folder[1] == ':') folder += "\\";
 
-        // Se il pattern ha wildcard (* o ?)
+        // 4. Esegue la ricerca reale
         if (pattern.find_first_of("*?") != std::string::npos) {
-            try {
-                if (fs::exists(folder) && fs::is_directory(folder)) {
-                    for (auto& entry : fs::directory_iterator(folder)) {
-                        if (entry.is_regular_file()) {
-                            std::string fname = entry.path().filename().string();
-                            if (wildcard_match(fname, pattern)) {
-                                expanded_files.push_back(entry.path().string());
-                            }
+            if (fs::exists(folder) && fs::is_directory(folder)) {
+                for (auto& entry : fs::directory_iterator(folder)) {
+                    if (entry.is_regular_file()) {
+                        std::string fname = entry.path().filename().string();
+                        if (wildcard_match(fname, pattern)) {
+                            expanded_files.push_back(entry.path().string());
                         }
                     }
                 }
-            } catch (...) { continue; }
-        } 
-        // Se è una directory senza wildcard
-        else if (fs::exists(raw_path) && fs::is_directory(raw_path)) {
-            try {
+            }
+        } else if (fs::exists(raw_path)) {
+            if (fs::is_directory(raw_path)) {
                 for (auto& entry : fs::recursive_directory_iterator(raw_path)) {
                     if (entry.is_regular_file()) expanded_files.push_back(entry.path().string());
                 }
-            } catch (...) { continue; }
-        }
-        // Se è un file singolo
-        else if (fs::exists(raw_path)) {
-            expanded_files.push_back(raw_path);
+            } else {
+                expanded_files.push_back(raw_path);
+            }
         }
     }
-    
+
     if (expanded_files.empty()) return {false, "Nessun file trovato"};
+
+    // ... (continua con il resto della compressione LZMA)
 
     // Nota: Se append è true, qui andrebbe caricato il TOC esistente. 
     // Per ora creiamo un nuovo archivio per stabilità.
