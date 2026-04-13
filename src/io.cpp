@@ -10,7 +10,6 @@ namespace fs = std::filesystem;
 
 namespace IO {
 
-// Aggiornato all'estensione del nuovo progetto Solid: .strk
 std::string ensure_ext(const std::string& path) {
     if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {
         return path + ".strk";
@@ -18,7 +17,6 @@ std::string ensure_ext(const std::string& path) {
     return path;
 }
 
-// Esplora cartelle e pattern (Risolve l'errore del linker in main.cpp)
 void expand_path(const std::string& pattern, std::vector<std::string>& out) {
     try {
         fs::path p(pattern);
@@ -31,9 +29,7 @@ void expand_path(const std::string& pattern, std::vector<std::string>& out) {
         } else if (fs::exists(p)) {
             out.push_back(pattern);
         }
-    } catch (...) {
-        // Silenzioso in caso di percorsi inaccessibili
-    }
+    } catch (...) {}
 }
 
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
@@ -54,54 +50,43 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 }
 
 bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
-    h.toc_offset = ftell(f);
+    // 1. Registra l'offset dove inizia la TOC
+    h.toc_offset = (uint64_t)ftell(f);
     h.file_count = static_cast<uint32_t>(toc.size());
 
+    // 2. Scrive la lista file
     for (auto& fe : toc) {
         fe.meta.name_len = static_cast<uint16_t>(fe.name.length());
         if (fwrite(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
         if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }
 
-    fseek(f, 0, SEEK_SET);
+    // 3. Torna all'inizio e aggiorna l'Header con i valori finali
+    if (fseek(f, 0, SEEK_SET) != 0) return false;
     if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
     
+    fflush(f);
     return true;
 }
 
 bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp) {
     try {
         fs::path p(path);
-        if (p.has_parent_path()) {
-            fs::create_directories(p.parent_path());
-        }
+        if (p.has_parent_path()) fs::create_directories(p.parent_path());
 
         std::ofstream out(path, std::ios::binary);
         if (!out) return false;
-        
-        if (size > 0 && data != nullptr) {
-            out.write(data, size);
-        }
+        if (size > 0 && data != nullptr) out.write(data, size);
         out.close();
 
-        // Ripristino timestamp originale
         auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
         fs::last_write_time(p, fs::file_time_type(sys_time.time_since_epoch()));
-        
         return true;
-    } catch (...) {
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
-bool read_bytes(FILE* f, void* buf, size_t size) {
-    return fread(buf, 1, size, f) == size;
-}
-
-bool write_bytes(FILE* f, const void* buf, size_t size) {
-    return fwrite(buf, 1, size, f) == size;
-}
-
+bool read_bytes(FILE* f, void* buf, size_t size) { return fread(buf, 1, size, f) == size; }
+bool write_bytes(FILE* f, const void* buf, size_t size) { return fwrite(buf, 1, size, f) == size; }
 bool write_entry(FILE* f, const FileEntry& entry) {
     if (fwrite(&entry.meta, sizeof(Entry), 1, f) != 1) return false;
     if (fwrite(entry.name.c_str(), 1, entry.meta.name_len, f) != entry.meta.name_len) return false;
