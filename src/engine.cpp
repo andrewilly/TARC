@@ -29,7 +29,6 @@ namespace fs = std::filesystem;
 
 namespace Engine {
 
-// --- Rilevamento RAM di sistema ---
 size_t get_system_ram() {
 #ifdef _WIN32
     MEMORYSTATUSEX status;
@@ -39,18 +38,16 @@ size_t get_system_ram() {
 #else
     struct sysinfo si;
     if (sysinfo(&si) == 0) return (size_t)si.totalram * si.mem_unit;
-    return 2048ULL * 1024 * 1024; // Default 2GB
+    return 2048ULL * 1024 * 1024;
 #endif
 }
 
-// Struttura per il worker multithread
 struct ChunkResult {
     std::vector<char> compressed_data;
     uint32_t raw_size;
     bool success;
 };
 
-// Worker di compressione LZMA
 ChunkResult compress_worker(std::vector<char> raw_data, int level) {
     ChunkResult res;
     res.raw_size = (uint32_t)raw_data.size();
@@ -81,7 +78,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<::FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
 
-    // Calcolo dinamico soglia Chunk (15% RAM)
     size_t sys_ram = get_system_ram();
     size_t CHUNK_THRESHOLD = sys_ram / 7; 
     if (CHUNK_THRESHOLD < 32 * 1024 * 1024) CHUNK_THRESHOLD = 32 * 1024 * 1024;
@@ -93,7 +89,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     memset(&h, 0, sizeof(h));
     memcpy(h.magic, "STRK", 4);
     h.version = 110;
-    fwrite(&h, sizeof(h), 1, f);
+    if (fwrite(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Errore scrittura header"}; }
 
     std::vector<char> solid_buf;
     std::future<ChunkResult> future_chunk;
@@ -197,10 +193,11 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) == 1 && ch.raw_size > 0) {
                 std::vector<char> comp(ch.comp_size);
-                fread(comp.data(), 1, ch.comp_size, f);
-                current_block.resize(ch.raw_size);
+                if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) { fclose(f); return {false, "Errore lettura chunk"}; }
+                current_block.assign(ch.raw_size, 0);
                 size_t sp = 0, dp = 0;
-                lzma_stream_buffer_decode(NULL, UINT64_MAX, NULL, (uint8_t*)comp.data(), &sp, ch.comp_size, (uint8_t*)current_block.data(), &dp, ch.raw_size);
+                // Corretto: passiamo UINT64_MAX come uint64_t senza warning
+                lzma_stream_buffer_decode(NULL, (uint64_t)UINT64_MAX, NULL, (const uint8_t*)comp.data(), &sp, ch.comp_size, (uint8_t*)current_block.data(), &dp, ch.raw_size);
                 block_pos = 0;
             }
         }
@@ -229,7 +226,8 @@ TarcResult list(const std::string& arch_path) {
     TarcResult res;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Errore"};
-    ::Header h; fread(&h, sizeof(h), 1, f);
+    ::Header h; 
+    if(fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Header invalido"}; }
     std::vector<::FileEntry> toc;
     IO::read_toc(f, h, toc);
     std::cout << "\n--- ARCHIVIO SOLID (.strk) ---\n";
@@ -239,6 +237,8 @@ TarcResult list(const std::string& arch_path) {
     return res;
 }
 
-TarcResult remove_files(const std::string& a, const std::vector<std::string>& p) { return {false, "Non disponibile"}; }
+TarcResult remove_files(const std::string&, const std::vector<std::string>&) { 
+    return {false, "Rimozione non disponibile in modalità Solid"}; 
+}
 
 } // namespace Engine
