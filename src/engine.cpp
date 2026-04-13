@@ -75,7 +75,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::map<uint64_t, uint32_t> hash_map;
     std::vector<std::string> expanded_files;
 
-    // Espansione input migliorata
     for (const auto& in : inputs) {
         if (in.find_first_of("*?") != std::string::npos) {
             fs::path p(in);
@@ -102,7 +101,10 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     FILE* f = fopen(temp_path.c_str(), "wb");
     if (!f) return {false, "Errore file temporaneo"};
 
-    ::Header h = {{'S','T','R','K'}, 110, 0, 0};
+    ::Header h;
+    memset(&h, 0, sizeof(h));
+    memcpy(h.magic, "STRK", 4);
+    h.version = 110;
     fwrite(&h, sizeof(h), 1, f);
 
     size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
@@ -125,7 +127,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         std::string disk_path = expanded_files[i];
         if (!fs::is_regular_file(disk_path)) continue;
 
-        UI::print_progress(i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
+        UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
         
         uintmax_t fsize = fs::file_size(disk_path);
         std::ifstream in(disk_path, std::ios::binary);
@@ -172,14 +174,20 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
-    uint64_t toc_pos = ftell(f);
-    IO::write_toc(f, final_toc);
     
-    h.toc_offset = toc_pos;
-    h.num_files = (uint32_t)final_toc.size();
+    // CORREZIONE: Passiamo correttamente Header a write_toc
+    h.toc_offset = (uint64_t)ftell(f);
+    bool toc_ok = IO::write_toc(f, h, final_toc);
+    
+    // CORREZIONE: Riscrittura Header iniziale con l'offset corretto
     fseek(f, 0, SEEK_SET);
     fwrite(&h, sizeof(h), 1, f);
     fclose(f);
+
+    if (!toc_ok) {
+        fs::remove(temp_path);
+        return {false, "Errore scrittura TOC"};
+    }
 
     fs::rename(temp_path, archive_path);
     result.ok = true;
@@ -189,7 +197,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only) {
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
-    if (!f) return {false, "Impossibile aprire archivio"};
+    if (!f) return {false, "Impossibile aprire l'archivio"};
 
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Header corrotto"}; }
@@ -226,18 +234,19 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || (ch.raw_size == 0 && ch.comp_size == 0)) break;
             std::vector<char> comp(ch.comp_size);
-            fread(comp.data(), 1, ch.comp_size, f);
+            if(fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) break;
+            
             current_block.assign(ch.raw_size, 0);
             size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
-            lzma_stream_buffer_decode(&limit, 0, NULL, (uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
+            lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
             block_pos = 0; block_valid = true;
         }
 
         if (match) {
-            UI::print_progress(i + 1, (uint32_t)toc.size(), fe.name);
+            UI::print_progress((uint32_t)i + 1, (uint32_t)toc.size(), fe.name);
             const char* ptr = current_block.data() + block_pos;
             if (XXH64(ptr, fe.meta.orig_size, 0) == fe.meta.xxhash) {
-                if (!test_only) IO::write_file_to_disk(fe.name, ptr, fe.meta.orig_size, fe.meta.timestamp);
+                if (!test_only) IO::write_file_to_disk(fe.name, ptr, fe.meta.orig_size, (time_t)fe.meta.timestamp);
                 result.bytes_out += fe.meta.orig_size;
             }
         }
@@ -251,8 +260,10 @@ TarcResult list(const std::string& arch_path) {
     TarcResult res;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Errore apertura"};
-    ::Header h; fread(&h, sizeof(h), 1, f);
-    std::vector<::FileEntry> toc; IO::read_toc(f, h, toc);
+    ::Header h; 
+    if(fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Header non valido"}; }
+    std::vector<::FileEntry> toc; 
+    IO::read_toc(f, h, toc);
     std::cout << "\n--- ANALISI ARCHIVIO SOLID (.strk) ---\n";
     for (const auto& fe : toc) UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.is_duplicate ? 0 : 1, (Codec)fe.meta.codec);
     fclose(f);
