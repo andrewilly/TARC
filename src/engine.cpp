@@ -23,8 +23,6 @@ namespace fs = std::filesystem;
 
 namespace Engine {
 
-// ─── STRUTTURE INTERNE E WORKER ─────────────────────────────────────────────
-
 struct CompressedChunk {
     uint32_t raw_size;
     uint32_t comp_size;
@@ -32,7 +30,6 @@ struct CompressedChunk {
     bool is_compressed;
 };
 
-// Funzione worker per la compressione asincrona
 static CompressedChunk worker_compress_async(Codec codec, std::vector<char> src, int level) {
     CompressedChunk res;
     res.raw_size = (uint32_t)src.size();
@@ -46,7 +43,6 @@ static CompressedChunk worker_compress_async(Codec codec, std::vector<char> src,
     if (codec == Codec::LZMA) {
         lzma_options_lzma opt;
         lzma_lzma_preset(&opt, lzma_level);
-        opt.dict_size = 64 * 1024 * 1024; 
         lzma_filter filters[] = {{ LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL }};
         size_t out_pos = 0;
         lzma_ret ret = lzma_stream_buffer_encode(filters, LZMA_CHECK_CRC64, NULL, 
@@ -73,19 +69,6 @@ static CompressedChunk worker_compress_async(Codec codec, std::vector<char> src,
     return res;
 }
 
-// Supporto Smart Codec: rileva file già compressi
-static bool is_already_compressed(const std::string& ext) {
-    static const std::vector<std::string> skip = {
-        ".pdf", ".zip", ".7z", ".rar", ".gz", ".png", ".jpg", ".jpeg", ".mp4", ".mp3"
-    };
-    for (const auto& s : skip) {
-        if (ext == s) return true;
-    }
-    return false;
-}
-
-// ─── COMPRESS (SOLID + DEDUPLICATION + MULTITHREAD) ─────────────────────────
-
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& files, bool append, int level) {
     (void)append; 
     TarcResult result;
@@ -99,45 +82,31 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     memcpy(h.magic, "STRK", 4);
     h.version = 110;
-    h.file_count = 0;
     fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buffer;
-    const size_t SOLID_BLOCK_SIZE = 256 * 1024 * 1024;
-    std::future<CompressedChunk> compress_job;
-    bool job_active = false;
+    const size_t SOLID_BLOCK_SIZE = 128 * 1024 * 1024; // Ridotto per stabilità
 
-    auto finalize_chunk = [&](std::future<CompressedChunk>& job) {
-        if (job.valid()) {
-            CompressedChunk cc = job.get();
-            if (cc.raw_size > 0) {
-                ::ChunkHeader ch = { cc.raw_size, cc.comp_size };
-                fwrite(&ch, sizeof(ch), 1, f);
-                fwrite(cc.data.data(), 1, cc.comp_size, f);
-                result.bytes_out += cc.comp_size;
-            }
+    auto write_chunk_to_file = [&](CompressedChunk& cc) {
+        if (cc.raw_size > 0) {
+            ::ChunkHeader ch = { cc.raw_size, cc.comp_size };
+            fwrite(&ch, sizeof(ch), 1, f);
+            fwrite(cc.data.data(), 1, cc.comp_size, f);
+            result.bytes_out += cc.comp_size;
         }
     };
 
-    size_t total_files = files.size();
-
-    for (size_t i = 0; i < total_files; ++i) {
-        const auto& file_path = files[i];
-        if (!fs::is_regular_file(file_path)) continue;
-
-        // CHIAMATA ALLA UI (Assicurati che sia in ui.h!)
-        UI::print_progress(i + 1, total_files, fs::path(file_path).filename().string());
+    for (size_t i = 0; i < files.size(); ++i) {
+        if (!fs::is_regular_file(files[i])) continue;
+        UI::print_progress(i + 1, files.size(), fs::path(files[i]).filename().string());
 
         ::FileEntry fe;
-        fe.name = fs::relative(file_path).string();
-        fe.meta.orig_size = fs::file_size(file_path);
-        
-        auto ftime = fs::last_write_time(file_path);
+        fe.name = fs::relative(files[i]).string();
+        fe.meta.orig_size = fs::file_size(files[i]);
+        auto ftime = fs::last_write_time(files[i]);
         fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(ftime.time_since_epoch()).count();
 
-        std::ifstream in(file_path, std::ios::binary);
-        if(!in) continue;
-        
+        std::ifstream in(files[i], std::ios::binary);
         std::vector<char> file_data(fe.meta.orig_size);
         in.read(file_data.data(), fe.meta.orig_size);
         in.close();
@@ -148,50 +117,34 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (hash_map.count(current_hash)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[current_hash];
-            fe.meta.comp_size = 0;
-            fe.meta.codec = (uint8_t)Codec::NONE;
             final_toc.push_back(fe);
             continue;
         }
 
         hash_map[current_hash] = static_cast<uint32_t>(final_toc.size());
         fe.meta.is_duplicate = 0;
-        
-        // Uso della funzione "Smart Codec" per evitare il warning -Wunused-function
-        if (is_already_compressed(fs::path(file_path).extension().string())) {
-            fe.meta.codec = (uint8_t)Codec::NONE; // Potresti comunque volerlo in solid per dedup
-        } else {
-            fe.meta.codec = (uint8_t)Codec::LZMA;
-        }
+        fe.meta.codec = (uint8_t)Codec::LZMA;
 
         solid_buffer.insert(solid_buffer.end(), file_data.begin(), file_data.end());
         result.bytes_in += fe.meta.orig_size;
 
         if (solid_buffer.size() >= SOLID_BLOCK_SIZE) {
-            if (job_active) finalize_chunk(compress_job);
-            compress_job = std::async(std::launch::async, worker_compress_async, Codec::LZMA, std::move(solid_buffer), level);
+            CompressedChunk cc = worker_compress_async(Codec::LZMA, std::move(solid_buffer), level);
+            write_chunk_to_file(cc);
             solid_buffer.clear();
-            job_active = true;
         }
-        
         final_toc.push_back(fe);
     }
 
-    if (job_active) finalize_chunk(compress_job);
     if (!solid_buffer.empty()) {
         CompressedChunk cc = worker_compress_async(Codec::LZMA, std::move(solid_buffer), level);
-        ::ChunkHeader ch = { cc.raw_size, cc.comp_size };
-        fwrite(&ch, sizeof(ch), 1, f);
-        fwrite(cc.data.data(), 1, cc.comp_size, f);
-        result.bytes_out += cc.comp_size;
+        write_chunk_to_file(cc);
     }
 
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    h.file_count = static_cast<uint32_t>(final_toc.size());
     IO::write_toc(f, h, final_toc); 
-    
     fclose(f);
     fs::rename(temp_path, archive_path);
     
@@ -199,112 +152,67 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-// ─── LIST (LISTA FILE) ──────────────────────────────────────────────────────
-
-TarcResult list(const std::string& arch_path) {
-    TarcResult result;
-    FILE* f = fopen(arch_path.c_str(), "rb");
-    if (!f) return {false, "Impossibile aprire l'archivio"};
-
-    ::Header h;
-    if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "STRK", 4) != 0) {
-        fclose(f);
-        return {false, "File non riconosciuto come archivio TARC"};
-    }
-
-    std::vector<::FileEntry> toc;
-    if (!IO::read_toc(f, h, toc)) {
-        fclose(f);
-        return {false, "Indice dell'archivio (TOC) danneggiato"};
-    }
-
-    std::cout << "\n" << Color::BOLD << Color::WHITE << " Contenuto di: " << arch_path << Color::RESET << "\n";
-    std::cout << " --------------------------------------------------------------------------\n";
-
-    for (const auto& fe : toc) {
-        uint64_t csize = fe.meta.is_duplicate ? 0 : fe.meta.orig_size; 
-        UI::print_list_entry(fe.name, fe.meta.orig_size, csize, (Codec)fe.meta.codec);
-    }
-
-    fclose(f);
-    result.ok = true;
-    return result;
-}
-
-// ─── EXTRACT / TEST ─────────────────────────────────────────────────────────
-
 TarcResult extract(const std::string& arch_path, bool test_only) {
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Impossibile aprire l'archivio"};
 
     ::Header h;
-    if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "STRK", 4) != 0) {
-        fclose(f);
-        return {false, "File non riconosciuto"};
-    }
+    if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Header corrotto"}; }
 
     std::vector<::FileEntry> toc;
-    if (!IO::read_toc(f, h, toc)) {
-        fclose(f);
-        return {false, "Errore lettura indice"};
-    }
+    if (!IO::read_toc(f, h, toc)) { fclose(f); return {false, "Indice corrotto"}; }
 
-    // Posizionati all'inizio dei dati (subito dopo l'header)
     fseek(f, sizeof(::Header), SEEK_SET);
 
-    std::vector<char> decompressed_block;
+    std::vector<char> block;
     size_t block_cursor = 0;
-    size_t file_idx = 0;
 
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
         UI::print_progress(i + 1, toc.size(), fe.name);
 
         if (fe.meta.is_duplicate) {
-            // Gestione Deduplicazione: copia il file già estratto
             if (!test_only) {
-                std::string source = toc[fe.meta.duplicate_of_idx].name;
-                fs::copy(source, fe.name, fs::copy_options::overwrite_existing);
+                try { fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, fs::copy_options::overwrite_existing); } catch(...) {}
             }
             continue;
         }
 
-        // Se abbiamo esaurito il blocco attuale, leggiamo il prossimo
-        if (block_cursor >= decompressed_block.size()) {
+        // Caricamento blocco se necessario
+        while (block_cursor + fe.meta.orig_size > block.size()) {
             ::ChunkHeader ch;
-            if (fread(&ch, sizeof(ch), 1, f) != 1 || (ch.raw_size == 0 && ch.comp_size == 0)) {
-                // Fine dei blocchi
-            } else {
-                std::vector<char> comp_buf(ch.comp_size);
-                fread(comp_buf.data(), 1, ch.comp_size, f);
-                
-                decompressed_block.resize(ch.raw_size);
-                if (ch.raw_size == ch.comp_size) {
-                    decompressed_block = std::move(comp_buf);
-                } else {
-                    // Decomprimi (usiamo LZMA come default nel nostro motore solid)
-                    size_t src_pos = 0;
-                    size_t dst_pos = 0;
-                    lzma_ret ret = lzma_stream_buffer_decode(NULL, UINT64_MAX, NULL,
-                                                           (uint8_t*)comp_buf.data(), &src_pos, ch.comp_size,
-                                                           (uint8_t*)decompressed_block.data(), &dst_pos, ch.raw_size);
-                    if (ret != LZMA_OK) {
-                        fclose(f);
-                        return {false, "Errore decompressione blocco"};
-                    }
-                }
-                block_cursor = 0;
-            }
+            if (fread(&ch, sizeof(ch), 1, f) != 1 || (ch.raw_size == 0)) break;
+
+            std::vector<char> comp(ch.comp_size);
+            fread(comp.data(), 1, ch.comp_size, f);
+
+            std::vector<char> decomp(ch.raw_size);
+            size_t s_pos = 0, d_pos = 0;
+            lzma_stream_buffer_decode(NULL, UINT64_MAX, NULL, (uint8_t*)comp.data(), &s_pos, ch.comp_size, (uint8_t*)decomp.data(), &d_pos, ch.raw_size);
+            
+            block.insert(block.end(), decomp.begin(), decomp.end());
         }
 
-        // Estrai il file dal blocco decompresso
+        const char* file_ptr = block.data() + block_cursor;
+        uint64_t check_hash = XXH64(file_ptr, fe.meta.orig_size, 0);
+
+        if (check_hash != fe.meta.xxhash) {
+            fclose(f);
+            return {false, "ERRORE INTEGRITÀ: " + fe.name};
+        }
+
         if (!test_only) {
-            IO::write_file_to_disk(fe.name, decompressed_block.data() + block_cursor, fe.meta.orig_size, fe.meta.timestamp);
+            IO::write_file_to_disk(fe.name, file_ptr, fe.meta.orig_size, fe.meta.timestamp);
         }
 
         block_cursor += fe.meta.orig_size;
-        result.bytes_out += fe.meta.orig_size;
+        
+        // Pulizia buffer per risparmiare RAM se abbiamo superato il cursore
+        if (block_cursor > 256 * 1024 * 1024) {
+             block.erase(block.begin(), block.begin() + block_cursor);
+             block_cursor = 0;
+        }
     }
 
     fclose(f);
@@ -312,11 +220,21 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
     return result;
 }
 
-// ─── REMOVE ─────────────────────────────────────────────────────────────────
-
-TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns) {
-    (void)arch_path; (void)patterns;
-    return {false, "La rimozione in modalità Solid richiede la ricostruzione dell'archivio."};
+TarcResult list(const std::string& arch_path) {
+    TarcResult result;
+    FILE* f = fopen(arch_path.c_str(), "rb");
+    if (!f) return {false, "Errore apertura"};
+    ::Header h;
+    fread(&h, sizeof(h), 1, f);
+    std::vector<::FileEntry> toc;
+    IO::read_toc(f, h, toc);
+    std::cout << "\n Analisi archivio: " << arch_path << "\n";
+    for (const auto& fe : toc) UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.is_duplicate ? 0 : fe.meta.orig_size, (Codec)fe.meta.codec);
+    fclose(f);
+    result.ok = true;
+    return result;
 }
+
+TarcResult remove_files(const std::string& a, const std::vector<std::string>& p) { return {false, "Non supportato in Solid"}; }
 
 } // namespace Engine
