@@ -75,12 +75,20 @@ int main(int argc, char* argv[]) {
         return res.ok ? 0 : 1;
     }
 
-    if (cmd == "-x") {
-        auto res = Engine::extract(arch, {}, false);
-        UI::print_summary(res, "Estrazione");
-        return res.ok ? 0 : 1;
+  if (cmd == "-x") {
+    std::vector<std::string> filters;
+    // Raccogliamo tutti gli argomenti dopo il nome dell'archivio (argv[3], argv[4]...)
+    for (int i = 3; i < argc; ++i) {
+        filters.push_back(argv[i]);
     }
 
+    // Passiamo il vettore 'filters' invece di quello vuoto {}
+    auto res = Engine::extract(arch, filters, false);
+    
+    UI::print_summary(res, "Estrazione");
+    return res.ok ? 0 : 1;
+}
+    
     if (cmd == "-t") {
         auto res = Engine::extract(arch, {}, true);
         UI::print_summary(res, "Test integrità");
