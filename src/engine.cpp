@@ -147,7 +147,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         uintmax_t fsize = fs::file_size(files[i]);
         std::ifstream in(files[i], std::ios::binary);
         std::vector<char> data(fsize);
-        in.read(data.data(), fsize);
+        
+        // Controllo lettura corretta per evitare hash su dati nulli
+        if (fsize > 0) {
+            in.read(data.data(), fsize);
+        }
         in.close();
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
@@ -271,7 +275,7 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
             
             current_block.assign(ch.raw_size, 0);
             size_t src_pos = 0, dst_pos = 0;
-            uint64_t memlimit = UINT64_MAX; // FIX: Puntatore valido a memlimit
+            uint64_t memlimit = UINT64_MAX; 
             
             lzma_ret ret = lzma_stream_buffer_decode(
                 &memlimit, 0, NULL, 
@@ -337,7 +341,10 @@ TarcResult list(const std::string& arch_path) {
     std::cout << "\n--- ARCHIVIO SOLID (.strk) ---\n";
     uint64_t total_size = 0;
     for (const auto& fe : toc) {
-        UI::print_list_entry(fe.name, fe.meta.orig_size, 0, (Codec)fe.meta.codec);
+        // FIX: Passiamo 1 invece di 0 se NON è duplicato per evitare la scritta errata in ui.cpp
+        uint64_t comp_param = fe.meta.is_duplicate ? 0 : 1;
+        UI::print_list_entry(fe.name, fe.meta.orig_size, comp_param, (Codec)fe.meta.codec);
+        
         if (!fe.meta.is_duplicate) total_size += fe.meta.orig_size;
     }
     std::cout << "\nDimensione totale unica: " << (total_size / 1024) << " KB\n";
