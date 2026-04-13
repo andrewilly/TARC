@@ -11,6 +11,7 @@
 #include <chrono>
 #include <future>
 #include <queue>
+#include <regex>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -33,6 +34,18 @@ extern "C" {
 namespace fs = std::filesystem;
 
 namespace Engine {
+
+// Helper interno per il confronto wildcard (usato in estrazione selettiva)
+bool wildcard_match(const std::string& text, const std::string& pattern) {
+    if (pattern == "*" || pattern == "*.*") return true;
+    try {
+        std::string r = std::regex_replace(pattern, std::regex("\\."), "\\.");
+        r = std::regex_replace(r, std::regex("\\*"), ".*");
+        r = std::regex_replace(r, std::regex("\\?"), ".");
+        std::regex re(r, std::regex_constants::icase);
+        return std::regex_match(text, re);
+    } catch (...) { return text == pattern; }
+}
 
 size_t get_system_ram() {
 #ifdef _WIN32
@@ -62,7 +75,6 @@ struct ChunkResult {
     std::vector<size_t> file_indices; 
 };
 
-// FIX: Usiamo l'interfaccia "easy" per garantire stream auto-descrittivi
 ChunkResult compress_worker(std::vector<char> raw_data, int level, std::vector<size_t> indices) {
     ChunkResult res;
     res.raw_size = (uint32_t)raw_data.size();
@@ -147,11 +159,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         uintmax_t fsize = fs::file_size(files[i]);
         std::ifstream in(files[i], std::ios::binary);
         std::vector<char> data(fsize);
-        
-        // Controllo lettura corretta per evitare hash su dati nulli
-        if (fsize > 0) {
-            in.read(data.data(), fsize);
-        }
+        if (fsize > 0) in.read(data.data(), fsize);
         in.close();
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
@@ -176,12 +184,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         
         if (!solid_buf.empty() && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
             if (worker_active) write_finished_worker(future_chunk);
-            
-            future_chunk = std::async(std::launch::async, compress_worker, 
-                                     std::move(solid_buf), level, 
-                                     current_chunk_indices);
+            future_chunk = std::async(std::launch::async, compress_worker, std::move(solid_buf), level, current_chunk_indices);
             worker_active = true;
-            
             solid_buf.clear();
             current_chunk_indices.clear();
         }
@@ -189,7 +193,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         solid_buf.insert(solid_buf.end(), data.begin(), data.end());
         current_chunk_indices.push_back(final_toc.size());
         result.bytes_in += fsize;
-        
         final_toc.push_back(fe);
     }
 
@@ -206,114 +209,84 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
-    
-    if (!IO::write_toc(f, h, final_toc)) {
-        fclose(f);
-        fs::remove(temp_path);
-        return {false, "Errore scrittura TOC"};
-    }
-    
+    IO::write_toc(f, h, final_toc);
     fclose(f);
     fs::rename(temp_path, archive_path);
     result.ok = true;
     return result;
 }
 
-TarcResult extract(const std::string& arch_path, bool test_only) {
+// Estrazione aggiornata con supporto filtri/wildcard
+TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only) {
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "File non trovato"};
 
     ::Header h;
-    if (fread(&h, sizeof(h), 1, f) != 1) { 
-        fclose(f); 
-        return {false, "Header corrotto"}; 
-    }
+    if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return {false, "Header corrotto"}; }
 
     std::vector<::FileEntry> toc;
-    if (!IO::read_toc(f, h, toc)) { 
-        fclose(f); 
-        return {false, "TOC non leggibile"}; 
-    }
+    if (!IO::read_toc(f, h, toc)) { fclose(f); return {false, "TOC non leggibile"}; }
 
     fseek(f, sizeof(::Header), SEEK_SET);
     
     std::vector<char> current_block;
     size_t block_pos = 0;
-    size_t current_chunk_idx = 0;
     bool block_valid = false;
 
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
-        UI::print_progress(i + 1, toc.size(), fe.name);
+
+        // LOGICA DI FILTRO
+        bool should_extract = true;
+        if (!patterns.empty()) {
+            should_extract = false;
+            for (const auto& p : patterns) {
+                if (wildcard_match(fe.name, p)) { should_extract = true; break; }
+            }
+        }
 
         if (fe.meta.is_duplicate) {
-            if (!test_only) {
+            if (should_extract && !test_only) {
                 try { 
-                    if (fe.meta.duplicate_of_idx < i) {
-                        fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, 
-                                fs::copy_options::overwrite_existing);
-                    }
+                    if (fe.meta.duplicate_of_idx < i) 
+                        fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, fs::copy_options::overwrite_existing);
                 } catch(...) {}
             }
-            result.bytes_out += fe.meta.orig_size;
+            if (should_extract) result.bytes_out += fe.meta.orig_size;
             continue;
         }
 
+        // Se non è un duplicato, dobbiamo comunque gestire il chunk per mantenere la sincronia Solid
         if (!block_valid || block_pos >= current_block.size()) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
-                fclose(f); 
-                return {false, "Fine archivio inaspettata per: " + fe.name};
+                fclose(f); return {false, "Errore chunk su: " + fe.name};
             }
-            
             std::vector<char> comp(ch.comp_size);
-            if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) { 
-                fclose(f); 
-                return {false, "Errore lettura chunk per: " + fe.name}; 
-            }
+            fread(comp.data(), 1, ch.comp_size, f);
             
             current_block.assign(ch.raw_size, 0);
             size_t src_pos = 0, dst_pos = 0;
-            uint64_t memlimit = UINT64_MAX; 
-            
-            lzma_ret ret = lzma_stream_buffer_decode(
-                &memlimit, 0, NULL, 
-                (const uint8_t*)comp.data(), &src_pos, ch.comp_size,
-                (uint8_t*)current_block.data(), &dst_pos, ch.raw_size);
-            
-            if (ret != LZMA_OK || dst_pos != ch.raw_size) {
-                fclose(f);
-                return {false, "Decompressione fallita per chunk " + std::to_string(current_chunk_idx)};
-            }
-            
+            uint64_t memlimit = UINT64_MAX;
+            lzma_stream_buffer_decode(&memlimit, 0, NULL, (uint8_t*)comp.data(), &src_pos, ch.comp_size, (uint8_t*)current_block.data(), &dst_pos, ch.raw_size);
             block_pos = 0;
             block_valid = true;
-            current_chunk_idx++;
         }
 
-        if (block_pos + fe.meta.orig_size > current_block.size()) {
-            fclose(f); 
-            return {false, "Sincronizzazione fallita su: " + fe.name};
-        }
-
-        const char* data_ptr = current_block.data() + block_pos;
-        
-        uint64_t computed_hash = XXH64(data_ptr, fe.meta.orig_size, 0);
-        if (computed_hash != fe.meta.xxhash) {
-            fclose(f); 
-            return {false, "ERRORE INTEGRITÀ su " + fe.name};
-        }
-
-        if (!test_only) {
-            if (!IO::write_file_to_disk(fe.name, data_ptr, fe.meta.orig_size, fe.meta.timestamp)) {
-                fclose(f);
-                return {false, "Errore scrittura file: " + fe.name};
+        if (should_extract) {
+            UI::print_progress(i + 1, toc.size(), fe.name);
+            const char* data_ptr = current_block.data() + block_pos;
+            
+            if (XXH64(data_ptr, fe.meta.orig_size, 0) != fe.meta.xxhash) {
+                fclose(f); return {false, "ERRORE INTEGRITÀ: " + fe.name};
             }
+
+            if (!test_only) IO::write_file_to_disk(fe.name, data_ptr, fe.meta.orig_size, fe.meta.timestamp);
+            result.bytes_out += fe.meta.orig_size;
         }
         
         block_pos += fe.meta.orig_size;
-        result.bytes_out += fe.meta.orig_size;
     }
 
     fclose(f);
@@ -325,30 +298,19 @@ TarcResult list(const std::string& arch_path) {
     TarcResult res;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Errore apertura archivio"};
-    
     ::Header h; 
-    if(fread(&h, sizeof(h), 1, f) != 1) { 
-        fclose(f); 
-        return {false, "Header invalido"}; 
-    }
-    
+    fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
-    if (!IO::read_toc(f, h, toc)) {
-        fclose(f);
-        return {false, "TOC corrotto"};
-    }
+    if (!IO::read_toc(f, h, toc)) { fclose(f); return {false, "TOC corrotto"}; }
     
     std::cout << "\n--- ARCHIVIO SOLID (.strk) ---\n";
     uint64_t total_size = 0;
     for (const auto& fe : toc) {
-        // FIX: Passiamo 1 invece di 0 se NON è duplicato per evitare la scritta errata in ui.cpp
-        uint64_t comp_param = fe.meta.is_duplicate ? 0 : 1;
-        UI::print_list_entry(fe.name, fe.meta.orig_size, comp_param, (Codec)fe.meta.codec);
-        
+        uint64_t status_flag = fe.meta.is_duplicate ? 0 : 1;
+        UI::print_list_entry(fe.name, fe.meta.orig_size, status_flag, (Codec)fe.meta.codec);
         if (!fe.meta.is_duplicate) total_size += fe.meta.orig_size;
     }
     std::cout << "\nDimensione totale unica: " << (total_size / 1024) << " KB\n";
-    
     fclose(f);
     res.ok = true;
     return res;
