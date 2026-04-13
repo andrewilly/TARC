@@ -10,8 +10,30 @@ namespace fs = std::filesystem;
 
 namespace IO {
 
-// Nota: implementa qui ensure_ext, expand_path, read_bytes ecc. 
-// se non sono definiti altrove, altrimenti avrai errori di link.
+// Aggiunge .tar4 se manca (usata nel main)
+std::string ensure_ext(const std::string& path) {
+    if (path.length() < 5 || path.substr(path.length() - 5) != ".tar4") {
+        return path + ".tar4";
+    }
+    return path;
+}
+
+// Esplora cartelle e pattern (usata nel main)
+void expand_path(const std::string& pattern, std::vector<std::string>& out) {
+    try {
+        if (fs::is_directory(pattern)) {
+            for (const auto& entry : fs::recursive_directory_iterator(pattern)) {
+                if (fs::is_regular_file(entry)) {
+                    out.push_back(entry.path().string());
+                }
+            }
+        } else if (fs::exists(pattern)) {
+            out.push_back(pattern);
+        }
+    } catch (...) {
+        // Silenzioso se il path non è accessibile
+    }
+}
 
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (fseek(f, h.toc_offset, SEEK_SET) != 0) return false;
@@ -49,7 +71,6 @@ bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp) {
     try {
         fs::path p(path);
-        
         if (p.has_parent_path()) {
             fs::create_directories(p.parent_path());
         }
@@ -62,7 +83,6 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
         }
         out.close();
 
-        // Ripristino timestamp
         auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
         fs::last_write_time(path, fs::file_time_type(sys_time.time_since_epoch()));
         
