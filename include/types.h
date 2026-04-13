@@ -32,7 +32,7 @@ struct Header {
     char     magic[4];   
     uint32_t version;    
     uint64_t toc_offset; 
-    uint32_t file_count; // Numero totale di file nell'archivio
+    uint32_t file_count; 
 };
 
 struct Entry {
@@ -41,9 +41,10 @@ struct Entry {
     uint64_t comp_size;  
     uint64_t xxhash;     
     uint64_t timestamp;  
+    uint32_t duplicate_of_idx; // Indice del file originale se duplicato
     uint16_t name_len;   
     uint8_t  codec;      
-    uint8_t  _pad;       
+    uint8_t  is_duplicate;     // 1 se il file è un duplicato (Deduplicazione)
 };
 
 struct ChunkHeader {
