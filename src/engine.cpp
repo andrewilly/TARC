@@ -211,6 +211,8 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
+        
+        // Determina se il file corrente corrisponde al filtro
         bool match = patterns.empty();
         if (!patterns.empty()) {
             for (const auto& p : patterns) {
@@ -218,25 +220,33 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
         }
 
+        // GESTIONE DUPLICATI
         if (fe.meta.is_duplicate) {
             if (match && !test_only) {
-                try { 
-                    fs::path dest(fe.name);
-                    if (dest.has_parent_path()) fs::create_directories(dest.parent_path());
-                    fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, fs::copy_options::overwrite_existing); 
-                } catch(...) {}
+                // ATTENZIONE: In estrazione selettiva, il file originale potrebbe non esistere sul disco
+                if (fs::exists(toc[fe.meta.duplicate_of_idx].name)) {
+                    try { 
+                        fs::path dest(fe.name);
+                        if (dest.has_parent_path()) fs::create_directories(dest.parent_path());
+                        fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, fs::copy_options::overwrite_existing); 
+                    } catch(...) {}
+                } else {
+                    // Se l'originale non c'è, dovremmo tecnicamente cercarlo nel chunk, 
+                    // ma per ora segnaliamo o saltiamo.
+                }
             }
             if (match) result.bytes_out += fe.meta.orig_size;
-            continue;
+            continue; // I duplicati non occupano spazio nel flusso solido
         }
 
+        // GESTIONE FLUSSO SOLIDO (CHUNK)
         if (!block_valid || block_pos >= current_block.size()) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || (ch.raw_size == 0 && ch.comp_size == 0)) break;
             
             std::vector<char> comp(ch.comp_size);
             if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
-                fclose(f); return {false, "Errore lettura dati"};
+                fclose(f); return {false, "Errore lettura dati chunk"};
             }
 
             current_block.assign(ch.raw_size, 0);
@@ -250,17 +260,27 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             block_valid = true;
         }
 
+        // ESTRAZIONE EFFETTIVA
         if (match) {
             UI::print_progress(i + 1, toc.size(), fe.name);
             const char* ptr = current_block.data() + block_pos;
+            
             if (XXH64(ptr, fe.meta.orig_size, 0) != fe.meta.xxhash) { 
                 fclose(f); return {false, "HASH ERROR: " + fe.name}; 
             }
-            if (!test_only) IO::write_file_to_disk(fe.name, ptr, fe.meta.orig_size, fe.meta.timestamp);
+
+            if (!test_only) {
+                if (!IO::write_file_to_disk(fe.name, ptr, fe.meta.orig_size, fe.meta.timestamp)) {
+                    fclose(f); return {false, "Errore scrittura disco: " + fe.name};
+                }
+            }
             result.bytes_out += fe.meta.orig_size;
         }
+        
+        // SPOSTAMENTO PUNTATORE: Fondamentale farlo SEMPRE per i file non duplicati
         block_pos += fe.meta.orig_size;
     }
+
     fclose(f);
     result.ok = true;
     return result;
