@@ -18,16 +18,11 @@ std::string ensure_ext(const std::string& path) {
 }
 
 void expand_path(const std::string& pattern, std::vector<std::string>& out) {
-    try {
-        fs::path p(pattern);
-        if (fs::is_directory(p)) {
-            for (const auto& entry : fs::recursive_directory_iterator(p)) {
-                if (fs::is_regular_file(entry)) out.push_back(entry.path().string());
-            }
-        } else if (fs::exists(p)) {
-            out.push_back(pattern);
-        }
-    } catch (...) {}
+    // Non facciamo più espansione qui, la facciamo nell'Engine!
+    // Aggiungiamo il pattern così com'è alla lista dei target.
+    if (!pattern.empty()) {
+        out.push_back(pattern);
+    }
 }
 
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
