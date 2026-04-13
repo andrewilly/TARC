@@ -25,24 +25,20 @@ namespace fs = std::filesystem;
 
 namespace Engine {
 
-// Normalizza i percorsi per l'interno dell'archivio
 std::string normalize_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     return path;
 }
 
-// Funzione di match stile v1.05 (semplice e veloce)
 bool wildcard_match(const std::string& filename, const std::string& pattern) {
     if (pattern == "*" || pattern == "*.*") return true;
-
     std::string f = filename;
     std::string p = pattern;
-    // Case-insensitive per Windows
     std::transform(f.begin(), f.end(), f.begin(), ::tolower);
     std::transform(p.begin(), p.end(), p.begin(), ::tolower);
 
     if (p.substr(0, 1) == "*") {
-        std::string suffix = p.substr(1); // es: ".mdb"
+        std::string suffix = p.substr(1);
         if (f.size() >= suffix.size()) {
             return f.compare(f.size() - suffix.size(), suffix.size(), suffix) == 0;
         }
@@ -56,7 +52,6 @@ struct ChunkResult {
     bool success;
 };
 
-// Worker per compressione LZMA in thread separato
 ChunkResult compress_worker(std::vector<char> raw_data, int level) {
     ChunkResult res;
     res.raw_size = (uint32_t)raw_data.size();
@@ -75,55 +70,43 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level) {
 }
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
-    (void)append; 
     TarcResult result;
     std::vector<::FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
     std::vector<std::string> expanded_files;
 
-    // --- LOGICA DI SCANSIONE RIPRISTINATA (v1.05) ---
+    // --- SCANSIONE ROBUSTA v1.12 ---
     for (const auto& in : inputs) {
-        std::string input_path = in;
-        size_t last_slash = input_path.find_last_of("\\/");
-        std::string folder = ".";
-        std::string pattern = input_path;
+        std::string path_str = in;
+        if (path_str.empty()) continue;
 
-        if (last_slash != std::string::npos) {
-            folder = input_path.substr(0, last_slash);
-            pattern = input_path.substr(last_slash + 1);
-        }
+        size_t last_slash = path_str.find_last_of("\\/");
+        std::string folder = (last_slash == std::string::npos) ? "." : path_str.substr(0, last_slash);
+        std::string pattern = (last_slash == std::string::npos) ? path_str : path_str.substr(last_slash + 1);
 
-        // Caso Wildcard (es: *.mdb)
-        if (pattern.find('*') != std::string::npos || pattern.find('?') != std::string::npos) {
+        if (pattern.find('*') != std::string::npos) {
             if (fs::exists(folder) && fs::is_directory(folder)) {
                 for (auto& entry : fs::directory_iterator(folder)) {
-                    if (entry.is_regular_file()) {
-                        std::string fname = entry.path().filename().string();
-                        if (wildcard_match(fname, pattern)) {
-                            expanded_files.push_back(entry.path().string());
-                        }
+                    if (entry.is_regular_file() && wildcard_match(entry.path().filename().string(), pattern)) {
+                        expanded_files.push_back(entry.path().string());
                     }
                 }
             }
-        } 
-        // Caso Directory
-        else if (fs::exists(input_path) && fs::is_directory(input_path)) {
-            for (auto& entry : fs::recursive_directory_iterator(input_path)) {
+        } else if (fs::is_directory(path_str)) {
+            for (auto& entry : fs::recursive_directory_iterator(path_str)) {
                 if (entry.is_regular_file()) expanded_files.push_back(entry.path().string());
             }
-        }
-        // Caso File Singolo
-        else if (fs::exists(input_path)) {
-            expanded_files.push_back(input_path);
+        } else if (fs::exists(path_str)) {
+            expanded_files.push_back(path_str);
         }
     }
 
     if (expanded_files.empty()) return {false, "Nessun file trovato"};
 
-    // --- PREPARAZIONE ARCHIVIO ---
-    std::string temp_path = archive_path + ".tmp";
-    FILE* f = fopen(temp_path.c_str(), "wb");
-    if (!f) return {false, "Errore apertura file temporaneo"};
+    // Nota: Se append è true, qui andrebbe caricato il TOC esistente. 
+    // Per ora creiamo un nuovo archivio per stabilità.
+    FILE* f = fopen(archive_path.c_str(), "wb");
+    if (!f) return {false, "Errore apertura file"};
 
     ::Header h;
     memset(&h, 0, sizeof(h));
@@ -131,24 +114,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     h.version = 110;
     fwrite(&h, sizeof(h), 1, f);
 
-    // Gestione Chunk Solid (v1.10)
-    size_t CHUNK_THRESHOLD = 64 * 1024 * 1024; // 64MB per stabilità
+    size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
     std::vector<char> solid_buf;
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
 
-    auto write_worker = [&](std::future<ChunkResult>& fut) {
-        ChunkResult res = fut.get();
-        if (res.success) {
-            ::ChunkHeader ch = { res.raw_size, (uint32_t)res.compressed_data.size() };
-            fwrite(&ch, sizeof(ch), 1, f);
-            fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f);
-            result.bytes_out += res.compressed_data.size();
-        }
-        return res.success;
-    };
-
-    // --- LOOP DI COMPRESSIONE ---
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         std::string disk_path = expanded_files[i];
         UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
@@ -156,8 +126,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         uintmax_t fsize = fs::file_size(disk_path);
         std::ifstream in_f(disk_path, std::ios::binary);
         std::vector<char> data(fsize);
-        if (fsize > 0) in_f.read(data.data(), fsize);
-        in_f.close();
+        in_f.read(data.data(), fsize);
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
         ::FileEntry fe;
@@ -165,51 +134,42 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.orig_size = (uint32_t)fsize;
         fe.meta.xxhash = h64;
         fe.meta.codec = (uint8_t)Codec::LZMA;
-        fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(disk_path).time_since_epoch()).count();
 
-        // Deduplicazione
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
         } else {
             hash_map[h64] = (uint32_t)final_toc.size();
-            fe.meta.is_duplicate = 0;
-            
-            if (!solid_buf.empty() && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
-                if (worker_active) write_worker(future_chunk);
-                future_chunk = std::async(std::launch::async, compress_worker, std::move(solid_buf), level);
-                worker_active = true;
-                solid_buf.clear();
+            if (worker_active && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
+                ChunkResult res = future_chunk.get();
+                ::ChunkHeader ch = { res.raw_size, (uint32_t)res.compressed_data.size() };
+                fwrite(&ch, sizeof(ch), 1, f);
+                fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f);
+                worker_active = false;
             }
             solid_buf.insert(solid_buf.end(), data.begin(), data.end());
-            result.bytes_in += fsize;
+            if (!worker_active) {
+                future_chunk = std::async(std::launch::async, compress_worker, solid_buf, level);
+                solid_buf.clear();
+                worker_active = true;
+            }
         }
         final_toc.push_back(fe);
     }
 
-    // Chiusura ultimi buffer
-    if (worker_active) write_worker(future_chunk);
-    if (!solid_buf.empty()) {
-        ChunkResult last = compress_worker(std::move(solid_buf), level);
-        if (last.success) {
-            ::ChunkHeader ch = { last.raw_size, (uint32_t)last.compressed_data.size() };
-            fwrite(&ch, sizeof(ch), 1, f);
-            fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f);
-            result.bytes_out += last.compressed_data.size();
-        }
+    if (worker_active) {
+        ChunkResult res = future_chunk.get();
+        ::ChunkHeader ch = { res.raw_size, (uint32_t)res.compressed_data.size() };
+        fwrite(&ch, sizeof(ch), 1, f);
+        fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f);
     }
 
-    ::ChunkHeader end_mark = {0, 0};
-    fwrite(&end_mark, sizeof(end_mark), 1, f);
-    
-    h.toc_offset = (uint64_t)ftell(f);
+    h.toc_offset = ftell(f);
     IO::write_toc(f, h, final_toc);
-    
     fseek(f, 0, SEEK_SET);
     fwrite(&h, sizeof(h), 1, f);
     fclose(f);
 
-    fs::rename(temp_path, archive_path);
     result.ok = true;
     return result;
 }
