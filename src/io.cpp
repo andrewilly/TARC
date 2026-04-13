@@ -4,10 +4,14 @@
 #include <fstream>
 #include <vector>
 #include <chrono>
+#include <cstring>
 
 namespace fs = std::filesystem;
 
 namespace IO {
+
+// Nota: implementa qui ensure_ext, expand_path, read_bytes ecc. 
+// se non sono definiti altrove, altrimenti avrai errori di link.
 
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (fseek(f, h.toc_offset, SEEK_SET) != 0) return false;
@@ -36,7 +40,6 @@ bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
         if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }
 
-    // Torna all'inizio per aggiornare l'header con il numero file e l'offset corretto
     fseek(f, 0, SEEK_SET);
     if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
     
@@ -47,7 +50,6 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
     try {
         fs::path p(path);
         
-        // Crea le sottocartelle se necessario
         if (p.has_parent_path()) {
             fs::create_directories(p.parent_path());
         }
@@ -55,12 +57,12 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
         std::ofstream out(path, std::ios::binary);
         if (!out) return false;
         
-        if (size > 0) {
+        if (size > 0 && data != nullptr) {
             out.write(data, size);
         }
         out.close();
 
-        // Ripristina la data di modifica originale
+        // Ripristino timestamp
         auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
         fs::last_write_time(path, fs::file_time_type(sys_time.time_since_epoch()));
         
@@ -68,6 +70,20 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
     } catch (...) {
         return false;
     }
+}
+
+bool read_bytes(FILE* f, void* buf, size_t size) {
+    return fread(buf, 1, size, f) == size;
+}
+
+bool write_bytes(FILE* f, const void* buf, size_t size) {
+    return fwrite(buf, 1, size, f) == size;
+}
+
+bool write_entry(FILE* f, const FileEntry& entry) {
+    if (fwrite(&entry.meta, sizeof(Entry), 1, f) != 1) return false;
+    if (fwrite(entry.name.c_str(), 1, entry.meta.name_len, f) != entry.meta.name_len) return false;
+    return true;
 }
 
 } // namespace IO
