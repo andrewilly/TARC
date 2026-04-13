@@ -137,14 +137,20 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
 
+// --- LOOP DI COMPRESSIONE CORRETTO v1.16 ---
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         std::string disk_path = expanded_files[i];
+        
+        // UI: Nome file e progresso
         UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
         
         uintmax_t fsize = fs::file_size(disk_path);
         std::ifstream in_f(disk_path, std::ios::binary);
+        if (!in_f) continue; // Salta se il file è bloccato (es. database aperto)
+
         std::vector<char> data(fsize);
-        in_f.read(data.data(), fsize);
+        if (fsize > 0) in_f.read(data.data(), fsize);
+        in_f.close();
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
         ::FileEntry fe;
@@ -158,22 +164,24 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             fe.meta.duplicate_of_idx = hash_map[h64];
         } else {
             hash_map[h64] = (uint32_t)final_toc.size();
-            if (worker_active && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
-                ChunkResult res = future_chunk.get();
-                ::ChunkHeader ch = { res.raw_size, (uint32_t)res.compressed_data.size() };
-                fwrite(&ch, sizeof(ch), 1, f);
-                fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f);
-                worker_active = false;
+            fe.meta.is_duplicate = 0;
+
+            // Se il buffer accumulato supera la soglia, comprimiamo quello che abbiamo
+            if (!solid_buf.empty() && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
+                if (worker_active) {
+                    if (!write_worker(future_chunk)) return {false, "Errore durante la compressione LZMA"};
+                }
+                // Passiamo una COPIA dei dati al thread
+                future_chunk = std::async(std::launch::async, compress_worker, solid_buf, level);
+                worker_active = true;
+                solid_buf.clear();
             }
             solid_buf.insert(solid_buf.end(), data.begin(), data.end());
-            if (!worker_active) {
-                future_chunk = std::async(std::launch::async, compress_worker, solid_buf, level);
-                solid_buf.clear();
-                worker_active = true;
-            }
+            result.bytes_in += fsize;
         }
         final_toc.push_back(fe);
     }
+    
 
     if (worker_active) {
         ChunkResult res = future_chunk.get();
