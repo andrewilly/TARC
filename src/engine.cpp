@@ -12,10 +12,14 @@
 #include <future>
 
 #ifdef _WIN32
-#include <windows.h>
+    #include <windows.h>
+#elif defined(__APPLE__)
+    #include <sys/types.h>
+    #include <sys/sysctl.h>
+    #include <unistd.h>
 #else
-#include <unistd.h>
-#include <sys/sysinfo.h>
+    #include <unistd.h>
+    #include <sys/sysinfo.h>
 #endif
 
 #include "zstd.h"
@@ -35,10 +39,18 @@ size_t get_system_ram() {
     status.dwLength = sizeof(status);
     GlobalMemoryStatusEx(&status);
     return (size_t)status.ullTotalPhys;
+#elif defined(__APPLE__)
+    int64_t mem;
+    size_t len = sizeof(mem);
+    static int mib[2] = { CTL_HW, HW_MEMSIZE };
+    if (sysctl(mib, 2, &mem, &len, NULL, 0) == 0) {
+        return (size_t)mem;
+    }
+    return 2048ULL * 1024 * 1024; // Fallback 2GB
 #else
     struct sysinfo si;
     if (sysinfo(&si) == 0) return (size_t)si.totalram * si.mem_unit;
-    return 2048ULL * 1024 * 1024;
+    return 2048ULL * 1024 * 1024; // Fallback 2GB
 #endif
 }
 
