@@ -59,23 +59,25 @@ struct ChunkResult {
     std::vector<char> compressed_data;
     uint32_t raw_size;
     bool success;
-    std::vector<size_t> file_indices; // Indici dei file in questo chunk
+    std::vector<size_t> file_indices; 
 };
 
+// FIX: Usiamo l'interfaccia "easy" per garantire stream auto-descrittivi
 ChunkResult compress_worker(std::vector<char> raw_data, int level, std::vector<size_t> indices) {
     ChunkResult res;
     res.raw_size = (uint32_t)raw_data.size();
     res.file_indices = indices;
-    res.compressed_data.resize(raw_data.size() + (128 * 1024));
     
-    lzma_options_lzma opt;
-    lzma_lzma_preset(&opt, (uint32_t)((level < 0) ? 6 : level));
-    lzma_filter filters[] = {{ LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL }};
+    size_t max_out = lzma_stream_buffer_bound(raw_data.size());
+    res.compressed_data.resize(max_out);
+
     size_t out_pos = 0;
+    uint32_t preset = (level < 0) ? 6 : (uint32_t)level;
     
-    lzma_ret ret = lzma_stream_buffer_encode(filters, LZMA_CHECK_CRC64, NULL, 
-                                           (uint8_t*)raw_data.data(), raw_data.size(), 
-                                           (uint8_t*)res.compressed_data.data(), &out_pos, res.compressed_data.size());
+    lzma_ret ret = lzma_easy_buffer_encode(
+        preset, LZMA_CHECK_CRC64, NULL, 
+        (const uint8_t*)raw_data.data(), raw_data.size(), 
+        (uint8_t*)res.compressed_data.data(), &out_pos, max_out);
     
     if (ret == LZMA_OK) {
         res.compressed_data.resize(out_pos);
@@ -93,7 +95,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<::FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
 
-    // Verifica spazio su disco
     try {
         fs::space_info space = fs::space(fs::path(archive_path).parent_path());
         uintmax_t total_input_size = 0;
@@ -128,7 +129,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<size_t> current_chunk_indices;
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
-    std::queue<std::pair<std::vector<char>, std::vector<size_t>>> pending_chunks;
 
     auto write_finished_worker = [&](std::future<ChunkResult>& fut) {
         ChunkResult res = fut.get();
@@ -161,33 +161,27 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(ftime.time_since_epoch()).count();
 
         if (hash_map.count(h64)) {
-            // DUPLICATO: NON aggiungere ai dati solid
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
             final_toc.push_back(fe);
-            continue; // Importante: skip aggiunta dati
+            continue; 
         }
         
-        // Nuovo file unico
         hash_map[h64] = (uint32_t)final_toc.size();
         fe.meta.is_duplicate = 0;
         
-        // Gestione chunk
         if (!solid_buf.empty() && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
             if (worker_active) write_finished_worker(future_chunk);
             
-            // Lancia compressione in background
             future_chunk = std::async(std::launch::async, compress_worker, 
                                      std::move(solid_buf), level, 
                                      current_chunk_indices);
             worker_active = true;
             
-            // Prepara nuovo buffer
             solid_buf.clear();
             current_chunk_indices.clear();
         }
         
-        // Aggiunge dati al buffer corrente
         solid_buf.insert(solid_buf.end(), data.begin(), data.end());
         current_chunk_indices.push_back(final_toc.size());
         result.bytes_in += fsize;
@@ -195,7 +189,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         final_toc.push_back(fe);
     }
 
-    // Scrivi chunk finale
     if (worker_active) write_finished_worker(future_chunk);
     if (!solid_buf.empty()) {
         ChunkResult last_res = compress_worker(std::move(solid_buf), level, current_chunk_indices);
@@ -207,11 +200,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         }
     }
 
-    // Scrivi end marker
     ::ChunkHeader end_mark = {0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
-    // Scrivi TOC
     if (!IO::write_toc(f, h, final_toc)) {
         fclose(f);
         fs::remove(temp_path);
@@ -219,10 +210,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     }
     
     fclose(f);
-    
-    // Rinomina atomico
     fs::rename(temp_path, archive_path);
-    
     result.ok = true;
     return result;
 }
@@ -244,7 +232,6 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
         return {false, "TOC non leggibile"}; 
     }
 
-    // Posizionati dopo l'header
     fseek(f, sizeof(::Header), SEEK_SET);
     
     std::vector<char> current_block;
@@ -259,20 +246,16 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
         if (fe.meta.is_duplicate) {
             if (!test_only) {
                 try { 
-                    // Verifica che l'indice sia valido
                     if (fe.meta.duplicate_of_idx < i) {
                         fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, 
                                 fs::copy_options::overwrite_existing);
                     }
-                } catch(...) { 
-                    // Silenziosamente ignora errori di copia duplicati
-                }
+                } catch(...) {}
             }
             result.bytes_out += fe.meta.orig_size;
             continue;
         }
 
-        // Se il blocco corrente non contiene il file o è esaurito
         if (!block_valid || block_pos >= current_block.size()) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
@@ -288,9 +271,10 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
             
             current_block.assign(ch.raw_size, 0);
             size_t src_pos = 0, dst_pos = 0;
+            uint64_t memlimit = UINT64_MAX; // FIX: Puntatore valido a memlimit
             
             lzma_ret ret = lzma_stream_buffer_decode(
-                NULL, (uint64_t)UINT64_MAX, NULL, 
+                &memlimit, 0, NULL, 
                 (const uint8_t*)comp.data(), &src_pos, ch.comp_size,
                 (uint8_t*)current_block.data(), &dst_pos, ch.raw_size);
             
@@ -304,24 +288,17 @@ TarcResult extract(const std::string& arch_path, bool test_only) {
             current_chunk_idx++;
         }
 
-        // Verifica spazio nel blocco
         if (block_pos + fe.meta.orig_size > current_block.size()) {
             fclose(f); 
-            return {false, "Sincronizzazione fallita su: " + fe.name + 
-                    " (pos=" + std::to_string(block_pos) + 
-                    ", size=" + std::to_string(fe.meta.orig_size) + 
-                    ", block=" + std::to_string(current_block.size()) + ")"};
+            return {false, "Sincronizzazione fallita su: " + fe.name};
         }
 
         const char* data_ptr = current_block.data() + block_pos;
         
-        // Verifica integrità
         uint64_t computed_hash = XXH64(data_ptr, fe.meta.orig_size, 0);
         if (computed_hash != fe.meta.xxhash) {
             fclose(f); 
-            return {false, "ERRORE INTEGRITÀ su " + fe.name + 
-                    " (hash calcolato=" + std::to_string(computed_hash) + 
-                    ", atteso=" + std::to_string(fe.meta.xxhash) + ")"};
+            return {false, "ERRORE INTEGRITÀ su " + fe.name};
         }
 
         if (!test_only) {
