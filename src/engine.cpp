@@ -38,14 +38,29 @@ namespace Engine {
 
 bool wildcard_match(const std::string& text, const std::string& pattern) {
     if (pattern == "*" || pattern == "*.*") return true;
+
     try {
-        std::string r = std::regex_replace(pattern, std::regex("\\."), "\\.");
-        r = std::regex_replace(r, std::regex("\\*"), ".*");
-        r = std::regex_replace(r, std::regex("\\?"), ".");
+        // Normalizziamo i percorsi: trasformiamo tutto in '/' per il confronto
+        std::string n_text = text;
+        std::replace(n_text.begin(), n_text.end(), '\\', '/');
+        std::string n_pattern = pattern;
+        std::replace(n_pattern.begin(), n_pattern.end(), '\\', '/');
+
+        // Se il pattern è una cartella (es: "cartella/"), aggiungiamo "*" automaticamente
+        if (!n_pattern.empty() && n_pattern.back() == '/') {
+            n_pattern += "*";
+        }
+
+        // Trasformiamo il pattern in una Regex
+        std::string r = n_pattern;
+        r = std::regex_replace(r, std::regex("\\."), "\\."); // . -> \.
+        r = std::regex_replace(r, std::regex("\\*"), ".*");  // * -> .*
+        r = std::regex_replace(r, std::regex("\\?"), ".");   // ? -> .
+        
         std::regex re(r, std::regex_constants::icase);
-        return std::regex_match(text, re);
+        return std::regex_match(n_text, re) || n_text.find(n_pattern) == 0;
     } catch (...) { 
-        return text == pattern; 
+        return false; 
     }
 }
 
