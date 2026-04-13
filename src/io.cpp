@@ -1,87 +1,63 @@
 #include "io.h"
+#include "types.h"
 #include <filesystem>
-#include <algorithm>
-#include <cstring> // Per std::memcmp
+#include <fstream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
 namespace IO {
 
-std::string ensure_ext(const std::string& filename) {
-    std::string ext = TARC_EXT;
-    if (filename.size() < ext.size() || 
-        filename.compare(filename.size() - ext.size(), ext.size(), ext) != 0) {
-        return filename + ext;
-    }
-    return filename;
-}
-
-bool read_bytes(FILE* f, void* buffer, size_t size) {
-    if (!f || !buffer) return false;
-    return fread(buffer, 1, size, f) == size;
-}
-
-bool write_bytes(FILE* f, const void* buffer, size_t size) {
-    if (!f || !buffer) return false;
-    return fwrite(buffer, 1, size, f) == size;
-}
-
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
-    fseek(f, 0, SEEK_SET);
-    if (!read_bytes(f, &h, sizeof(Header))) return false;
-
-    // Verifica Magic Number
-    if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) return false;
-
-    fseek(f, h.toc_offset, SEEK_SET);
+    if (fseek(f, h.toc_offset, SEEK_SET) != 0) return false;
+    
     for (uint32_t i = 0; i < h.file_count; ++i) {
         FileEntry fe;
-        uint32_t name_len;
+        if (fread(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
         
-        // Leggiamo la lunghezza del nome
-        if (!read_bytes(f, &name_len, sizeof(name_len))) return false;
-        
-        // Leggiamo il nome del file
-        std::vector<char> name_buf(name_len);
-        if (!read_bytes(f, name_buf.data(), name_len)) return false;
-        fe.name.assign(name_buf.begin(), name_buf.end());
-        
-        // Leggiamo i metadati (Entry)
-        if (!read_bytes(f, &fe.meta, sizeof(Entry))) return false;
+        std::vector<char> name_buf(fe.meta.name_len);
+        if (fread(name_buf.data(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
+        fe.name = std::string(name_buf.begin(), name_buf.end());
         
         toc.push_back(fe);
     }
     return true;
 }
 
-void write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
+bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     h.toc_offset = ftell(f);
-    h.file_count = (uint32_t)toc.size();
+    h.file_count = static_cast<uint32_t>(toc.size());
 
-    for (const auto& fe : toc) {
-        uint32_t name_len = (uint32_t)fe.name.size();
-        // Scriviamo lunghezza nome, nome e metadati
-        write_bytes(f, &name_len, sizeof(name_len));
-        write_bytes(f, fe.name.data(), name_len);
-        write_bytes(f, &fe.meta, sizeof(Entry));
+    for (auto& fe : toc) {
+        fe.meta.name_len = static_cast<uint16_t>(fe.name.length());
+        if (fwrite(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
+        if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }
 
-    // Aggiorniamo l'header all'inizio del file
     fseek(f, 0, SEEK_SET);
-    write_bytes(f, &h, sizeof(Header));
+    if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
+    
+    return true;
 }
 
-void expand_path(const std::string& path, std::vector<std::string>& files) {
-    if (fs::exists(path)) {
-        if (fs::is_regular_file(path)) {
-            files.push_back(path);
-        } else if (fs::is_directory(path)) {
-            for (const auto& entry : fs::recursive_directory_iterator(path)) {
-                if (fs::is_regular_file(entry)) {
-                    files.push_back(entry.path().string());
-                }
-            }
+// Funzione helper per creare cartelle e scrivere file
+bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp) {
+    try {
+        fs::path p(path);
+        if (p.has_parent_path()) {
+            fs::create_directories(p.parent_path());
         }
+
+        std::ofstream out(path, std::ios::binary);
+        if (!out) return false;
+        out.write(data, size);
+        out.close();
+
+        // Ripristina timestamp
+        fs::last_write_time(path, fs::file_time_type(std::chrono::seconds(timestamp)));
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 
