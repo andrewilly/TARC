@@ -127,12 +127,18 @@ void print_delete(const std::string& name) {
     printf("%s[-]%s Rimosso: %s\n", Color::RED, Color::RESET, name.c_str());
 }
 
-void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec, bool is_duplicate) {
-    printf("  [%s%s%s] %-42s %10s  %s(%s)%s\n",
+void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {
+    // Ora marchiamo DUPLICATE solo se è esplicitamente un duplicato (comp == 0)
+    // Se comp è 1 (il trucco che ti ho suggerito), mostriamo il file come normale
+    bool is_duplicate = (comp == 0); 
+
+    printf("  [%s%s%s] %-42s %10s  %s%s%s\n",
             Color::YELLOW, codec_name(codec), Color::RESET,
             name.c_str(),
             human_size(orig).c_str(),
-            Color::DIM, is_duplicate ? "DUPLICATE" : compress_ratio(orig, comp).c_str(), Color::RESET);
+            Color::DIM, 
+            is_duplicate ? "(DUPLICATE)" : "", // Mostra DUPLICATE solo se lo è davvero
+            Color::RESET);
 }
 
 void print_summary(const TarcResult& r, const std::string& op) {
