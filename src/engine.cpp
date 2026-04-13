@@ -58,7 +58,10 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level) {
     size_t max_out = lzma_stream_buffer_bound(raw_data.size());
     res.compressed_data.resize(max_out);
     size_t out_pos = 0;
+    
+    // Livello 6 è il limite consigliato per 2.9GB di RAM
     uint32_t preset = (level < 0) ? 6 : (uint32_t)level;
+    if (preset > 6) preset = 6; 
     
     lzma_ret ret = lzma_easy_buffer_encode(preset, LZMA_CHECK_CRC64, NULL, 
                                           (const uint8_t*)raw_data.data(), raw_data.size(), 
@@ -126,30 +129,47 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     bool worker_active = false;
 
     auto write_worker = [&](std::future<ChunkResult>& fut) -> bool {
-        ChunkResult res = fut.get();
-        if (res.success) {
-            ::ChunkHeader ch = { res.raw_size, (uint32_t)res.compressed_data.size() };
-            fwrite(&ch, sizeof(ch), 1, f);
-            fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f);
-            result.bytes_out += res.compressed_data.size();
-            return true;
-        }
+        try {
+            ChunkResult res = fut.get();
+            if (res.success) {
+                ::ChunkHeader ch = { res.raw_size, (uint32_t)res.compressed_data.size() };
+                fwrite(&ch, sizeof(ch), 1, f);
+                fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f);
+                result.bytes_out += res.compressed_data.size();
+                return true;
+            }
+        } catch (...) {}
         return false;
     };
 
-    // --- LOOP DI COMPRESSIONE ---
+    // --- LOOP DI COMPRESSIONE ULTRA-STABILE v1.18 ---
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         std::string disk_path = expanded_files[i];
-        UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
+        std::string filename = fs::path(disk_path).filename().string();
         
-        uintmax_t fsize = 0;
-        try { fsize = fs::file_size(disk_path); } catch(...) { continue; }
+        UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), filename);
         
-        std::ifstream in_f(disk_path, std::ios::binary);
-        if (!in_f) continue; // Database bloccato, saltiamo
+        std::error_code ec;
+        uintmax_t fsize = fs::file_size(disk_path, ec);
+        if (ec) continue;
 
-        std::vector<char> data(fsize);
-        if (fsize > 0) in_f.read(data.data(), fsize);
+        std::ifstream in_f(disk_path, std::ios::binary | std::ios::in);
+        if (!in_f.is_open()) continue;
+
+        std::vector<char> data;
+        try {
+            data.resize(fsize);
+            if (fsize > 0) {
+                in_f.read(data.data(), fsize);
+                if (in_f.gcount() != (std::streamsize)fsize) {
+                    in_f.close();
+                    continue; 
+                }
+            }
+        } catch (...) { 
+            in_f.close();
+            continue; 
+        }
         in_f.close();
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
@@ -158,7 +178,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.orig_size = (uint32_t)fsize;
         fe.meta.xxhash = h64;
         fe.meta.codec = (uint8_t)Codec::LZMA;
-        fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(disk_path).time_since_epoch()).count();
+        fe.meta.timestamp = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(
+            fs::last_write_time(disk_path, ec).time_since_epoch()).count();
 
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
@@ -171,7 +192,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 if (worker_active) {
                     if (!write_worker(future_chunk)) return {false, "Errore compressione LZMA"};
                 }
-                future_chunk = std::async(std::launch::async, compress_worker, solid_buf, level);
+                std::vector<char> to_compress = solid_buf;
+                future_chunk = std::async(std::launch::async, compress_worker, std::move(to_compress), level);
                 worker_active = true;
                 solid_buf.clear();
             }
@@ -229,7 +251,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         if (fe.meta.is_duplicate) {
             if (match && !test_only) {
-                // Gestione duplicato...
+                // Duplicato gestito via TOC
             }
             if (match) result.bytes_out += fe.meta.orig_size;
             continue;
