@@ -48,18 +48,29 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 }
 
 bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
+    // Assicura che tutti i dati siano scritti
     fflush(f);
-    h.toc_offset = (uint64_t)ftell(f);
+    
+    // Salva posizione corrente
+    long toc_pos = ftell(f);
+    if (toc_pos == -1) return false;
+    
+    h.toc_offset = (uint64_t)toc_pos;
     h.file_count = static_cast<uint32_t>(toc.size());
 
+    // Scrivi tutte le entry
     for (auto& fe : toc) {
         fe.meta.name_len = static_cast<uint16_t>(fe.name.length());
-        fwrite(&fe.meta, sizeof(Entry), 1, f);
-        fwrite(fe.name.c_str(), 1, fe.meta.name_len, f);
+        if (fwrite(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
+        if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }
 
-    fseek(f, 0, SEEK_SET);
-    fwrite(&h, sizeof(Header), 1, f);
+    // Torna all'inizio e aggiorna header
+    if (fseek(f, 0, SEEK_SET) != 0) return false;
+    if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
+    
+    // Torna alla fine del file
+    if (fseek(f, 0, SEEK_END) != 0) return false;
     fflush(f);
     return true;
 }
