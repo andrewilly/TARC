@@ -36,29 +36,36 @@ namespace fs = std::filesystem;
 
 namespace Engine {
 
+// --- FUNZIONE HELPER: NORMALIZZAZIONE PERCORSI ---
+// Trasforma le backslash di Windows in forward slash per uniformità nell'archivio
+std::string normalize_path(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return path;
+}
+
 bool wildcard_match(const std::string& text, const std::string& pattern) {
-    if (pattern == "*" || pattern == "*.*") return true;
+    if (pattern == "*" || pattern == "*.*" || pattern.empty()) return true;
 
     try {
-        // Normalizziamo i percorsi: trasformiamo tutto in '/' per il confronto
-        std::string n_text = text;
-        std::replace(n_text.begin(), n_text.end(), '\\', '/');
-        std::string n_pattern = pattern;
-        std::replace(n_pattern.begin(), n_pattern.end(), '\\', '/');
+        // Normalizziamo i percorsi per il confronto
+        std::string n_text = normalize_path(text);
+        std::string n_pattern = normalize_path(pattern);
 
-        // Se il pattern è una cartella (es: "cartella/"), aggiungiamo "*" automaticamente
-        if (!n_pattern.empty() && n_pattern.back() == '/') {
-            n_pattern += "*";
+        // Se il pattern finisce con '/', intendiamo "tutto il contenuto della cartella"
+        if (n_pattern.back() == '/') {
+            return n_text.compare(0, n_pattern.size(), n_pattern) == 0;
         }
 
         // Trasformiamo il pattern in una Regex
         std::string r = n_pattern;
-        r = std::regex_replace(r, std::regex("\\."), "\\."); // . -> \.
-        r = std::regex_replace(r, std::regex("\\*"), ".*");  // * -> .*
-        r = std::regex_replace(r, std::regex("\\?"), ".");   // ? -> .
+        r = std::regex_replace(r, std::regex("\\."), "\\."); 
+        r = std::regex_replace(r, std::regex("\\*"), ".*");  
+        r = std::regex_replace(r, std::regex("\\?"), ".");   
         
         std::regex re(r, std::regex_constants::icase);
-        return std::regex_match(n_text, re) || n_text.find(n_pattern) == 0;
+        
+        // Verifica se combacia o se il testo inizia con il pattern (per gestione cartelle senza wildcard)
+        return std::regex_match(n_text, re) || n_text.compare(0, n_pattern.size(), n_pattern) == 0;
     } catch (...) { 
         return false; 
     }
@@ -143,22 +150,28 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     };
 
     for (size_t i = 0; i < files.size(); ++i) {
-        if (!fs::is_regular_file(files[i])) continue;
-        UI::print_progress(i + 1, files.size(), fs::path(files[i]).filename().string());
+        // Salva il percorso originale per leggere dal disco
+        std::string disk_path = files[i];
+        if (!fs::is_regular_file(disk_path)) continue;
+
+        UI::print_progress(i + 1, files.size(), fs::path(disk_path).filename().string());
         
-        uintmax_t fsize = fs::file_size(files[i]);
-        std::ifstream in(files[i], std::ios::binary);
+        uintmax_t fsize = fs::file_size(disk_path);
+        std::ifstream in(disk_path, std::ios::binary);
         std::vector<char> data(fsize);
         if (fsize > 0) in.read(data.data(), fsize);
         in.close();
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
         ::FileEntry fe;
-        fe.name = fs::relative(files[i]).string();
+        
+        // NORMALIZZAZIONE: nome nel TOC sempre con '/' per portabilità
+        fe.name = normalize_path(disk_path);
+        
         fe.meta.orig_size = (uint32_t)fsize;
         fe.meta.xxhash = h64;
         fe.meta.codec = (uint8_t)Codec::LZMA;
-        auto ftime = fs::last_write_time(files[i]);
+        auto ftime = fs::last_write_time(disk_path);
         fe.meta.timestamp = std::chrono::duration_cast<std::chrono::seconds>(ftime.time_since_epoch()).count();
 
         if (hash_map.count(h64)) {
@@ -227,7 +240,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
         
-        // Determina se il file corrente corrisponde al filtro
         bool match = patterns.empty();
         if (!patterns.empty()) {
             for (const auto& p : patterns) {
@@ -238,20 +250,16 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         // GESTIONE DUPLICATI
         if (fe.meta.is_duplicate) {
             if (match && !test_only) {
-                // ATTENZIONE: In estrazione selettiva, il file originale potrebbe non esistere sul disco
                 if (fs::exists(toc[fe.meta.duplicate_of_idx].name)) {
                     try { 
                         fs::path dest(fe.name);
                         if (dest.has_parent_path()) fs::create_directories(dest.parent_path());
                         fs::copy(toc[fe.meta.duplicate_of_idx].name, fe.name, fs::copy_options::overwrite_existing); 
                     } catch(...) {}
-                } else {
-                    // Se l'originale non c'è, dovremmo tecnicamente cercarlo nel chunk, 
-                    // ma per ora segnaliamo o saltiamo.
                 }
             }
             if (match) result.bytes_out += fe.meta.orig_size;
-            continue; // I duplicati non occupano spazio nel flusso solido
+            continue;
         }
 
         // GESTIONE FLUSSO SOLIDO (CHUNK)
@@ -275,7 +283,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             block_valid = true;
         }
 
-        // ESTRAZIONE EFFETTIVA
         if (match) {
             UI::print_progress(i + 1, toc.size(), fe.name);
             const char* ptr = current_block.data() + block_pos;
@@ -291,8 +298,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
             result.bytes_out += fe.meta.orig_size;
         }
-        
-        // SPOSTAMENTO PUNTATORE: Fondamentale farlo SEMPRE per i file non duplicati
         block_pos += fe.meta.orig_size;
     }
 
