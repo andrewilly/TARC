@@ -53,20 +53,22 @@ void resolve_wildcards(const std::string& pattern, std::vector<std::string>& out
     size_t last_slash = pattern.find_last_of("\\/");
     if (last_slash != std::string::npos) directory = pattern.substr(0, last_slash + 1);
 
-    do {
-        std::string fileName = findData.c_str();
-        if (fileName != "." && fileName != "..") {
-            std::string fullPath = directory + fileName;
-            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                out.push_back(fullPath);
-            } else {
-                // Se è una directory, aggiungi ricorsivamente i file contenuti
-                for (auto& p : fs::recursive_directory_iterator(fullPath)) {
-                    if (p.is_regular_file()) out.push_back(p.path().string());
-                }
+do {
+    // findData.cFileName è già un char*, basta passarlo direttamente al costruttore di string
+    std::string foundName(findData.cFileName); 
+    
+    if (foundName != "." && foundName != "..") {
+        std::string fullPath = dir + foundName;
+        if (fs::is_regular_file(fullPath)) {
+            out.push_back(fullPath);
+        } else if (fs::is_directory(fullPath)) {
+            // Se è una directory, la esploriamo ricorsivamente
+            for (auto& p : fs::recursive_directory_iterator(fullPath)) {
+                if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
             }
         }
-    } while (FindNextFileA(hFind, &findData));
+    }
+} while (FindNextFileA(hFind, &findData));
     FindClose(hFind);
 #else
     // Su Linux/Mac la shell espande già le wildcard, quindi usiamo std::filesystem
@@ -233,7 +235,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             current_block.assign(ch.raw_size, 0);
             if (ch.codec == (uint32_t)Codec::LZMA) {
                 size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
-                lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
+                (void) lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
             } else memcpy(current_block.data(), comp.data(), ch.raw_size);
             block_pos = 0;
         }
