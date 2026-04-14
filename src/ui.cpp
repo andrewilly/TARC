@@ -36,7 +36,7 @@ void show_help() {
     const char* Y = Color::YELLOW;
 
     printf("\n");
-    printf("  TARC v1.10 - HYBRID SOLID ENGINE\n");
+    printf("  TARC v2.00 - HYBRID SOLID ENGINE\n");
     printf("  ======================================\n\n");
     
     printf("  %s%-12s%s %s- %sCrea/Aggiorna Solid   (Deduplicazione ON)%s\n", G, "-c / -a", R, G, W, R);
@@ -52,7 +52,7 @@ void show_help() {
 // ─── BANNER ──────────────────────────────────────────────────────────────────
 void show_banner() {
     std::cout << Color::CYAN << "==========================================\n";
-    std::cout << "          TARC STRIKE v1.10               \n";
+    std::cout << "          TARC STRIKE v2.00               \n";
     std::cout << "      Advanced Solid Compression          \n";
     std::cout << "==========================================\n" << Color::RESET << std::endl;
 }
