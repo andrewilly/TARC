@@ -40,6 +40,12 @@ namespace CodecSelector {
 
 namespace Engine {
 
+// Spostiamo normalize_path in alto così resolve_wildcards può vederla
+std::string normalize_path(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return path;
+}
+
 // --- GESTIONE WILDCARDS NATIVA WINDOWS ---
 void resolve_wildcards(const std::string& pattern, std::vector<std::string>& out) {
 #ifdef _WIN32
@@ -53,37 +59,34 @@ void resolve_wildcards(const std::string& pattern, std::vector<std::string>& out
     size_t last_slash = pattern.find_last_of("\\/");
     if (last_slash != std::string::npos) directory = pattern.substr(0, last_slash + 1);
 
-do {
-    // findData.cFileName è già un char*, basta passarlo direttamente al costruttore di string
-    std::string foundName(findData.cFileName); 
-    
-    if (foundName != "." && foundName != "..") {
-        std::string fullPath = dir + foundName;
-        if (fs::is_regular_file(fullPath)) {
-            out.push_back(fullPath);
-        } else if (fs::is_directory(fullPath)) {
-            // Se è una directory, la esploriamo ricorsivamente
-            for (auto& p : fs::recursive_directory_iterator(fullPath)) {
-                if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
+    do {
+        // findData.cFileName è un char array, lo convertiamo in stringa
+        std::string foundName(findData.cFileName); 
+        
+        if (foundName != "." && foundName != "..") {
+            std::string fullPath = directory + foundName;
+            if (fs::exists(fullPath)) {
+                if (fs::is_regular_file(fullPath)) {
+                    out.push_back(normalize_path(fullPath));
+                } else if (fs::is_directory(fullPath)) {
+                    // Se è una directory, la esploriamo ricorsivamente
+                    for (auto& p : fs::recursive_directory_iterator(fullPath)) {
+                        if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
+                    }
+                }
             }
         }
-    }
-} while (FindNextFileA(hFind, &findData));
+    } while (FindNextFileA(hFind, &findData));
     FindClose(hFind);
 #else
     // Su Linux/Mac la shell espande già le wildcard, quindi usiamo std::filesystem
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
             for (auto& p : fs::recursive_directory_iterator(pattern)) 
-                if (p.is_regular_file()) out.push_back(p.path().string());
-        } else out.push_back(pattern);
+                if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
+        } else out.push_back(normalize_path(pattern));
     }
 #endif
-}
-
-std::string normalize_path(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
-    return path;
 }
 
 struct ChunkResult {
