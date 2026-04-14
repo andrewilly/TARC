@@ -31,7 +31,6 @@ namespace CodecSelector {
         std::transform(e.begin(), e.end(), e.begin(), ::tolower);
         return skip.find(e) == skip.end();
     }
-
     Codec select(const std::string& path, size_t size) {
         if (!is_compressible(fs::path(path).extension().string())) return Codec::STORE;
         return (size < 1024 * 512) ? Codec::ZSTD : Codec::LZMA;
@@ -111,22 +110,38 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     for (const auto& in : inputs) resolve_wildcards(in, expanded_files);
     if (expanded_files.empty()) return {false, "Nessun file trovato."};
 
-    std::sort(expanded_files.begin(), expanded_files.end(), [](const std::string& a, const std::string& b) {
-        std::string extA = fs::path(a).extension().string();
-        std::string extB = fs::path(b).extension().string();
-        return (extA != extB) ? extA < extB : fs::file_size(a) < fs::file_size(b);
-    });
-
-    FILE* f = fopen(archive_path.c_str(), "wb");
-    if (!f) return {false, "Errore apertura archivio."};
-
-    ::Header h{};
-    memcpy(h.magic, TARC_MAGIC, 4);
-    h.version = TARC_VERSION;
-    fwrite(&h, sizeof(h), 1, f);
-
     std::vector<::FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
+    ::Header h{};
+
+    // --- LOGICA APPEND ---
+    if (append && fs::exists(archive_path)) {
+        FILE* f_old = fopen(archive_path.c_str(), "rb");
+        if (f_old) {
+            fread(&h, sizeof(h), 1, f_old);
+            IO::read_toc(f_old, h, final_toc);
+            fclose(f_old);
+            // Ricostruiamo la hash_map per la deduplicazione con i file vecchi
+            for (size_t k = 0; k < final_toc.size(); ++k) {
+                if (!final_toc[k].meta.is_duplicate) hash_map[final_toc[k].meta.xxhash] = (uint32_t)k;
+            }
+        }
+    } else {
+        memcpy(h.magic, TARC_MAGIC, 4);
+        h.version = TARC_VERSION;
+    }
+
+    // Apriamo in "rb+" (lettura/scrittura senza troncamento) se append, altrimenti "wb"
+    FILE* f = fopen(archive_path.c_str(), append ? "rb+" : "wb");
+    if (!f) return {false, "Errore apertura archivio."};
+
+    if (append) {
+        // Ci posizioniamo dove iniziava la vecchia TOC per sovrascriverla con nuovi dati
+        fseek(f, (long)h.toc_offset, SEEK_SET);
+    } else {
+        fwrite(&h, sizeof(h), 1, f);
+    }
+
     std::vector<char> solid_buf;
     size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
     std::future<ChunkResult> future_chunk;
@@ -152,7 +167,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
         bool read_ok = false;
 #ifdef _WIN32
-        // API NATIVA WINDOWS: Permette lettura anche se il file è parzialmente occupato (Share Read/Write)
         HANDLE hFile = CreateFileA(disk_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD bytesRead;
@@ -167,10 +181,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         }
 #endif
 
-        if (!read_ok) {
-            UI::print_error("Salto file (non accessibile): " + fs::path(disk_path).filename().string());
-            continue;
-        }
+        if (!read_ok) continue;
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
         ::FileEntry fe;
