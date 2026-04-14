@@ -18,8 +18,6 @@ std::string ensure_ext(const std::string& path) {
 }
 
 void expand_path(const std::string& pattern, std::vector<std::string>& out) {
-    // Non facciamo più espansione qui, la facciamo nell'Engine!
-    // Aggiungiamo il pattern così com'è alla lista dei target.
     if (!pattern.empty()) {
         out.push_back(pattern);
     }
@@ -43,28 +41,22 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 }
 
 bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
-    // Assicura che tutti i dati siano scritti
     fflush(f);
-    
-    // Salva posizione corrente
     long toc_pos = ftell(f);
     if (toc_pos == -1) return false;
     
     h.toc_offset = (uint64_t)toc_pos;
     h.file_count = static_cast<uint32_t>(toc.size());
 
-    // Scrivi tutte le entry
     for (auto& fe : toc) {
         fe.meta.name_len = static_cast<uint16_t>(fe.name.length());
         if (fwrite(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
         if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }
 
-    // Torna all'inizio e aggiorna header
     if (fseek(f, 0, SEEK_SET) != 0) return false;
     if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
     
-    // Torna alla fine del file
     if (fseek(f, 0, SEEK_END) != 0) return false;
     fflush(f);
     return true;
