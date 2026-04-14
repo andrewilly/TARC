@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 
 namespace CodecSelector {
     bool is_compressible(const std::string& ext) {
-        static const std::set<std::string> skip = { ".jpg", ".png", ".mp4", ".zip", ".7z", ".rar", ".gz", ".mp3", ".pdf" };
+        static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz" };
         std::string e = ext;
         std::transform(e.begin(), e.end(), e.begin(), ::tolower);
         return skip.find(e) == skip.end();
