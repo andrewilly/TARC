@@ -114,7 +114,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::map<uint64_t, uint32_t> hash_map;
     ::Header h{};
 
-    // --- LOGICA APPEND ---
     if (append && fs::exists(archive_path)) {
         FILE* f_old = fopen(archive_path.c_str(), "rb");
         if (f_old) {
@@ -131,16 +130,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     }
 
     FILE* f = fopen(archive_path.c_str(), append ? "rb+" : "wb");
-    if (!f) return {false, "Errore apertura archivio. Verifica permessi o antivirus."};
+    if (!f) return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio."};
 
     if (append) fseek(f, (long)h.toc_offset, SEEK_SET);
     else fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buf;
-    // Chunk ridotto a 32MB per stabilità su Windows Server
-    // size_t CHUNK_THRESHOLD = 32 * 1024 * 1024;
-    // Chunk impostato a 256MB per battere 7zip
-    size_t CHUNK_THRESHOLD = 256 * 1024 * 1024;
+    size_t CHUNK_THRESHOLD = 256 * 1024 * 1024; // Release 2.0: 256MB Chunk
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
 
@@ -160,23 +156,24 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
         if (!fs::exists(disk_path)) continue;
         uintmax_t fsize = fs::file_size(disk_path);
-        std::vector<char> data(fsize);
+        
+        std::vector<char> data;
+        try {
+            data.resize(fsize);
+        } catch (...) {
+            UI::print_error("Memoria insufficiente per caricare: " + disk_path);
+            continue;
+        }
 
         bool read_ok = false;
 #ifdef _WIN32
-        // Lettura con Share Mode abilitata per file bloccati (Database)
         HANDLE hFile = CreateFileA(disk_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD bytesRead;
             if (ReadFile(hFile, data.data(), (DWORD)fsize, &bytesRead, NULL) && bytesRead == (DWORD)fsize) read_ok = true;
-            else {
-                // Diagnostica per Windows Server
-                UI::print_error("Errore lettura: " + fs::path(disk_path).filename().string() + " (WinErr: " + std::to_string(GetLastError()) + ")");
-            }
+            else UI::print_error("Errore lettura: " + disk_path + " (WinErr: " + std::to_string(GetLastError()) + ")");
             CloseHandle(hFile);
-        } else {
-            UI::print_error("Apertura negata: " + fs::path(disk_path).filename().string() + " (WinErr: " + std::to_string(GetLastError()) + ")");
-        }
+        } else UI::print_error("Accesso negato: " + disk_path + " (WinErr: " + std::to_string(GetLastError()) + ")");
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
@@ -202,7 +199,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             hash_map[h64] = (uint32_t)final_toc.size();
             fe.meta.is_duplicate = 0;
             if (!solid_buf.empty() && (solid_buf.size() + fsize > CHUNK_THRESHOLD)) {
-                if (worker_active && !write_worker(future_chunk)) return {false, "Errore compressione solid."};
+                if (worker_active && !write_worker(future_chunk)) return {false, "Errore compressione."};
                 future_chunk = std::async(std::launch::async, compress_worker, std::move(solid_buf), level, (Codec)fe.meta.codec);
                 worker_active = true;
                 solid_buf.clear();
