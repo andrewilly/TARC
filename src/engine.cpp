@@ -138,7 +138,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     std::vector<char> solid_buf;
     // Chunk ridotto a 32MB per stabilità su Windows Server
-    size_t CHUNK_THRESHOLD = 32 * 1024 * 1024;
+    // size_t CHUNK_THRESHOLD = 32 * 1024 * 1024;
+    // Chunk impostato a 256MB per battere 7zip
+    size_t CHUNK_THRESHOLD = 256 * 1024 * 1024;
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
 
