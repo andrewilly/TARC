@@ -5,25 +5,25 @@
 #include "types.h"
 
 namespace CodecSelector {
-    Codec select(const std::string& path, int level);
-    bool is_high_entropy(const uint8_t* data, size_t len);
+    Codec select(const std::string& path, size_t size);
+    bool is_compressible(const std::string& ext);
 }
 
 namespace Engine {
 
-    // Definiamo la nostra struttura Meta interna per essere sicuri che abbia i campi
     struct FileMeta {
         uint64_t orig_size;
         uint64_t timestamp;
         uint64_t xxhash;
         uint8_t  codec;
-        bool     is_duplicate = false;      // <--- IL CAMPO MANCANTE
-        uint32_t duplicate_of_idx = 0;      // <--- IL CAMPO MANCANTE
+        bool     is_duplicate = false;
+        uint32_t duplicate_of_idx = 0;
     };
 
-    struct FileEntry {
+    struct FileEntryInternal {
         std::string name;
         FileMeta meta;
+        std::string extension;
     };
 
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
