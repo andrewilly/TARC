@@ -40,46 +40,34 @@ namespace CodecSelector {
 
 namespace Engine {
 
-// Spostiamo normalize_path in alto così resolve_wildcards può vederla
 std::string normalize_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     return path;
 }
 
-// --- GESTIONE WILDCARDS NATIVA WINDOWS ---
 void resolve_wildcards(const std::string& pattern, std::vector<std::string>& out) {
 #ifdef _WIN32
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
-    
     if (hFind == INVALID_HANDLE_VALUE) return;
-
-    // Estraiamo la directory dal pattern per ricostruire il path completo
     std::string directory = "";
     size_t last_slash = pattern.find_last_of("\\/");
     if (last_slash != std::string::npos) directory = pattern.substr(0, last_slash + 1);
-
     do {
-        // findData.cFileName è un char array, lo convertiamo in stringa
         std::string foundName(findData.cFileName); 
-        
         if (foundName != "." && foundName != "..") {
             std::string fullPath = directory + foundName;
             if (fs::exists(fullPath)) {
-                if (fs::is_regular_file(fullPath)) {
-                    out.push_back(normalize_path(fullPath));
-                } else if (fs::is_directory(fullPath)) {
-                    // Se è una directory, la esploriamo ricorsivamente
-                    for (auto& p : fs::recursive_directory_iterator(fullPath)) {
+                if (fs::is_regular_file(fullPath)) out.push_back(normalize_path(fullPath));
+                else if (fs::is_directory(fullPath)) {
+                    for (auto& p : fs::recursive_directory_iterator(fullPath))
                         if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
-                    }
                 }
             }
         }
     } while (FindNextFileA(hFind, &findData));
     FindClose(hFind);
 #else
-    // Su Linux/Mac la shell espande già le wildcard, quindi usiamo std::filesystem
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
             for (auto& p : fs::recursive_directory_iterator(pattern)) 
@@ -101,7 +89,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     res.raw_size = (uint32_t)raw_data.size();
     res.codec = chosen_codec;
     res.success = false;
-
     if (chosen_codec == Codec::STORE) {
         res.compressed_data = std::move(raw_data);
         res.success = true;
@@ -121,15 +108,9 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
     TarcResult result;
     std::vector<std::string> expanded_files;
+    for (const auto& in : inputs) resolve_wildcards(in, expanded_files);
+    if (expanded_files.empty()) return {false, "Nessun file trovato."};
 
-    // 1. ESPANSIONE WILDCARDS
-    for (const auto& in : inputs) {
-        resolve_wildcards(in, expanded_files);
-    }
-
-    if (expanded_files.empty()) return {false, "Errore: Nessun file trovato per i pattern forniti."};
-
-    // 2. CLUSTERING
     std::sort(expanded_files.begin(), expanded_files.end(), [](const std::string& a, const std::string& b) {
         std::string extA = fs::path(a).extension().string();
         std::string extB = fs::path(b).extension().string();
@@ -137,7 +118,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     });
 
     FILE* f = fopen(archive_path.c_str(), "wb");
-    if (!f) return {false, "Errore apertura archivio in scrittura."};
+    if (!f) return {false, "Errore apertura archivio."};
 
     ::Header h{};
     memcpy(h.magic, TARC_MAGIC, 4);
@@ -147,7 +128,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<::FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
     std::vector<char> solid_buf;
-    size_t CHUNK_THRESHOLD = 128 * 1024 * 1024;
+    size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
 
@@ -165,11 +146,31 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         std::string disk_path = expanded_files[i];
         UI::print_progress((uint32_t)i + 1, (uint32_t)expanded_files.size(), fs::path(disk_path).filename().string());
 
+        if (!fs::exists(disk_path)) continue;
         uintmax_t fsize = fs::file_size(disk_path);
-        std::ifstream in_f(disk_path, std::ios::binary);
         std::vector<char> data(fsize);
-        in_f.read(data.data(), fsize);
-        in_f.close();
+
+        bool read_ok = false;
+#ifdef _WIN32
+        // API NATIVA WINDOWS: Permette lettura anche se il file è parzialmente occupato (Share Read/Write)
+        HANDLE hFile = CreateFileA(disk_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD bytesRead;
+            if (ReadFile(hFile, data.data(), (DWORD)fsize, &bytesRead, NULL) && bytesRead == (DWORD)fsize) read_ok = true;
+            CloseHandle(hFile);
+        }
+#else
+        FILE* in_f = fopen(disk_path.c_str(), "rb");
+        if (in_f) {
+            if (fread(data.data(), 1, fsize, in_f) == fsize) read_ok = true;
+            fclose(in_f);
+        }
+#endif
+
+        if (!read_ok) {
+            UI::print_error("Salto file (non accessibile): " + fs::path(disk_path).filename().string());
+            continue;
+        }
 
         uint64_t h64 = XXH64(data.data(), fsize, 0);
         ::FileEntry fe;
@@ -217,19 +218,15 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Archivio non trovato."};
-    ::Header h;
-    fread(&h, sizeof(h), 1, f);
+    ::Header h; fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
     IO::read_toc(f, h, toc);
     fseek(f, sizeof(::Header), SEEK_SET);
-
     std::vector<char> current_block;
     size_t block_pos = 0;
-
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
         if (fe.meta.is_duplicate) continue;
-
         if (block_pos >= current_block.size()) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
@@ -238,11 +235,10 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             current_block.assign(ch.raw_size, 0);
             if (ch.codec == (uint32_t)Codec::LZMA) {
                 size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
-                (void) lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
+                lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
             } else memcpy(current_block.data(), comp.data(), ch.raw_size);
             block_pos = 0;
         }
-
         UI::print_progress((uint32_t)i + 1, (uint32_t)toc.size(), fe.name);
         if (!test_only) IO::write_file_to_disk(fe.name, current_block.data() + block_pos, fe.meta.orig_size, fe.meta.timestamp);
         result.bytes_out += fe.meta.orig_size;
@@ -255,12 +251,11 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 TarcResult list(const std::string& arch_path) {
     TarcResult res;
     FILE* f = fopen(arch_path.c_str(), "rb");
-    if (!f) return {false, "Errore apertura archivio."};
+    if (!f) return {false, "Errore"};
     ::Header h; fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
     IO::read_toc(f, h, toc);
-    for (const auto& fe : toc)
-        UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.is_duplicate ? 0 : 1, (Codec)fe.meta.codec);
+    for (const auto& fe : toc) UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.is_duplicate ? 0 : 1, (Codec)fe.meta.codec);
     fclose(f);
     res.ok = true; return res;
 }
