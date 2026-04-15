@@ -6,7 +6,9 @@
 #include "engine.h"
 #include "ui.h"
 
-// Funzione per mostrare l'intestazione professionale
+// Usiamo la definizione trovata in types.h
+#define TARC_MAGIC_STR "TRC2"
+
 void show_stub_header() {
     std::cout << Color::CYAN << "==========================================\n";
     std::cout << "          TARC SELF-EXTRACTOR             \n";
@@ -14,7 +16,7 @@ void show_stub_header() {
     std::cout << "==========================================\n" << Color::RESET;
 }
 
-// Trova l'offset dei dati TARC nel file EXE partendo dalla fine
+// Cerca l'offset dell'archivio partendo dal fondo del file
 size_t find_archive_offset(const std::string& exe_path) {
     std::ifstream f(exe_path, std::ios::binary | std::ios::ate);
     if (!f) return 0;
@@ -22,54 +24,55 @@ size_t find_archive_offset(const std::string& exe_path) {
     size_t file_size = static_cast<size_t>(f.tellg());
     if (file_size < 4) return 0;
 
-    // Leggiamo il file a ritroso a blocchi di 64KB per efficienza
-    const size_t chunk_size = 65536;
-    std::vector<char> buffer(chunk_size);
-    
-    size_t current_pos = file_size;
-    while (current_pos > 0) {
-        size_t to_read = (current_pos > chunk_size) ? chunk_size : current_pos;
-        current_pos -= to_read;
-        
-        f.seekg(current_pos, std::ios::beg);
-        f.read(buffer.data(), to_read);
-        
-        // Cerchiamo la firma "TARC" nel blocco (dalla fine all'inizio)
-        for (long i = static_cast<long>(to_read) - 4; i >= 0; --i) {
-            if (buffer[i] == 'T' && buffer[i+1] == 'A' && buffer[i+2] == 'R' && buffer[i+3] == 'C') {
-                return current_pos + i;
-            }
+    // Carichiamo il file in memoria per una scansione rapida
+    std::vector<char> buffer(file_size);
+    f.seekg(0, std::ios::beg);
+    f.read(buffer.data(), file_size);
+
+    // Cerchiamo la firma "TRC2" partendo dal fondo verso l'inizio.
+    // Saltiamo i primi 100KB per evitare di trovare stringhe nel codice dello stub.
+    for (size_t i = file_size - 4; i > 1024 * 100; --i) {
+        if (buffer[i] == 'T' && buffer[i+1] == 'R' && buffer[i+2] == 'C' && buffer[i+3] == '2') {
+            return i;
         }
-        
-        // Se non siamo all'inizio, sovrapponiamo di 3 byte per non perdere il magic tra blocchi
-        if (current_pos > 0) current_pos += 3; 
     }
     return 0;
 }
 
 int main(int argc, char* argv[]) {
-    // 1. Inizializzazione Ambiente Windows
     UI::enable_vtp();
     show_stub_header();
 
-    // 2. Recupero percorso eseguibile
+    // 1. Recupera il percorso dell'eseguibile corrente
     char path[MAX_PATH];
     if (GetModuleFileNameA(NULL, path, MAX_PATH) == 0) {
-        UI::print_error("Errore fatale: Impossibile mappare il processo.");
+        UI::print_error("Errore: Impossibile determinare il percorso del file.");
         return 1;
     }
     std::string self_path = path;
 
-    // 3. Individuazione Archivio
+    // 2. Trova l'offset dell'archivio appeso
     size_t offset = find_archive_offset(self_path);
+
+    // --- DEBUG INFO ---
+    std::ifstream f_sz(self_path, std::ios::binary | std::ios::ate);
+    size_t total_size = f_sz.tellg();
+    
+    std::cout << Color::YELLOW << "[DEBUG] Dimensione EXE totale: " << total_size << " bytes\n";
+    std::cout << "[DEBUG] Offset archivio trovato: " << offset << " bytes\n";
+    if (offset > 0) {
+        std::cout << "[DEBUG] Dimensione dati rilevati: " << (total_size - offset) << " bytes\n" << Color::RESET;
+    }
+    // ------------------
+
     if (offset == 0) {
-        UI::print_error("Errore: Dati dell'archivio non trovati in questo eseguibile.");
-        std::cout << "\nPremere INVIO per uscire...";
+        UI::print_error("Errore: Dati TRC2 non trovati. Questo non e' un archivio SFX valido.");
+        std::cout << "Premere INVIO per uscire...";
         std::cin.get();
         return 1;
     }
 
-    // 4. Menu Interattivo
+    // 3. Menu Operativo
     std::cout << "\n" << Color::YELLOW << " OPERAZIONI DISPONIBILI:" << Color::RESET << "\n";
     std::cout << " [1] Estrai tutto (cartella corrente)\n";
     std::cout << " [2] Elenca files\n";
@@ -83,11 +86,9 @@ int main(int argc, char* argv[]) {
     char choice = input[0];
 
     TarcResult res;
-    
-    // 5. Esecuzione comando
     switch (choice) {
         case '1':
-            UI::print_info("Avvio estrazione solida...");
+            UI::print_info("Estrazione in corso...");
             res = Engine::extract(self_path, {}, false, offset);
             UI::print_summary(res, "Estrazione SFX");
             break;
@@ -96,7 +97,7 @@ int main(int argc, char* argv[]) {
             res = Engine::list(self_path, offset);
             break;
         case '3':
-            UI::print_info("Test dei blocchi in corso...");
+            UI::print_info("Verifica integrita' in corso...");
             res = Engine::extract(self_path, {}, true, offset);
             UI::print_summary(res, "Test SFX");
             break;
@@ -107,13 +108,13 @@ int main(int argc, char* argv[]) {
             return 0;
     }
 
-    // 6. Gestione Errori Motore
+    // 4. Gestione errori se l'operazione fallisce
     if (!res.ok) {
-        UI::print_error("ERRORE DURANTE L'OPERAZIONE:");
-        UI::print_error("-> " + res.message);
+        UI::print_error("L'operazione ha riscontrato un errore:");
+        UI::print_error("Dettaglio: " + res.message);
     }
 
-    std::cout << "\nProcedura terminata. Premere INVIO per chiudere...";
+    std::cout << "\nProcedura terminata. Premere INVIO per uscire...";
     std::cin.get();
 
     return res.ok ? 0 : 1;
