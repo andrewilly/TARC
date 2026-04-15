@@ -20,7 +20,7 @@ jobs:
       shell: pwsh
       run: |
         # Installiamo le librerie necessarie tramite vcpkg
-        vcpkg install liblzma:x64-windows zstd:x64-windows xxhash:x64-windows
+        vcpkg install liblzma:x64-windows-static zstd:x64-windows-static xxhash:x64-windows-static
 
     - name: Prepare Build Environment
       shell: pwsh
