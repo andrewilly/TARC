@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 
+// Funzione di supporto per interpretare i livelli di compressione
 static int parse_level(const std::string& arg, int def = 3) {
     if (arg == "-cbest") return 9; 
     if (arg == "-cfast") return 1; 
@@ -27,6 +28,7 @@ static int parse_level(const std::string& arg, int def = 3) {
 }
 
 int main(int argc, char* argv[]) {
+    // 1. Inizializzazione Ambiente e Licenza
     UI::enable_vtp();
     UI::show_banner();
     License::check_and_activate();
@@ -39,7 +41,7 @@ int main(int argc, char* argv[]) {
     bool sfx_requested = false;
     std::string arg_cmd = argv[1];
     
-    // Riconoscimento parametri estesi
+    // 2. Identificazione comando (gestisce -c, -a, -cbest, ecc.)
     std::string cmd;
     if (arg_cmd == "-cbest" || arg_cmd == "-cfast") {
         cmd = "-c";
@@ -61,54 +63,64 @@ int main(int argc, char* argv[]) {
 
     std::string arch = IO::ensure_ext(argv[2]);
 
-    // COMPRESSIONE O APPEND
+    // 3. LOGICA COMPRESSIONE (-c) E APPEND (-a)
     if (cmd == "-c" || cmd == "-a") {
         bool append = (cmd == "-a");
         std::vector<std::string> targets;
         
+        // Rileva se tra i parametri c'è --sfx
         for (int i = 3; i < argc; ++i) {
             std::string val = argv[i];
-            if (val == "--sfx") sfx_requested = true;
-            else targets.push_back(val);
+            if (val == "--sfx") {
+                sfx_requested = true;
+            } else {
+                targets.push_back(val);
+            }
         }
 
         if (targets.empty()) {
-            UI::print_error("Nessun file specificato.");
+            UI::print_error("Nessun file o cartella specificati.");
             return 1;
         }
 
+        // Avvio motore di compressione (Chunk 256MB gestiti in engine.cpp)
         auto res = Engine::compress(arch, targets, append, level);
         UI::print_summary(res, append ? "Aggiunta" : "Creazione");
 
+        // Se l'operazione è riuscita e l'utente ha chiesto SFX
         if (res.ok && sfx_requested) {
             std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
             auto sfx_res = Engine::create_sfx(arch, sfx_exe);
-            if (sfx_res.ok) UI::print_info("Autoestraente creato: " + sfx_exe);
-            else UI::print_error(sfx_res.msg);
+            if (sfx_res.ok) {
+                UI::print_info("Autoestraente generato correttamente: " + sfx_exe);
+            } else {
+                UI::print_error(sfx_res.message);
+            }
         }
         return res.ok ? 0 : 1;
     }
 
-    // ESTRAZIONE
+    // 4. LOGICA ESTRAZIONE (-x)
     if (cmd == "-x") {
         std::vector<std::string> filters;
         for (int i = 3; i < argc; ++i) filters.push_back(argv[i]);
+        
         auto res = Engine::extract(arch, filters, false);
         UI::print_summary(res, "Estrazione");
         return res.ok ? 0 : 1;
     }
     
-    // TEST
+    // 5. LOGICA TEST (-t)
     if (cmd == "-t") {
         auto res = Engine::extract(arch, {}, true);
         UI::print_summary(res, "Test integrita'");
         return res.ok ? 0 : 1;
     }
 
-    // LISTA
+    // 6. LOGICA LISTA (-l)
     if (cmd == "-l") {
         auto res = Engine::list(arch);
-        if (!res.ok) UI::print_error("Errore lettura archivio.");
+        if (!res.ok) UI::print_error("Errore lettura archivio: " + res.message);
         return res.ok ? 0 : 1;
     }
 
