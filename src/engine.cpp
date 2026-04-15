@@ -104,6 +104,22 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     return res;
 }
 
+TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
+    std::string stub_path = "tarc_sfx_stub.exe";
+    if (!fs::exists(stub_path)) return {false, "Stub SFX (tarc_sfx_stub.exe) non trovato nella cartella."};
+
+    std::ifstream stub_in(stub_path, std::ios::binary);
+    std::ifstream data_in(archive_path, std::ios::binary);
+    std::ofstream sfx_out(sfx_name, std::ios::binary);
+
+    if (!stub_in || !data_in || !sfx_out) return {false, "Errore fatale durante la fusione SFX."};
+
+    sfx_out << stub_in.rdbuf();
+    sfx_out << data_in.rdbuf();
+    
+    return {true, "Archivio autoestraente generato."};
+}
+
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
     TarcResult result;
     std::vector<std::string> expanded_files;
@@ -136,7 +152,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     else fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buf;
-    size_t CHUNK_THRESHOLD = 256 * 1024 * 1024; // Release 2.0: 256MB Chunk
+    size_t CHUNK_THRESHOLD = 256 * 1024 * 1024; 
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
 
@@ -161,7 +177,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         try {
             data.resize(fsize);
         } catch (...) {
-            UI::print_error("Memoria insufficiente per caricare: " + disk_path);
+            UI::print_error("Memoria insufficiente: " + disk_path);
             continue;
         }
 
@@ -226,14 +242,18 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only) {
+TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset) {
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Archivio non trovato."};
+
+    if (offset > 0) fseek(f, (long)offset, SEEK_SET);
+
     ::Header h; fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
     IO::read_toc(f, h, toc);
-    fseek(f, sizeof(::Header), SEEK_SET);
+    fseek(f, (long)(offset + sizeof(::Header)), SEEK_SET);
+    
     std::vector<char> current_block;
     size_t block_pos = 0;
     for (size_t i = 0; i < toc.size(); ++i) {
@@ -260,10 +280,11 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     result.ok = true; return result;
 }
 
-TarcResult list(const std::string& arch_path) {
+TarcResult list(const std::string& arch_path, size_t offset) {
     TarcResult res;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Errore"};
+    if (offset > 0) fseek(f, (long)offset, SEEK_SET);
     ::Header h; fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
     IO::read_toc(f, h, toc);
@@ -274,4 +295,4 @@ TarcResult list(const std::string& arch_path) {
 
 TarcResult remove_files(const std::string&, const std::vector<std::string>&) { return {false, "N/A"}; }
 
-}
+} // namespace Engine
