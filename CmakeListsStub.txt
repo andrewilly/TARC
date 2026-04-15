@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.15)
+project(TARC_SFX_Stub LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Risaliamo alla cartella src partendo da build_stub
+set(STUB_SOURCES
+    ../src/stub.cpp
+    ../src/engine.cpp
+    ../src/io.cpp
+    ../src/ui.cpp
+)
+
+add_executable(tarc_sfx_stub ${STUB_SOURCES})
+
+target_include_directories(tarc_sfx_stub PRIVATE ../src ../include)
+target_compile_definitions(tarc_sfx_stub PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+
+# Qui devi elencare le librerie come nomi di file se non hai i target CMake pronti, 
+# ma solitamente se sono nel progetto basta:
+target_link_libraries(tarc_sfx_stub PRIVATE
+    liblzma
+    zstd_static
+    xxhash
+)
+
+set_target_properties(tarc_sfx_stub PROPERTIES OUTPUT_NAME "tarc_sfx_stub")
