@@ -26,9 +26,13 @@ namespace Engine {
         std::string extension;
     };
 
+    // Funzioni Core Release 2.0
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
-    TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {}, bool test_only = false);
-    TarcResult list(const std::string& arch_path);
+    TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {}, bool test_only = false, size_t offset = 0);
+    TarcResult list(const std::string& arch_path, size_t offset = 0);
     TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
+    
+    // Specifica per generazione Autoestraente
+    TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name);
 
 } // namespace Engine
