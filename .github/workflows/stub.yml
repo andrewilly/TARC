@@ -4,34 +4,53 @@ on:
   push:
     paths:
       - 'src/stub.cpp'
-      - 'CMakeStub.txt'
+      - 'CMakeListsStub.txt'
       - '.github/workflows/stub.yml'
-  workflow_dispatch: # Permette l'avvio manuale
+  workflow_dispatch: # Permette di lanciarlo manualmente dalla scheda "Actions"
 
 jobs:
   build-stub:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
+    - name: Prepare Build Environment
+      shell: pwsh
+      run: |
+        # Creiamo la cartella per la compilazione
+        mkdir build_stub
+        # Copiamo il file dedicato rinominandolo in quello standard atteso da CMake
+        copy CMakeListsStub.txt build_stub/CMakeLists.txt
+        
     - name: Configure CMake
-      # Usiamo -S . (source) e -B build (binary) specificando il nostro file custom
-      run: cmake -S . -B build_stub -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=cmake -D"CMAKE_PROJECT_INCLUDE_BEFORE:PATH=CMakeStub.txt" 
-      # Nota: Il modo più pulito con file custom è puntare direttamente al file:
-      # run: cmake -C CMakeStub.txt -S . -B build_stub 
-      # In alternativa, rinomina CMakeStub.txt in CMakeLists.txt temporaneamente nel job o usa:
-    
-    - name: Build Stub
+      shell: pwsh
       run: |
         cd build_stub
-        # Se preferisci la via più semplice, rinominiamo al volo per il job
-        copy ..\CMakeStub.txt CMakeLists.txt
-        cmake .
+        # Configuriamo puntando ai sorgenti che sono nella cartella superiore (..)
+        cmake -S . -B . -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build SFX Stub
+      shell: pwsh
+      run: |
+        cd build_stub
+        # Lanciamo la compilazione effettiva
         cmake --build . --config Release
 
-    - name: Upload Stub Artifact
+    - name: Verify Executable
+      shell: pwsh
+      run: |
+        if (Test-Path "build_stub/Release/tarc_sfx_stub.exe") {
+          Write-Host "Stub compilato con successo!" -ForegroundColor Green
+        } else {
+          Write-Host "Errore: Eseguibile non trovato." -ForegroundColor Red
+          exit 1
+        }
+
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: tarc-sfx-stub-windows
+        name: TARC-SFX-Stub-Win
         path: build_stub/Release/tarc_sfx_stub.exe
+        retention-days: 7
