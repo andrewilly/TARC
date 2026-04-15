@@ -1,4 +1,6 @@
 #pragma once
+#include <string>
+#include <vector>
 #include <cstdint>
 #include "types.h"
 
@@ -47,13 +49,18 @@ namespace UI {
     // Stampa riepilogo finale operazione
     void print_summary(const TarcResult& result, const std::string& operation);
 
+    // --- Messaggistica di Stato ---
+    
+    // Stampa messaggio informativo (Richiesto da main.cpp per SFX)
+    void print_info(const std::string& msg);
+
     // Stampa errore
     void print_error(const std::string& msg);
 
     // Stampa warning
     void print_warning(const std::string& msg);
 
-    // ... altre funzioni esistenti ...
+    // Barra di progresso
     void print_progress(size_t current, size_t total, const std::string& current_file);
 
 } // namespace UI
