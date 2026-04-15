@@ -251,6 +251,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     ::Header h; fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
+    h.toc_offset += offset;
     IO::read_toc(f, h, toc);
     fseek(f, (long)(offset + sizeof(::Header)), SEEK_SET);
     
@@ -287,6 +288,7 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     if (offset > 0) fseek(f, (long)offset, SEEK_SET);
     ::Header h; fread(&h, sizeof(h), 1, f);
     std::vector<::FileEntry> toc;
+    h.toc_offset += offset;
     IO::read_toc(f, h, toc);
     for (const auto& fe : toc) UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.is_duplicate ? 0 : 1, (Codec)fe.meta.codec);
     fclose(f);
