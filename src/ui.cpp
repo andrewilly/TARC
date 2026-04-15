@@ -36,17 +36,20 @@ void show_help() {
     const char* Y = Color::YELLOW;
 
     printf("\n");
-    printf("  TARC v2.00 - HYBRID SOLID ENGINE\n");
-    printf("  ======================================\n\n");
+    printf("  TARC v2.00 - HYBRID SOLID ENGINE (Windows Release)\n");
+    printf("  ==================================================\n\n");
     
     printf("  %s%-12s%s %s- %sCrea/Aggiorna Solid   (Deduplicazione ON)%s\n", G, "-c / -a", R, G, W, R);
-    printf("  %s%-12s%s %s- %sLivello Massimo      (LZMA 128MB Dict)%s\n", G, "-cbest", R, G, W, R);
+    printf("  %s%-12s%s %s- %sLivello Massimo      (LZMA 256MB Chunk)%s\n", G, "-cbest", R, G, W, R);
     printf("  %s%-12s%s %s- %sVelocita Massima     (LZ4 / ZSTD Fast)%s\n", G, "-cfast", R, G, W, R);
     printf("  %s%-12s%s %s- %sEstrai tutto         (Ripristino percorsi)%s\n", C, "-x", R, C, W, R);
     printf("  %s%-12s%s %s- %sElenca contenuto      (Dettagli solid)%s\n", G, "-l", R, G, W, R);
     printf("  %s%-12s%s %s- %sTest integrita       (XXH64 Hardware)%s\n", Y, "-t", R, Y, W, R);
     
-    printf("\n  Caratteristiche: Solid Blocks, Deduplicazione XXH64, Multi-threading\n\n");
+    printf("\n  %sOpzioni Avanzate:%s\n", Y, R);
+    printf("  %s%-12s%s %s- %sGenera archivio Autoestraente (.exe)%s\n", W, "--sfx", R, W, W, R);
+
+    printf("\n  Caratteristiche: Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO\n\n");
 }
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
@@ -57,7 +60,7 @@ void show_banner() {
     std::cout << "==========================================\n" << Color::RESET << std::endl;
 }
 
-// ─── PROGRESS BAR (NEW) ─────────────────────────────────────────────────────
+// ─── PROGRESS BAR ───────────────────────────────────────────────────────────
 void print_progress(size_t current, size_t total, const std::string& current_file) {
     float percent = (float)current / total * 100.0f;
     int width = 25;
@@ -91,14 +94,14 @@ std::string compress_ratio(uint64_t orig, uint64_t comp) {
     if (orig == 0) return "  -  ";
     char buf[16];
     double r = 100.0 * (1.0 - (double)comp / (double)orig);
-    if (r < 0) r = 0; // Evita ratio negativi se il file cresce
+    if (r < 0) r = 0; 
     snprintf(buf, sizeof(buf), "%.1f%%", r);
     return std::string(buf);
 }
 
 // ─── PRINT OPERATIONS ────────────────────────────────────────────────────────
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
-    bool is_dedup = (ratio >= 1.0f); // Se ratio è 1.0, il file è un duplicato esatto
+    bool is_dedup = (ratio >= 1.0f); 
     
     printf("\n%s[+]%s [%s%s%s] %-38s %10s  %s→%s %s%s",
             Color::GREEN, Color::RESET,
@@ -128,8 +131,6 @@ void print_delete(const std::string& name) {
 }
 
 void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {
-    // Ora marchiamo DUPLICATE solo se è esplicitamente un duplicato (comp == 0)
-    // Se comp è 1 (il trucco che ti ho suggerito), mostriamo il file come normale
     bool is_duplicate = (comp == 0); 
 
     printf("  [%s%s%s] %-42s %10s  %s%s%s\n",
@@ -137,12 +138,12 @@ void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Cod
             name.c_str(),
             human_size(orig).c_str(),
             Color::DIM, 
-            is_duplicate ? "(DUPLICATE)" : "", // Mostra DUPLICATE solo se lo è davvero
+            is_duplicate ? "(DUPLICATE)" : "", 
             Color::RESET);
 }
 
 void print_summary(const TarcResult& r, const std::string& op) {
-    std::cout << std::endl; // Pulisce la riga del progresso
+    std::cout << std::endl; 
     if (!r.ok) {
         printf("\n%s❌ %s fallito: %s%s\n", Color::RED, op.c_str(), r.message.c_str(), Color::RESET);
         return;
@@ -158,6 +159,10 @@ void print_summary(const TarcResult& r, const std::string& op) {
     } else {
         printf("\n%s✔ %s completato.%s\n", Color::GREEN, op.c_str(), Color::RESET);
     }
+}
+
+void print_info(const std::string& msg) {
+    printf("%sℹ  INFO: %s%s\n", Color::CYAN, msg.c_str(), Color::RESET);
 }
 
 void print_error(const std::string& msg) {
