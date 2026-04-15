@@ -1,32 +1,28 @@
 cmake_minimum_required(VERSION 3.15)
 project(TARC_SFX_Stub LANGUAGES CXX)
 
-# Forza l'uscita se non si è su Windows
-if(NOT WIN32)
-    message(FATAL_ERROR "Lo stub SFX è supportato solo su Windows.")
-endif()
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Sorgenti necessari per rendere lo stub autonomo (deve saper decomprimere)
+# Risaliamo alla cartella src partendo da build_stub
 set(STUB_SOURCES
-    src/stub.cpp
-    src/engine.cpp
-    src/io.cpp
-    src/ui.cpp
+    ../src/stub.cpp
+    ../src/engine.cpp
+    ../src/io.cpp
+    ../src/ui.cpp
 )
 
 add_executable(tarc_sfx_stub ${STUB_SOURCES})
 
-target_include_directories(tarc_sfx_stub PRIVATE src include)
-target_compile_definitions(tarc_sfx_stub PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_include_directories(tarc_sfx_stub PRIVATE ../src ../include)
+target_compile_definitions(tarc_sfx_stub PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
 
-# Link alle librerie (assumendo siano già compilate o disponibili nel sistema)
+# Qui devi elencare le librerie come nomi di file se non hai i target CMake pronti, 
+# ma solitamente se sono nel progetto basta:
 target_link_libraries(tarc_sfx_stub PRIVATE
     liblzma
-    zstd::libzstd_static
-    xxhash::xxhash
+    zstd_static
+    xxhash
 )
 
 set_target_properties(tarc_sfx_stub PROPERTIES OUTPUT_NAME "tarc_sfx_stub")
