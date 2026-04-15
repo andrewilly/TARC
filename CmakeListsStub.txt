@@ -4,15 +4,13 @@ project(TARC_SFX_Stub LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Forza il link statico delle librerie C/C++ (MSVC)
+# Forza l'uso del runtime statico (importante per non richiedere DLL di Visual C++)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-# Forza vcpkg a usare il triplet statico
-set(VCPKG_TARGET_TRIPLET "x64-windows-static")
 
-# 1. Trova i pacchetti (vcpkg li rende disponibili qui)
+# 1. Trova i pacchetti (Approccio compatibile con vcpkg static)
 find_package(LibLZMA REQUIRED)
-find_package(zstd CONFIG REQUIRED)
-find_package(xxHash CONFIG REQUIRED)
+find_package(zstd REQUIRED) # Rimosso CONFIG se fallisce
+find_package(xxHash REQUIRED)
 
 set(STUB_SOURCES
     ../src/stub.cpp
@@ -25,16 +23,13 @@ add_executable(tarc_sfx_stub ${STUB_SOURCES})
 
 target_compile_definitions(tarc_sfx_stub PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
 
-target_include_directories(tarc_sfx_stub PRIVATE 
-    ../src 
-    ../include
-)
+target_include_directories(tarc_sfx_stub PRIVATE ../src ../include)
 
 # 2. LINK DELLE LIBRERIE
-# Usiamo i nomi esatti che vcpkg ha confermato nei tuoi log:
+# Utilizziamo i target standard esportati da vcpkg
 target_link_libraries(tarc_sfx_stub PRIVATE 
     LibLZMA::LibLZMA
-    zstd::libzstd
+    $<IF:$<TARGET_EXISTS:zstd::libzstd_static>,zstd::libzstd_static,zstd::libzstd>
     xxHash::xxhash
 )
 
