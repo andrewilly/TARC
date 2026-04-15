@@ -10,25 +10,19 @@
 #include <cstring>
 
 static int parse_level(const std::string& arg, int def = 3) {
-    // 1. Controllo per i parametri testuali espliciti
-    if (arg == "-cbest") return 9; // Imposta il livello massimo (LZMA2 Extreme)
-    if (arg == "-cfast") return 1; // Imposta il livello minimo (Velocità elevata)
+    if (arg == "-cbest") return 9; 
+    if (arg == "-cfast") return 1; 
 
-    // 2. Controllo per il formato numerico classico (es. -c9)
     if (arg.size() > 2 && arg.substr(0, 2) == "-c") {
         std::string ls = arg.substr(2);
-        
-        // Verifica che la parte rimanente della stringa sia composta solo da cifre
         if (!ls.empty() && std::all_of(ls.begin(), ls.end(), ::isdigit)) {
             try {
-                // Converte in intero e limita il valore nel range supportato [1-9]
                 return std::clamp(std::stoi(ls), 1, 9);
             } catch (...) {
                 return def;
             }
         }
     }
-
     return def;
 }
 
@@ -42,9 +36,10 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    bool sfx_requested = false;
     std::string arg_cmd = argv[1];
     
-    // Gestione comandi speciali estesi (-cbest, -cfast) prima del substring
+    // Riconoscimento parametri estesi
     std::string cmd;
     if (arg_cmd == "-cbest" || arg_cmd == "-cfast") {
         cmd = "-c";
@@ -66,54 +61,56 @@ int main(int argc, char* argv[]) {
 
     std::string arch = IO::ensure_ext(argv[2]);
 
-    // COMANDO COMPRESSIONE (-c) O APPEND (-a)
+    // COMPRESSIONE O APPEND
     if (cmd == "-c" || cmd == "-a") {
         bool append = (cmd == "-a");
-        if (argc < 4) {
-            UI::print_error("Nessun file o pattern specificato.");
-            return 1;
+        std::vector<std::string> targets;
+        
+        for (int i = 3; i < argc; ++i) {
+            std::string val = argv[i];
+            if (val == "--sfx") sfx_requested = true;
+            else targets.push_back(val);
         }
 
-        std::vector<std::string> targets;
-        // Passiamo i pattern direttamente come stringhe all'Engine
-        // L'Engine v2 risolverà le wildcard internamente (Windows/Linux)
-        for (int i = 3; i < argc; ++i) {
-            targets.push_back(argv[i]);
+        if (targets.empty()) {
+            UI::print_error("Nessun file specificato.");
+            return 1;
         }
 
         auto res = Engine::compress(arch, targets, append, level);
         UI::print_summary(res, append ? "Aggiunta" : "Creazione");
+
+        if (res.ok && sfx_requested) {
+            std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
+            auto sfx_res = Engine::create_sfx(arch, sfx_exe);
+            if (sfx_res.ok) UI::print_info("Autoestraente creato: " + sfx_exe);
+            else UI::print_error(sfx_res.msg);
+        }
         return res.ok ? 0 : 1;
     }
 
-    // COMANDO ESTRAZIONE (-x)
+    // ESTRAZIONE
     if (cmd == "-x") {
         std::vector<std::string> filters;
-        // Raccogliamo eventuali pattern di estrazione (es. tarc -x arch.strk *.txt)
-        for (int i = 3; i < argc; ++i) {
-            filters.push_back(argv[i]);
-        }
-
+        for (int i = 3; i < argc; ++i) filters.push_back(argv[i]);
         auto res = Engine::extract(arch, filters, false);
         UI::print_summary(res, "Estrazione");
         return res.ok ? 0 : 1;
     }
     
-    // COMANDO TEST (-t)
+    // TEST
     if (cmd == "-t") {
         auto res = Engine::extract(arch, {}, true);
         UI::print_summary(res, "Test integrita'");
         return res.ok ? 0 : 1;
     }
 
-    // COMANDO LISTA (-l)
+    // LISTA
     if (cmd == "-l") {
         auto res = Engine::list(arch);
         if (!res.ok) UI::print_error("Errore lettura archivio.");
         return res.ok ? 0 : 1;
     }
-
-    // Comando -d rimosso come richiesto (non compatibile con archivi solid v2)
 
     UI::print_error("Comando sconosciuto.");
     return 1;
