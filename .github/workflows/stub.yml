@@ -19,9 +19,9 @@ jobs:
     - name: Install Dependencies (vcpkg)
       shell: pwsh
       run: |
-        # Installiamo le librerie necessarie tramite vcpkg
+        # Installiamo le versioni STATICHE per evitare la dipendenza dalle DLL
         vcpkg install liblzma:x64-windows-static zstd:x64-windows-static xxhash:x64-windows-static
-
+        
     - name: Prepare Build Environment
       shell: pwsh
       run: |
@@ -33,11 +33,11 @@ jobs:
       shell: pwsh
       run: |
         cd build_stub
-        # Usiamo il toolchain di vcpkg per permettere a CMake di trovare gli header (lzma.h, ecc)
         cmake -S . -B . `
           -DCMAKE_BUILD_TYPE=Release `
           -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
 
     - name: Build SFX Stub
       shell: pwsh
