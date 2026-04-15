@@ -55,14 +55,14 @@ int main(int argc, char* argv[]) {
     size_t offset = find_archive_offset(self_path);
 
     // --- DEBUG INFO ---
-    std::ifstream f_sz(self_path, std::ios::binary | std::ios::ate);
-    size_t total_size = f_sz.tellg();
-    
-    std::cout << Color::YELLOW << "[DEBUG] Dimensione EXE totale: " << total_size << " bytes\n";
-    std::cout << "[DEBUG] Offset archivio trovato: " << offset << " bytes\n";
-    if (offset > 0) {
-        std::cout << "[DEBUG] Dimensione dati rilevati: " << (total_size - offset) << " bytes\n" << Color::RESET;
-    }
+    //std::ifstream f_sz(self_path, std::ios::binary | std::ios::ate);
+    //size_t total_size = f_sz.tellg();
+    //
+    //std::cout << Color::YELLOW << "[DEBUG] Dimensione EXE totale: " << total_size << " bytes\n";
+    //std::cout << "[DEBUG] Offset archivio trovato: " << offset << " bytes\n";
+    //if (offset > 0) {
+    //    std::cout << "[DEBUG] Dimensione dati rilevati: " << (total_size - offset) << " bytes\n" << Color::RESET;
+    //}
     // ------------------
 
     if (offset == 0) {
