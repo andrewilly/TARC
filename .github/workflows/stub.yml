@@ -1,0 +1,37 @@
+name: Build Windows SFX Stub
+
+on:
+  push:
+    paths:
+      - 'src/stub.cpp'
+      - 'CMakeStub.txt'
+      - '.github/workflows/stub.yml'
+  workflow_dispatch: # Permette l'avvio manuale
+
+jobs:
+  build-stub:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      # Usiamo -S . (source) e -B build (binary) specificando il nostro file custom
+      run: cmake -S . -B build_stub -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=cmake -D"CMAKE_PROJECT_INCLUDE_BEFORE:PATH=CMakeStub.txt" 
+      # Nota: Il modo più pulito con file custom è puntare direttamente al file:
+      # run: cmake -C CMakeStub.txt -S . -B build_stub 
+      # In alternativa, rinomina CMakeStub.txt in CMakeLists.txt temporaneamente nel job o usa:
+    
+    - name: Build Stub
+      run: |
+        cd build_stub
+        # Se preferisci la via più semplice, rinominiamo al volo per il job
+        copy ..\CMakeStub.txt CMakeLists.txt
+        cmake .
+        cmake --build . --config Release
+
+    - name: Upload Stub Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tarc-sfx-stub-windows
+        path: build_stub/Release/tarc_sfx_stub.exe
