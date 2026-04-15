@@ -6,7 +6,7 @@ on:
       - 'src/stub.cpp'
       - 'CMakeListsStub.txt'
       - '.github/workflows/stub.yml'
-  workflow_dispatch: # Permette di lanciarlo manualmente dalla scheda "Actions"
+  workflow_dispatch:
 
 jobs:
   build-stub:
@@ -16,26 +16,33 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
+    - name: Install Dependencies (vcpkg)
+      shell: pwsh
+      run: |
+        # Installiamo le librerie necessarie tramite vcpkg
+        vcpkg install liblzma:x64-windows zstd:x64-windows xxhash:x64-windows
+
     - name: Prepare Build Environment
       shell: pwsh
       run: |
-        # Creiamo la cartella per la compilazione
         mkdir build_stub
-        # Copiamo il file dedicato rinominandolo in quello standard atteso da CMake
+        # Copiamo il nostro CMakeLists personalizzato nella cartella di build
         copy CMakeListsStub.txt build_stub/CMakeLists.txt
         
     - name: Configure CMake
       shell: pwsh
       run: |
         cd build_stub
-        # Configuriamo puntando ai sorgenti che sono nella cartella superiore (..)
-        cmake -S . -B . -DCMAKE_BUILD_TYPE=Release
+        # Usiamo il toolchain di vcpkg per permettere a CMake di trovare gli header (lzma.h, ecc)
+        cmake -S . -B . `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=x64-windows
 
     - name: Build SFX Stub
       shell: pwsh
       run: |
         cd build_stub
-        # Lanciamo la compilazione effettiva
         cmake --build . --config Release
 
     - name: Verify Executable
@@ -44,7 +51,7 @@ jobs:
         if (Test-Path "build_stub/Release/tarc_sfx_stub.exe") {
           Write-Host "Stub compilato con successo!" -ForegroundColor Green
         } else {
-          Write-Host "Errore: Eseguibile non trovato." -ForegroundColor Red
+          Write-Host "Errore: tarc_sfx_stub.exe non trovato." -ForegroundColor Red
           exit 1
         }
 
@@ -53,4 +60,3 @@ jobs:
       with:
         name: TARC-SFX-Stub-Win
         path: build_stub/Release/tarc_sfx_stub.exe
-        retention-days: 7
