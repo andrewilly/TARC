@@ -4,6 +4,11 @@ project(TARC_SFX_Stub LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Forza il link statico delle librerie C/C++ (MSVC)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# Forza vcpkg a usare il triplet statico
+set(VCPKG_TARGET_TRIPLET "x64-windows-static")
+
 # 1. Trova i pacchetti (vcpkg li rende disponibili qui)
 find_package(LibLZMA REQUIRED)
 find_package(zstd CONFIG REQUIRED)
