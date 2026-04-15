@@ -1,16 +1,14 @@
 cmake_minimum_required(VERSION 3.15)
 project(TARC_SFX_Stub LANGUAGES CXX)
 
-# Forza C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Trova i pacchetti installati tramite vcpkg
+# 1. Trova i pacchetti (vcpkg li rende disponibili qui)
 find_package(LibLZMA REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(xxHash CONFIG REQUIRED)
 
-# Sorgenti necessari (percorsi relativi dalla cartella build_stub)
 set(STUB_SOURCES
     ../src/stub.cpp
     ../src/engine.cpp
@@ -20,20 +18,18 @@ set(STUB_SOURCES
 
 add_executable(tarc_sfx_stub ${STUB_SOURCES})
 
-# Definizioni per Windows
 target_compile_definitions(tarc_sfx_stub PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
 
-# Directory di inclusione
 target_include_directories(tarc_sfx_stub PRIVATE 
     ../src 
     ../include
-    ${LIBLZMA_INCLUDE_DIRS}
 )
 
-# LINK DELLE LIBRERIE: Usiamo i nomi dei target ufficiali di vcpkg
+# 2. LINK DELLE LIBRERIE
+# Usiamo i nomi esatti che vcpkg ha confermato nei tuoi log:
 target_link_libraries(tarc_sfx_stub PRIVATE 
     LibLZMA::LibLZMA
-    zstd::libzstd_static
+    zstd::libzstd
     xxHash::xxhash
 )
 
