@@ -13,22 +13,22 @@
 namespace UI {
 
 // ─── VTP (Virtual Terminal Processing) ───────────────────────────────────────
-// Abilita i colori ANSI su Windows 10/11 e imposta l'encoding UTF-8
 void enable_vtp() {
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
-            dwMode |= 0x0004; // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            dwMode |= 0x0004;
             SetConsoleMode(hOut, dwMode);
         }
     }
-    SetConsoleOutputCP(65001); // Forza UTF-8 per simboli come ✔ e ❌
+    SetConsoleOutputCP(65001);
 #endif
 }
 
 // ─── HELP (Stile UPX 5.1.1) ──────────────────────────────────────────────────
+// Implementato come richiesto da André Willy Rizzo
 void show_help() {
     const char* C = Color::CYAN;
     const char* R = Color::RESET;
@@ -57,18 +57,16 @@ void show_help() {
     printf("  Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO\n\n");
 
     printf("Type 'tarc --help' for more detailed help.\n");
-    printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n", D, R);
+    printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n\n", D, R);
 }
 
-// ─── BANNER ──────────────────────────────────────────────────────────────────
+// ─── BANNER (Stile Professionale - Credits: André Willy Rizzo) ──────────────
 void show_banner() {
     printf("%s========================================================================\n", Color::CYAN);
     printf("TARC STRIKE v2.00             Advanced Solid Compression\n");
     printf("Copyright (C) 2026            André Willy Rizzo\n");
     printf("========================================================================%s\n", Color::RESET);
-    
-    // Mostra lo stato della licenza subito sotto il banner
-    printf("\n%s[LICENSE] Attiva  (TARC-2026-QXOFQ1RF)%s\n\n", Color::GREEN, Color::RESET);
+    // Nota: La licenza non viene stampata qui per evitare duplicati con il main
 }
 
 // ─── PROGRESS BAR ───────────────────────────────────────────────────────────
@@ -77,7 +75,6 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     int width = 25;
     int pos = (total > 0) ? (int)(width * current / total) : 0;
 
-    // Accorcia il nome del file se troppo lungo per la riga
     std::string short_name = current_file;
     if (short_name.length() > 20) short_name = "..." + short_name.substr(short_name.length() - 17);
 
@@ -92,7 +89,7 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
               << Color::DIM << "Processing: " << Color::RESET << std::left << std::setw(20) << short_name << std::flush;
 }
 
-// ─── UTILITIES (Dimensioni e Ratio) ──────────────────────────────────────────
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
 std::string human_size(uint64_t b) {
     char buf[32];
     if      (b > 1073741824ULL) snprintf(buf, sizeof(buf), "%.2f GB", b / 1073741824.0);
@@ -173,7 +170,6 @@ void print_summary(const TarcResult& r, const std::string& op) {
     }
 }
 
-// ─── MESSAGGISTICA GENERICA ──────────────────────────────────────────────────
 void print_info(const std::string& msg) {
     printf("%sℹ  INFO: %s%s\n", Color::CYAN, msg.c_str(), Color::RESET);
 }
