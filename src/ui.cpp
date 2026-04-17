@@ -13,59 +13,71 @@
 namespace UI {
 
 // ─── VTP (Virtual Terminal Processing) ───────────────────────────────────────
+// Abilita i colori ANSI su Windows 10/11 e imposta l'encoding UTF-8
 void enable_vtp() {
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
-            dwMode |= 0x0004;
+            dwMode |= 0x0004; // ENABLE_VIRTUAL_TERMINAL_PROCESSING
             SetConsoleMode(hOut, dwMode);
         }
     }
-    SetConsoleOutputCP(65001);
+    SetConsoleOutputCP(65001); // Forza UTF-8 per simboli come ✔ e ❌
 #endif
 }
 
-// ─── HELP ─────────────────────────────────────────────────────────────────────
+// ─── HELP (Stile UPX 5.1.1) ──────────────────────────────────────────────────
 void show_help() {
     const char* C = Color::CYAN;
     const char* R = Color::RESET;
     const char* W = Color::WHITE;
     const char* G = Color::GREEN;
     const char* Y = Color::YELLOW;
+    const char* D = Color::DIM;
 
-    printf("\n");
-    printf("  TARC v2.00 - HYBRID SOLID ENGINE (Windows Release)\n");
-    printf("  ==================================================\n\n");
-    
-    printf("  %s%-12s%s %s- %sCrea/Aggiorna Solid   (Deduplicazione ON)%s\n", G, "-c / -a", R, G, W, R);
-    printf("  %s%-12s%s %s- %sLivello Massimo      (LZMA 256MB Chunk)%s\n", G, "-cbest", R, G, W, R);
-    printf("  %s%-12s%s %s- %sVelocita Massima     (LZ4 / ZSTD Fast)%s\n", G, "-cfast", R, G, W, R);
-    printf("  %s%-12s%s %s- %sEstrai tutto         (Ripristino percorsi)%s\n", C, "-x", R, C, W, R);
-    printf("  %s%-12s%s %s- %sElenca contenuto      (Dettagli solid)%s\n", G, "-l", R, G, W, R);
-    printf("  %s%-12s%s %s- %sTest integrita       (XXH64 Hardware)%s\n", Y, "-t", R, Y, W, R);
-    
-    printf("\n  %sOpzioni Avanzate:%s\n", Y, R);
-    printf("  %s%-12s%s %s- %sGenera archivio Autoestraente (.exe)%s\n", W, "--sfx", R, W, W, R);
+    printf("Usage: tarc [%s-cxlta%s] [%s-cbest|cfast%s] [%s--sfx%s] %sarchive [file..]%s\n\n", 
+            G, R, G, R, W, R, Y, R);
 
-    printf("\n  Caratteristiche: Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO\n\n");
+    printf("Commands:\n");
+    printf("  %s-c / -a%s      Crea o Aggiorna Archivio Solid (Deduplicazione ON)\n", G, R);
+    printf("  %s-x%s           Estrai tutto (Ripristino percorsi relativi)\n", C, R);
+    printf("  %s-l%s           Elenca contenuto (Visualizza dettagli Solid)\n", G, R);
+    printf("  %s-t%s           Test integrità (Verifica XXH64 Hardware)\n", Y, R);
+
+    printf("\nCompression Levels:\n");
+    printf("  %s-cbest%s       Livello Massimo (LZMA 256MB Chunk)\n", G, R);
+    printf("  %s-cfast%s       Velocità Massima (LZ4 / ZSTD Fast)\n", G, R);
+
+    printf("\nOptions:\n");
+    printf("  %s--sfx%s        Genera archivio Autoestraente (.exe)\n", W, R);
+
+    printf("\nFeatures:\n");
+    printf("  Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO\n\n");
+
+    printf("Type 'tarc --help' for more detailed help.\n");
+    printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n", D, R);
 }
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
 void show_banner() {
-    std::cout << Color::CYAN << "==========================================\n";
-    std::cout << "          TARC STRIKE v2.00               \n";
-    std::cout << "      Advanced Solid Compression          \n";
-    std::cout << "==========================================\n" << Color::RESET << std::endl;
+    printf("%s========================================================================\n", Color::CYAN);
+    printf("TARC STRIKE v2.00             Advanced Solid Compression\n");
+    printf("Copyright (C) 2026            André Willy Rizzo\n");
+    printf("========================================================================%s\n", Color::RESET);
+    
+    // Mostra lo stato della licenza subito sotto il banner
+    printf("\n%s[LICENSE] Attiva  (TARC-2026-QXOFQ1RF)%s\n\n", Color::GREEN, Color::RESET);
 }
 
 // ─── PROGRESS BAR ───────────────────────────────────────────────────────────
 void print_progress(size_t current, size_t total, const std::string& current_file) {
-    float percent = (float)current / total * 100.0f;
+    float percent = (total > 0) ? ((float)current / total * 100.0f) : 0.0f;
     int width = 25;
-    int pos = (int)(width * current / total);
+    int pos = (total > 0) ? (int)(width * current / total) : 0;
 
+    // Accorcia il nome del file se troppo lungo per la riga
     std::string short_name = current_file;
     if (short_name.length() > 20) short_name = "..." + short_name.substr(short_name.length() - 17);
 
@@ -80,7 +92,7 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
               << Color::DIM << "Processing: " << Color::RESET << std::left << std::setw(20) << short_name << std::flush;
 }
 
-// ─── UTILITIES ───────────────────────────────────────────────────────────────
+// ─── UTILITIES (Dimensioni e Ratio) ──────────────────────────────────────────
 std::string human_size(uint64_t b) {
     char buf[32];
     if      (b > 1073741824ULL) snprintf(buf, sizeof(buf), "%.2f GB", b / 1073741824.0);
@@ -161,6 +173,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
     }
 }
 
+// ─── MESSAGGISTICA GENERICA ──────────────────────────────────────────────────
 void print_info(const std::string& msg) {
     printf("%sℹ  INFO: %s%s\n", Color::CYAN, msg.c_str(), Color::RESET);
 }
