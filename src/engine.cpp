@@ -130,7 +130,8 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     sfx_out << stub_in.rdbuf();
     sfx_out << data_in.rdbuf();
     
-    return {true, "Archivio autoestraente generato."}
+    // CORRETTO QUI: Aggiunto punto e virgola mancante
+    return {true, "Archivio autoestraente generato."};
 }
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
@@ -146,7 +147,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     if (append && fs::exists(archive_path)) {
         FILE* f_old = fopen(archive_path.c_str(), "rb");
         if (f_old) {
-            fread(&h, sizeof(h), 1, f_old);
+            // CORRETTO QUI: Ignorato warning castando a void (l'header vecchio viene letto se esiste)
+            (void)fread(&h, sizeof(h), 1, f_old);
             IO::read_toc(f_old, h, final_toc);
             fclose(f_old);
             for (size_t k = 0; k < final_toc.size(); ++k) {
@@ -344,11 +346,21 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     fclose(f); return {false, "Errore lettura chunk."};
                 }
                 current_block.resize(ch.raw_size);
+                
+                // CORRETTO QUI: Controllo return value della decompressione
+                lzma_ret ret = LZMA_OK;
                 if (ch.codec == (uint32_t)Codec::LZMA) {
                     size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
-                    lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
+                    ret = lzma_stream_buffer_decode(&limit, 0, NULL, 
+                        (const uint8_t*)comp.data(), &src_p, ch.comp_size, 
+                        (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
                 } else {
                     memcpy(current_block.data(), comp.data(), ch.raw_size);
+                }
+
+                if (ch.codec == (uint32_t)Codec::LZMA && (ret != LZMA_OK && ret != LZMA_STREAM_END)) {
+                    fclose(f); 
+                    return {false, "Errore decompressione (skip) - archivio corrotto."};
                 }
                 block_pos = 0;
             }
@@ -367,9 +379,10 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 return {false, "Errore lettura dati compressi (EOF prematuro)."};
             }
             current_block.resize(ch.raw_size);
+            lzma_ret ret = LZMA_OK;
             if (ch.codec == (uint32_t)Codec::LZMA) {
                 size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
-                lzma_ret ret = lzma_stream_buffer_decode(&limit, 0, NULL, 
+                ret = lzma_stream_buffer_decode(&limit, 0, NULL, 
                     (const uint8_t*)comp.data(), &src_p, ch.comp_size, 
                     (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
                 if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
