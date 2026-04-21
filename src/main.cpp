@@ -9,11 +9,9 @@
 #include <algorithm>
 #include <cstring>
 
-// Funzione di supporto per interpretare i livelli di compressione
 static int parse_level(const std::string& arg, int def = 3) {
     if (arg == "-cbest") return 9; 
     if (arg == "-cfast") return 1; 
-
     if (arg.size() > 2 && arg.substr(0, 2) == "-c") {
         std::string ls = arg.substr(2);
         if (!ls.empty() && std::all_of(ls.begin(), ls.end(), ::isdigit)) {
@@ -28,7 +26,6 @@ static int parse_level(const std::string& arg, int def = 3) {
 }
 
 int main(int argc, char* argv[]) {
-    // 1. Inizializzazione Ambiente e Licenza
     UI::enable_vtp();
     UI::show_banner();
     License::check_and_activate();
@@ -38,10 +35,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    bool sfx_requested = false;
     std::string arg_cmd = argv[1];
-    
-    // 2. Identificazione comando (gestisce -c, -a, -cbest, ecc.)
     std::string cmd;
     if (arg_cmd == "-cbest" || arg_cmd == "-cfast") {
         cmd = "-c";
@@ -67,8 +61,8 @@ int main(int argc, char* argv[]) {
     if (cmd == "-c" || cmd == "-a") {
         bool append = (cmd == "-a");
         std::vector<std::string> targets;
+        bool sfx_requested = false;
         
-        // Rileva se tra i parametri c'è --sfx
         for (int i = 3; i < argc; ++i) {
             std::string val = argv[i];
             if (val == "--sfx") {
@@ -83,11 +77,9 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Avvio motore di compressione (Chunk 256MB gestiti in engine.cpp)
         auto res = Engine::compress(arch, targets, append, level);
         UI::print_summary(res, append ? "Aggiunta" : "Creazione");
 
-        // Se l'operazione è riuscita e l'utente ha chiesto SFX
         if (res.ok && sfx_requested) {
             std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
             auto sfx_res = Engine::create_sfx(arch, sfx_exe);
@@ -103,9 +95,23 @@ int main(int argc, char* argv[]) {
     // 4. LOGICA ESTRAZIONE (-x)
     if (cmd == "-x") {
         std::vector<std::string> filters;
-        for (int i = 3; i < argc; ++i) filters.push_back(argv[i]);
+        bool flat_mode = false;
+
+        // Parsing argomenti opzionali
+        for (int i = 3; i < argc; ++i) {
+            std::string val = argv[i];
+            if (val == "--flat") {
+                flat_mode = true;
+            } else {
+                filters.push_back(val);
+            }
+        }
         
-        auto res = Engine::extract(arch, filters, false);
+        // Feedback modalità
+        if (flat_mode) UI::print_info("Modalita' Flat attiva: percorsi ignorati.");
+        if (!filters.empty()) UI::print_info("Filtri attivi: " + std::to_string(filters.size()));
+
+        auto res = Engine::extract(arch, filters, false, 0, flat_mode);
         UI::print_summary(res, "Estrazione");
         return res.ok ? 0 : 1;
     }
