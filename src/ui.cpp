@@ -12,6 +12,7 @@
 
 namespace UI {
 
+// ─── VTP (Virtual Terminal Processing) ───────────────────────────────────────
 void enable_vtp() {
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -26,6 +27,7 @@ void enable_vtp() {
 #endif
 }
 
+// ─── HELP (Stile UPX 5.1.1) ──────────────────────────────────────────────────
 void show_help() {
     const char* C = Color::CYAN;
     const char* R = Color::RESET;
@@ -39,7 +41,7 @@ void show_help() {
 
     printf("Commands:\n");
     printf("  %s-c / -a%s      Crea o Aggiorna Archivio Solid (Deduplicazione ON)\n", G, R);
-    printf("  %s-x%s           Estrai tutto (Ripristino percorsi relativi)\n", C, R);
+    printf("  %s-x [filter]%s   Estrai file (Supporta wildcard es. *.txt)\n", C, R);
     printf("  %s-l%s           Elenca contenuto (Visualizza dettagli Solid)\n", G, R);
     printf("  %s-t%s           Test integrità (Verifica XXH64 Hardware)\n", Y, R);
 
@@ -49,21 +51,25 @@ void show_help() {
 
     printf("\nOptions:\n");
     printf("  %s--sfx%s        Genera archivio Autoestraente (.exe)\n", W, R);
+    printf("  %s--flat%s       Estrazione Flat: ignora percorsi, file nella cartella corrente\n", W, R);
 
     printf("\nFeatures:\n");
-    printf("  Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO\n\n");
+    printf("  Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO, Filtri Avanzati\n\n");
 
     printf("Type 'tarc --help' for more detailed help.\n");
     printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n\n", D, R);
 }
 
+// ─── BANNER (Stile Professionale - Credits: André Willy Rizzo) ──────────────
 void show_banner() {
     printf("%s========================================================================\n", Color::CYAN);
     printf("TARC STRIKE v2.00             Advanced Solid Compression\n");
     printf("Copyright (C) 2026            André Willy Rizzo\n");
     printf("========================================================================%s\n", Color::RESET);
+    // Nota: La licenza non viene stampata qui per evitare duplicati con il main
 }
 
+// ─── PROGRESS BAR ───────────────────────────────────────────────────────────
 void print_progress(size_t current, size_t total, const std::string& current_file) {
     // Protezione contro divisione per zero
     float percent = (total > 0) ? ((float)current / total * 100.0f) : 100.0f;
@@ -84,6 +90,7 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
               << Color::DIM << "Processing: " << Color::RESET << std::left << std::setw(20) << short_name << std::flush;
 }
 
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
 std::string human_size(uint64_t b) {
     char buf[32];
     if      (b > 1073741824ULL) snprintf(buf, sizeof(buf), "%.2f GB", b / 1073741824.0);
@@ -102,6 +109,7 @@ std::string compress_ratio(uint64_t orig, uint64_t comp) {
     return std::string(buf);
 }
 
+// ─── PRINT OPERATIONS ────────────────────────────────────────────────────────
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
     // Nota: ratio >= 1.0 nel codice precedente indicava deduplicazione basata su logica custom
     bool is_dedup = (ratio >= 1.0f); 
