@@ -12,23 +12,20 @@
 
 namespace UI {
 
-// ─── VTP (Virtual Terminal Processing) ───────────────────────────────────────
 void enable_vtp() {
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
-            dwMode |= 0x0004;
+            dwMode |= 0x0004; // ENABLE_VIRTUAL_TERMINAL_PROCESSING
             SetConsoleMode(hOut, dwMode);
         }
     }
-    SetConsoleOutputCP(65001);
+    SetConsoleOutputCP(65001); // UTF-8
 #endif
 }
 
-// ─── HELP (Stile UPX 5.1.1) ──────────────────────────────────────────────────
-// Implementato come richiesto da André Willy Rizzo
 void show_help() {
     const char* C = Color::CYAN;
     const char* R = Color::RESET;
@@ -60,20 +57,18 @@ void show_help() {
     printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n\n", D, R);
 }
 
-// ─── BANNER (Stile Professionale - Credits: André Willy Rizzo) ──────────────
 void show_banner() {
     printf("%s========================================================================\n", Color::CYAN);
     printf("TARC STRIKE v2.00             Advanced Solid Compression\n");
     printf("Copyright (C) 2026            André Willy Rizzo\n");
     printf("========================================================================%s\n", Color::RESET);
-    // Nota: La licenza non viene stampata qui per evitare duplicati con il main
 }
 
-// ─── PROGRESS BAR ───────────────────────────────────────────────────────────
 void print_progress(size_t current, size_t total, const std::string& current_file) {
-    float percent = (total > 0) ? ((float)current / total * 100.0f) : 0.0f;
+    // Protezione contro divisione per zero
+    float percent = (total > 0) ? ((float)current / total * 100.0f) : 100.0f;
     int width = 25;
-    int pos = (total > 0) ? (int)(width * current / total) : 0;
+    int pos = (total > 0) ? (int)(width * current / total) : width;
 
     std::string short_name = current_file;
     if (short_name.length() > 20) short_name = "..." + short_name.substr(short_name.length() - 17);
@@ -89,7 +84,6 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
               << Color::DIM << "Processing: " << Color::RESET << std::left << std::setw(20) << short_name << std::flush;
 }
 
-// ─── UTILITIES ───────────────────────────────────────────────────────────────
 std::string human_size(uint64_t b) {
     char buf[32];
     if      (b > 1073741824ULL) snprintf(buf, sizeof(buf), "%.2f GB", b / 1073741824.0);
@@ -108,8 +102,8 @@ std::string compress_ratio(uint64_t orig, uint64_t comp) {
     return std::string(buf);
 }
 
-// ─── PRINT OPERATIONS ────────────────────────────────────────────────────────
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
+    // Nota: ratio >= 1.0 nel codice precedente indicava deduplicazione basata su logica custom
     bool is_dedup = (ratio >= 1.0f); 
     
     printf("\n%s[+]%s [%s%s%s] %-38s %10s  %s→%s %s%s",
