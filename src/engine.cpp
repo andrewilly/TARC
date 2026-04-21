@@ -130,7 +130,6 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     sfx_out << stub_in.rdbuf();
     sfx_out << data_in.rdbuf();
     
-    // CORRETTO QUI: Aggiunto punto e virgola mancante
     return {true, "Archivio autoestraente generato."};
 }
 
@@ -147,7 +146,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     if (append && fs::exists(archive_path)) {
         FILE* f_old = fopen(archive_path.c_str(), "rb");
         if (f_old) {
-            // CORRETTO QUI: Ignorato warning castando a void (l'header vecchio viene letto se esiste)
             (void)fread(&h, sizeof(h), 1, f_old);
             IO::read_toc(f_old, h, final_toc);
             fclose(f_old);
@@ -288,10 +286,40 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-bool match_pattern(const std::string& filename, const std::string& pattern) {
+// Funzione aggiornata per gestire Wildcard e percorsi
+bool match_pattern(const std::string& full_path, const std::string& pattern) {
     if (pattern.empty()) return true;
-    if (filename.find(pattern) != std::string::npos) return true;
-    return false;
+    
+    // Estrae il nome del file dal percorso completo se il pattern non contiene slash.
+    // Esempio: Se il pattern è "tarc40.*" e il file è "cartella/tarc40.txt",
+    // confronta solo "tarc40.txt" invece dell'intero percorso.
+    std::string target = full_path;
+    if (pattern.find('/') == std::string::npos && pattern.find('\\') == std::string::npos) {
+        target = fs::path(full_path).filename().string();
+    }
+
+    // Gestione Wildcard *
+    size_t star_pos = pattern.find('*');
+    
+    if (star_pos == std::string::npos) {
+        // Nessun asterisco: corrispondenza parziale (contiene la stringa)
+        return (target.find(pattern) != std::string::npos);
+    }
+
+    // C'è un asterisco: formato Prefisso*Suffix
+    std::string prefix = pattern.substr(0, star_pos);
+    std::string suffix = pattern.substr(star_pos + 1);
+
+    // Controlla se inizia col prefisso
+    if (!prefix.empty() && target.find(prefix) != 0) return false;
+
+    // Controlla se finisce col suffisso
+    if (!suffix.empty()) {
+        if (suffix.length() > target.length()) return false;
+        if (target.compare(target.length() - suffix.length(), suffix.length(), suffix) != 0) return false;
+    }
+
+    return true;
 }
 
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset, bool flat_mode) {
@@ -347,7 +375,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 }
                 current_block.resize(ch.raw_size);
                 
-                // CORRETTO QUI: Controllo return value della decompressione
                 lzma_ret ret = LZMA_OK;
                 if (ch.codec == (uint32_t)Codec::LZMA) {
                     size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
