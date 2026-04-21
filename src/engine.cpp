@@ -25,7 +25,7 @@ extern "C" {
 namespace fs = std::filesystem;
 
 namespace CodecSelector {
-    bool is_compressible(const std::string& ext) {
+    bool is_compressibile(const std::string& ext) {
         static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz" };
         std::string e = ext;
         std::transform(e.begin(), e.end(), e.begin(), ::tolower);
@@ -33,7 +33,7 @@ namespace CodecSelector {
     }
     
     Codec select(const std::string& path, size_t size) {
-        if (!is_compressible(fs::path(path).extension().string())) return Codec::STORE;
+        if (!is_compressibile(fs::path(path).extension().string())) return Codec::STORE;
         return (size < 1024 * 512) ? Codec::ZSTD : Codec::LZMA;
     }
 }
@@ -94,13 +94,11 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         res.compressed_data = std::move(raw_data);
         res.success = true;
     } else {
-        // Stima dimensione massima output LZMA
         size_t max_out = lzma_stream_buffer_bound(raw_data.size());
         res.compressed_data.resize(max_out);
         size_t out_pos = 0;
         uint32_t preset = (level < 0) ? 9 : (uint32_t)level;
         
-        // Usiamo preset extreme per massima compressione
         lzma_ret ret = lzma_easy_buffer_encode(preset | LZMA_PRESET_EXTREME, LZMA_CHECK_CRC64, NULL,
             (const uint8_t*)raw_data.data(), raw_data.size(),
             (uint8_t*)res.compressed_data.data(), &out_pos, max_out);
@@ -109,7 +107,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
             res.compressed_data.resize(out_pos); 
             res.success = true; 
         } else {
-            // In caso di errore LZMA, fallback a STORE per non perdere dati
+            // Fallback a STORE se LZMA fallisce
             UI::print_warning("LZMA failed, falling back to STORE for chunk.");
             res.compressed_data = std::move(raw_data);
             res.codec = Codec::STORE;
@@ -132,7 +130,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     sfx_out << stub_in.rdbuf();
     sfx_out << data_in.rdbuf();
     
-    return {true, "Archivio autoestraente generato."};
+    return {true, "Archivio autoestraente generato."}
 }
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
@@ -167,7 +165,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     else fwrite(&h, sizeof(h), 1, f);
 
     std::vector<char> solid_buf;
-    // Preallocazione per evitare realloc continui
     solid_buf.reserve(256 * 1024 * 1024); 
     
     size_t CHUNK_THRESHOLD = 256 * 1024 * 1024; 
@@ -191,13 +188,10 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (!fs::exists(disk_path)) continue;
         uintmax_t fsize = fs::file_size(disk_path);
         
-        // Lettura del file con Hashing Incrementale
         std::vector<char> data;
         bool read_ok = false;
         uint64_t h64 = 0;
         
-        // Ottimizzazione: Se il file è troppo grande per la RAM, questa parte crasherebbe.
-        // In una versione successiva usare mmap o lettura a blocchi diretta su LZMA.
         try {
             data.resize(fsize);
         } catch (...) {
@@ -205,7 +199,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             continue;
         }
 
-        // Setup hash state
         XXH64_state_t* const state = XXH64_createState();
         if (state) XXH64_reset(state, 0);
 
@@ -214,7 +207,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD bytesReadTotal = 0;
             DWORD bytesRead = 0;
-            const DWORD BUF_STEP = 1024 * 1024; // 1MB chunks
+            const DWORD BUF_STEP = 1024 * 1024; 
             char* ptr = data.data();
             
             while (bytesReadTotal < (DWORD)fsize) {
@@ -263,23 +256,20 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             hash_map[h64] = (uint32_t)final_toc.size();
             fe.meta.is_duplicate = 0;
             
-            // Logica Solid Buffering
             if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 if (worker_active && !write_worker(future_chunk)) return {false, "Errore compressione."};
                 future_chunk = std::async(std::launch::async, compress_worker, std::move(solid_buf), level, (Codec)fe.meta.codec);
                 worker_active = true;
                 solid_buf.clear();
-                solid_buf.reserve(CHUNK_THRESHOLD); // Re-reserve
+                solid_buf.reserve(CHUNK_THRESHOLD);
             }
             
-            // Move data into solid buffer
             solid_buf.insert(solid_buf.end(), data.begin(), data.end());
             result.bytes_in += fsize;
         }
         final_toc.push_back(fe);
     }
 
-    // Finalizza compressione
     if (worker_active && !write_worker(future_chunk)) return {false, "Errore chunk finale."};
     if (!solid_buf.empty()) {
         ChunkResult last = compress_worker(std::move(solid_buf), level, Codec::LZMA);
@@ -296,7 +286,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset) {
+bool match_pattern(const std::string& filename, const std::string& pattern) {
+    if (pattern.empty()) return true;
+    if (filename.find(pattern) != std::string::npos) return true;
+    return false;
+}
+
+TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset, bool flat_mode) {
     TarcResult result;
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) return {false, "Archivio non trovato."};
@@ -320,31 +316,62 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     
     std::vector<char> current_block;
     size_t block_pos = 0;
-    
+    std::map<std::string, int> flat_names_counter;
+
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
         
-        // Check filtri (se implementati, qui passiamo tutto)
-        // ... logica filtri ...
+        bool should_extract = false;
+        if (patterns.empty()) {
+            should_extract = true;
+        } else {
+            for (const auto& pat : patterns) {
+                if (match_pattern(fe.name, pat)) {
+                    should_extract = true;
+                    break;
+                }
+            }
+        }
+
+        if (!should_extract) {
+            if (fe.meta.is_duplicate) continue;
+            
+            if (block_pos >= current_block.size()) {
+                ::ChunkHeader ch;
+                if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
+                std::vector<char> comp(ch.comp_size);
+                if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
+                    fclose(f); return {false, "Errore lettura chunk."};
+                }
+                current_block.resize(ch.raw_size);
+                if (ch.codec == (uint32_t)Codec::LZMA) {
+                    size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
+                    lzma_stream_buffer_decode(&limit, 0, NULL, (const uint8_t*)comp.data(), &src_p, ch.comp_size, (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
+                } else {
+                    memcpy(current_block.data(), comp.data(), ch.raw_size);
+                }
+                block_pos = 0;
+            }
+            block_pos += fe.meta.orig_size;
+            continue; 
+        }
 
         if (fe.meta.is_duplicate) continue;
+        
         if (block_pos >= current_block.size()) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
-            
             std::vector<char> comp(ch.comp_size);
             if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
                 fclose(f);
                 return {false, "Errore lettura dati compressi (EOF prematuro)."};
             }
-
             current_block.resize(ch.raw_size);
             if (ch.codec == (uint32_t)Codec::LZMA) {
                 size_t src_p = 0, dst_p = 0; uint64_t limit = UINT64_MAX;
                 lzma_ret ret = lzma_stream_buffer_decode(&limit, 0, NULL, 
                     (const uint8_t*)comp.data(), &src_p, ch.comp_size, 
                     (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
-                    
                 if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
                     UI::print_error("Errore decompressione LZMA (Codice: " + std::to_string(ret) + ")");
                     fclose(f);
@@ -357,7 +384,27 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
         
         UI::print_progress((uint32_t)i + 1, (uint32_t)toc.size(), fe.name);
-        if (!test_only) IO::write_file_to_disk(fe.name, current_block.data() + block_pos, fe.meta.orig_size, fe.meta.timestamp);
+        
+        std::string final_path = fe.name;
+        if (flat_mode) {
+            fs::path p(fe.name);
+            std::string filename = p.filename().string();
+            
+            if (flat_names_counter.count(filename)) {
+                flat_names_counter[filename]++;
+                size_t dot_pos = filename.find_last_of('.');
+                if (dot_pos != std::string::npos) {
+                    filename = filename.substr(0, dot_pos) + "_" + std::to_string(flat_names_counter[filename]) + filename.substr(dot_pos);
+                } else {
+                    filename += "_" + std::to_string(flat_names_counter[filename]);
+                }
+            } else {
+                flat_names_counter[filename] = 0;
+            }
+            final_path = filename;
+        }
+
+        if (!test_only) IO::write_file_to_disk(final_path, current_block.data() + block_pos, fe.meta.orig_size, fe.meta.timestamp);
         result.bytes_out += fe.meta.orig_size;
         block_pos += fe.meta.orig_size;
     }
