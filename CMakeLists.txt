@@ -31,7 +31,7 @@ add_executable(tarc ${TARC_SOURCES})
 target_include_directories(tarc PRIVATE include)
 
 # -----------------------------------------------------------------------------
-# Windows: usa librerie statiche
+# Windows: usa librerie statiche incluse
 # -----------------------------------------------------------------------------
 if(WIN32)
     message(STATUS "Windows: Building with static libraries")
@@ -46,7 +46,7 @@ if(WIN32)
     add_library(xxhash_static STATIC ${XXHASH_SOURCES})
     target_include_directories(xxhash_static PUBLIC libs/xxhash)
     
-    # LZMA - solo file essenziali
+    # LZMA
     set(LZMA_SOURCES
         libs/lzma/src/liblzma/check/check.c
         libs/lzma/src/liblzma/check/crc32_fast.c
@@ -112,25 +112,51 @@ if(WIN32)
     )
     
     target_link_libraries(tarc lzma_static xxhash_static)
-    
+
 # -----------------------------------------------------------------------------
 # macOS: usa librerie di sistema
 # -----------------------------------------------------------------------------
 elseif(APPLE)
-    message(STATUS "macOS: Using system libraries")
+    message(STATUS "macOS: Building for ${CMAKE_OSX_ARCHITECTURES}")
     
-    find_path(LZMA_INCLUDE_DIR lzma.h PATHS /opt/homebrew/include /usr/local/include)
-    find_library(LZMA_LIBRARY lzma PATHS /opt/homebrew/lib /usr/local/lib)
+    # Imposta il percorso Homebrew corretto in base all'architettura
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        set(HOMEBREW_PREFIX "/usr/local")
+    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        set(HOMEBREW_PREFIX "/opt/homebrew")
+    else()
+        # Universal build - usa entrambi i percorsi
+        set(HOMEBREW_PREFIX "/opt/homebrew")
+    endif()
     
-    find_path(XXHASH_INCLUDE_DIR xxhash.h PATHS /opt/homebrew/include /usr/local/include)
-    find_library(XXHASH_LIBRARY xxhash PATHS /opt/homebrew/lib /usr/local/lib)
+    find_path(LZMA_INCLUDE_DIR lzma.h 
+        PATHS ${HOMEBREW_PREFIX}/include /usr/include
+    )
+    find_library(LZMA_LIBRARY lzma 
+        PATHS ${HOMEBREW_PREFIX}/lib /usr/lib
+    )
+    
+    find_path(XXHASH_INCLUDE_DIR xxhash.h 
+        PATHS ${HOMEBREW_PREFIX}/include /usr/include
+    )
+    find_library(XXHASH_LIBRARY xxhash 
+        PATHS ${HOMEBREW_PREFIX}/lib /usr/lib
+    )
+    
+    if(NOT LZMA_INCLUDE_DIR OR NOT LZMA_LIBRARY)
+        message(FATAL_ERROR "LZMA not found. Run: brew install xz")
+    endif()
+    
+    if(NOT XXHASH_INCLUDE_DIR OR NOT XXHASH_LIBRARY)
+        message(FATAL_ERROR "XXHASH not found. Run: brew install xxhash")
+    endif()
     
     target_include_directories(tarc PRIVATE ${LZMA_INCLUDE_DIR} ${XXHASH_INCLUDE_DIR})
     target_link_libraries(tarc ${LZMA_LIBRARY} ${XXHASH_LIBRARY})
     
     find_package(Threads REQUIRED)
     target_link_libraries(tarc Threads::Threads)
-    
+
 # -----------------------------------------------------------------------------
 # Linux: usa pkg-config
 # -----------------------------------------------------------------------------
@@ -154,5 +180,12 @@ message(STATUS "")
 message(STATUS "========================================")
 message(STATUS "TARC Strike v${PROJECT_VERSION}")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
+if(WIN32)
+    message(STATUS "Libraries: Static (LZMA + XXHASH included)")
+elseif(APPLE)
+    message(STATUS "Libraries: System (Homebrew) for ${CMAKE_OSX_ARCHITECTURES}")
+else()
+    message(STATUS "Libraries: System (pkg-config)")
+endif()
 message(STATUS "========================================")
 message(STATUS "")
