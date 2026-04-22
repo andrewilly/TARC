@@ -138,7 +138,7 @@ jobs:
     - name: Prepare release files
       run: |
         VERSION=${GITHUB_REF#refs/tags/}
-        echo "📦 Versione: $VERSION"
+        echo "Versione: $VERSION"
 
         find artifacts -type f -name "tarc" | grep linux | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
         find artifacts -type f -name "tarc.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
@@ -146,8 +146,8 @@ jobs:
 
         chmod +x tarc-$VERSION-* 2>/dev/null || true
 
-        echo "✅ File pronti:"
-        ls -lh tarc-$VERSION-* || echo "❌ Nessun file trovato"
+        echo "File pronti:"
+        ls -lh tarc-$VERSION-* || echo "Nessun file trovato"
 
     - name: Generate checksums
       run: |
