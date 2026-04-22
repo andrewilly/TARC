@@ -36,16 +36,18 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Windows: scarica librerie statiche
+    # Windows: scarica librerie statiche (usa wget invece di curl)
     - name: Download LZMA source (Windows only)
       if: runner.os == 'Windows'
       shell: bash
       run: |
         mkdir -p libs/lzma
         cd libs/lzma
-        curl -L https://github.com/tukaani-project/xz/releases/download/v5.4.5/xz-5.4.5.tar.gz -o lzma.tar.gz
+        # Usa wget che gestisce meglio i redirect
+        wget --no-check-certificate https://github.com/tukaani-project/xz/releases/download/v5.4.5/xz-5.4.5.tar.gz -O lzma.tar.gz
         tar -xzf lzma.tar.gz --strip-components=1
         rm lzma.tar.gz
+        echo "LZMA downloaded successfully"
         ls -la
 
     - name: Download XXHASH source (Windows only)
@@ -54,10 +56,33 @@ jobs:
       run: |
         mkdir -p libs/xxhash
         cd libs/xxhash
-        curl -L https://github.com/Cyan4973/xxHash/releases/download/v0.8.2/xxhash-0.8.2.tar.gz -o xxhash.tar.gz
+        # Usa wget per xxhash
+        wget --no-check-certificate https://github.com/Cyan4973/xxHash/releases/download/v0.8.2/xxhash-0.8.2.tar.gz -O xxhash.tar.gz
         tar -xzf xxhash.tar.gz --strip-components=1
         rm xxhash.tar.gz
+        echo "XXHASH downloaded successfully"
         ls -la
+
+    # Windows: fallback se wget fallisce
+    - name: Download LZMA source fallback (Windows only)
+      if: runner.os == 'Windows' && failure()
+      shell: bash
+      run: |
+        mkdir -p libs/lzma
+        cd libs/lzma
+        curl -L -k https://github.com/tukaani-project/xz/releases/download/v5.4.5/xz-5.4.5.tar.gz -o lzma.tar.gz
+        tar -xzf lzma.tar.gz --strip-components=1 || true
+        rm lzma.tar.gz
+
+    - name: Download XXHASH source fallback (Windows only)
+      if: runner.os == 'Windows' && failure()
+      shell: bash
+      run: |
+        mkdir -p libs/xxhash
+        cd libs/xxhash
+        curl -L -k https://github.com/Cyan4973/xxHash/releases/download/v0.8.2/xxhash-0.8.2.tar.gz -o xxhash.tar.gz
+        tar -xzf xxhash.tar.gz --strip-components=1 || true
+        rm xxhash.tar.gz
 
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
