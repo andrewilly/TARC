@@ -11,6 +11,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/W4 /O2 /MT)
     add_compile_options(/D_CRT_SECURE_NO_WARNINGS)
+    add_compile_options(/DXXH_INLINE_ALL)
 else()
     add_compile_options(-Wall -Wextra -O3)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|amd64)")
@@ -31,87 +32,15 @@ add_executable(tarc ${TARC_SOURCES})
 target_include_directories(tarc PRIVATE include)
 
 # -----------------------------------------------------------------------------
-# Windows: usa librerie statiche incluse
+# Windows: usa vcpkg per librerie
 # -----------------------------------------------------------------------------
 if(WIN32)
-    message(STATUS "Windows: Building with static libraries")
+    message(STATUS "Windows: Building with vcpkg libraries")
     
-    target_include_directories(tarc PRIVATE 
-        libs/lzma/src/liblzma/api
-        libs/xxhash
-    )
+    find_package(liblzma REQUIRED)
+    find_package(xxhash REQUIRED)
     
-    # XXHASH
-    set(XXHASH_SOURCES libs/xxhash/xxhash.c)
-    add_library(xxhash_static STATIC ${XXHASH_SOURCES})
-    target_include_directories(xxhash_static PUBLIC libs/xxhash)
-    
-    # LZMA
-    set(LZMA_SOURCES
-        libs/lzma/src/liblzma/check/check.c
-        libs/lzma/src/liblzma/check/crc32_fast.c
-        libs/lzma/src/liblzma/check/crc32_table.c
-        libs/lzma/src/liblzma/check/crc64_fast.c
-        libs/lzma/src/liblzma/check/crc64_table.c
-        libs/lzma/src/liblzma/common/alone_decoder.c
-        libs/lzma/src/liblzma/common/alone_encoder.c
-        libs/lzma/src/liblzma/common/auto_decoder.c
-        libs/lzma/src/liblzma/common/block_decoder.c
-        libs/lzma/src/liblzma/common/block_encoder.c
-        libs/lzma/src/liblzma/common/block_header_decoder.c
-        libs/lzma/src/liblzma/common/block_header_encoder.c
-        libs/lzma/src/liblzma/common/block_util.c
-        libs/lzma/src/liblzma/common/common.c
-        libs/lzma/src/liblzma/common/easy_buffer_encoder.c
-        libs/lzma/src/liblzma/common/easy_decoder_memusage.c
-        libs/lzma/src/liblzma/common/easy_encoder.c
-        libs/lzma/src/liblzma/common/easy_encoder_memusage.c
-        libs/lzma/src/liblzma/common/easy_preset.c
-        libs/lzma/src/liblzma/common/filter_common.c
-        libs/lzma/src/liblzma/common/filter_decoder.c
-        libs/lzma/src/liblzma/common/filter_encoder.c
-        libs/lzma/src/liblzma/common/index.c
-        libs/lzma/src/liblzma/common/index_decoder.c
-        libs/lzma/src/liblzma/common/index_encoder.c
-        libs/lzma/src/liblzma/common/stream_decoder.c
-        libs/lzma/src/liblzma/common/stream_encoder.c
-        libs/lzma/src/liblzma/common/stream_flags_common.c
-        libs/lzma/src/liblzma/common/stream_flags_decoder.c
-        libs/lzma/src/liblzma/common/stream_flags_encoder.c
-        libs/lzma/src/liblzma/common/vli_decoder.c
-        libs/lzma/src/liblzma/common/vli_encoder.c
-        libs/lzma/src/liblzma/common/vli_size.c
-        libs/lzma/src/liblzma/lz/lz_decoder.c
-        libs/lzma/src/liblzma/lz/lz_encoder.c
-        libs/lzma/src/liblzma/lz/lz_encoder_mf.c
-        libs/lzma/src/liblzma/lzma/fastpos_table.c
-        libs/lzma/src/liblzma/lzma/lzma2_decoder.c
-        libs/lzma/src/liblzma/lzma/lzma2_encoder.c
-        libs/lzma/src/liblzma/lzma/lzma_decoder.c
-        libs/lzma/src/liblzma/lzma/lzma_encoder.c
-        libs/lzma/src/liblzma/lzma/lzma_encoder_optimum_fast.c
-        libs/lzma/src/liblzma/lzma/lzma_encoder_optimum_normal.c
-        libs/lzma/src/liblzma/lzma/lzma_encoder_presets.c
-        libs/lzma/src/liblzma/rangecoder/price_table.c
-        libs/lzma/src/liblzma/simple/simple_coder.c
-        libs/lzma/src/liblzma/simple/simple_decoder.c
-        libs/lzma/src/liblzma/simple/simple_encoder.c
-        libs/lzma/src/liblzma/simple/x86.c
-        libs/lzma/src/common/tuklib_cpucores.c
-        libs/lzma/src/common/tuklib_physmem.c
-    )
-    
-    add_library(lzma_static STATIC ${LZMA_SOURCES})
-    target_include_directories(lzma_static PUBLIC 
-        libs/lzma/src/liblzma/api
-        libs/lzma/src/common
-    )
-    target_compile_definitions(lzma_static PRIVATE 
-        LZMA_API_STATIC
-        _CRT_SECURE_NO_WARNINGS
-    )
-    
-    target_link_libraries(tarc lzma_static xxhash_static)
+    target_link_libraries(tarc liblzma::liblzma xxhash::xxhash)
 
 # -----------------------------------------------------------------------------
 # macOS: usa librerie di sistema
@@ -119,29 +48,17 @@ if(WIN32)
 elseif(APPLE)
     message(STATUS "macOS: Building for ${CMAKE_OSX_ARCHITECTURES}")
     
-    # Imposta il percorso Homebrew corretto in base all'architettura
     if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
         set(HOMEBREW_PREFIX "/usr/local")
-    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
-        set(HOMEBREW_PREFIX "/opt/homebrew")
     else()
-        # Universal build - usa entrambi i percorsi
         set(HOMEBREW_PREFIX "/opt/homebrew")
     endif()
     
-    find_path(LZMA_INCLUDE_DIR lzma.h 
-        PATHS ${HOMEBREW_PREFIX}/include /usr/include
-    )
-    find_library(LZMA_LIBRARY lzma 
-        PATHS ${HOMEBREW_PREFIX}/lib /usr/lib
-    )
+    find_path(LZMA_INCLUDE_DIR lzma.h PATHS ${HOMEBREW_PREFIX}/include /usr/include)
+    find_library(LZMA_LIBRARY lzma PATHS ${HOMEBREW_PREFIX}/lib /usr/lib)
     
-    find_path(XXHASH_INCLUDE_DIR xxhash.h 
-        PATHS ${HOMEBREW_PREFIX}/include /usr/include
-    )
-    find_library(XXHASH_LIBRARY xxhash 
-        PATHS ${HOMEBREW_PREFIX}/lib /usr/lib
-    )
+    find_path(XXHASH_INCLUDE_DIR xxhash.h PATHS ${HOMEBREW_PREFIX}/include /usr/include)
+    find_library(XXHASH_LIBRARY xxhash PATHS ${HOMEBREW_PREFIX}/lib /usr/lib)
     
     if(NOT LZMA_INCLUDE_DIR OR NOT LZMA_LIBRARY)
         message(FATAL_ERROR "LZMA not found. Run: brew install xz")
@@ -181,9 +98,9 @@ message(STATUS "========================================")
 message(STATUS "TARC Strike v${PROJECT_VERSION}")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 if(WIN32)
-    message(STATUS "Libraries: Static (LZMA + XXHASH included)")
+    message(STATUS "Libraries: vcpkg (liblzma + xxhash)")
 elseif(APPLE)
-    message(STATUS "Libraries: System (Homebrew) for ${CMAKE_OSX_ARCHITECTURES}")
+    message(STATUS "Libraries: Homebrew for ${CMAKE_OSX_ARCHITECTURES}")
 else()
     message(STATUS "Libraries: System (pkg-config)")
 endif()
