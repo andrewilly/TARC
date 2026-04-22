@@ -36,6 +36,25 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    # Solo Windows scarica i sorgenti delle librerie statiche
+    - name: Download LZMA source (Windows only)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir -p libs/lzma
+        cd libs/lzma
+        curl -L https://git.tukaani.org/?p=xz.git;a=snapshot;h=HEAD;sf=tgz -o lzma.tar.gz
+        tar -xzf lzma.tar.gz --strip-components=1
+        rm lzma.tar.gz
+
+    - name: Download XXHASH source (Windows only)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir -p libs/xxhash
+        cd libs/xxhash
+        curl -L https://github.com/Cyan4973/xxHash/releases/download/v0.8.2/xxhash-0.8.2.tar.gz -o xxhash.tar.gz
+        tar -xzf xxhash.tar.gz --strip-components=1
+        rm xxhash.tar.gz
+
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -47,42 +66,35 @@ jobs:
       run: |
         brew install cmake ninja xz xxhash
 
-    - name: Install dependencies (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        choco install cmake ninja
-        echo "Per Windows, le librerie LZMA e XXHASH devono essere incluse nel progetto come codice sorgente"
-        echo "oppure installate manualmente. Per ora continuiamo senza."
-
     - name: Setup MSVC (Windows)
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Configure CMake (Linux/Windows)
-      if: runner.os != 'macOS'
+    - name: Configure CMake (Linux/macOS)
+      if: runner.os != 'Windows'
       shell: bash
       run: |
         mkdir -p build
         cd build
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_CXX_STANDARD=20 \
           -DCMAKE_C_STANDARD=11 \
           -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
           ${{ matrix.cmake_arch_flags }}
 
-    - name: Configure CMake (macOS)
-      if: runner.os == 'macOS'
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
       shell: bash
       run: |
         mkdir -p build
         cd build
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_CXX_STANDARD=20 \
           -DCMAKE_C_STANDARD=11 \
           -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-          -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+          ${{ matrix.cmake_arch_flags }}
 
     - name: Build Project
       shell: bash
