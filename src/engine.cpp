@@ -99,6 +99,15 @@ bool match_pattern(const std::string& full_path, const std::string& pattern) {
     return true;
 }
 
+// ─── INTERVENTO #15: HELPER EXCLUDE ──────────────────────────────────────────
+// Verifica se un path corrisponde ad almeno uno dei pattern di esclusione
+bool is_excluded(const std::string& path, const std::vector<std::string>& exclude_patterns) {
+    for (const auto& pat : exclude_patterns) {
+        if (match_pattern(path, pat)) return true;
+    }
+    return false;
+}
+
 // ─── LISTA FORMATI INCOMPRESSIBILI ESTESA ─────────────────────────────────────
 const std::set<std::string>& incompressible_extensions() {
     static const std::set<std::string> skip = {
@@ -344,7 +353,7 @@ DecodedChunk read_next_chunk(FILE* f) {
         return result;
     }
 
-    // Verifica checksum XXH64 se presente (retrocompatibile: checksum=0 → skip)
+    // Verifica checksum XXH64 se presente (retrocompatibile: checksum=0 -> skip)
     if (ch.checksum != 0) {
         XXH64_hash_t computed = XXH64(comp.data(), ch.comp_size, 0);
         if (computed != ch.checksum) {
@@ -361,6 +370,19 @@ DecodedChunk read_next_chunk(FILE* f) {
     result.valid = true;
     return result;
 }
+
+// ─── INTERVENTO #20: PARALLEL DECOMPRESSION HELPER ────────────────────────────
+// Struttura per un file decompresso pronto per la scrittura
+struct ExtractTask {
+    size_t toc_index;
+    std::string final_path;
+    std::vector<char> data;
+    uint64_t timestamp;
+    bool is_duplicate;
+    uint32_t duplicate_of_idx;
+    uint64_t xxhash;
+    uint64_t orig_size;
+};
 
 } // namespace anonimo
 
@@ -385,7 +407,7 @@ namespace CodecSelector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENGINE — Implementazione principale v2.02
+// ENGINE — Implementazione principale v2.03
 // ═══════════════════════════════════════════════════════════════════════════════
 
 namespace Engine {
@@ -407,15 +429,35 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPRESS — v2.02
+// COMPRESS — v2.03
 // Intervento #12: Scritture atomiche (temp file + rename)
 // Intervento #13: Validazione magic + versione in append
+// Intervento #15: --exclude patterns per escludere file
+// Intervento #18: TarcResult arricchito con statistiche
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
+TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs,
+                    bool append, int level, const std::vector<std::string>& exclude_patterns) {
     TarcResult result;
+    auto t_start = std::chrono::steady_clock::now();
+
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) resolve_wildcards(in, expanded_files);
+
+    // ── INTERVENTO #15: FILTRO EXCLUDE ────────────────────────────────────────
+    if (!exclude_patterns.empty()) {
+        size_t before = expanded_files.size();
+        expanded_files.erase(
+            std::remove_if(expanded_files.begin(), expanded_files.end(),
+                [&](const std::string& p) { return is_excluded(p, exclude_patterns); }),
+            expanded_files.end());
+        result.skip_count += static_cast<uint32_t>(before - expanded_files.size());
+        if (!exclude_patterns.empty() && before != expanded_files.size()) {
+            UI::print_verbose("Exclude: " + std::to_string(before - expanded_files.size()) +
+                              " file esclusi su " + std::to_string(before));
+        }
+    }
+
     if (expanded_files.empty()) return {false, "Nessun file trovato."};
 
     std::vector<::FileEntry> final_toc;
@@ -447,16 +489,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     }
 
     // ── INTERVENTO #12: SCRITTURA ATOMICA ─────────────────────────────────────
-    // Scrive sempre su un file temporaneo nella stessa directory del target.
-    // Solo a operazione completata con successo, rinomina atomicamente.
-    // In caso di crash, il file originale rimane intatto.
     std::string actual_write_path = archive_path;
     std::string temp_path;
-    bool using_temp = !append;  // Per creazione usa sempre temp, per append usiamo temp dopo
+    bool using_temp = !append;
 
     if (append) {
-        // In append, dobbiamo copiare prima i dati esistenti su un temp,
-        // poi lavorare sul temp. Questo protegge l'originale in caso di crash.
         temp_path = IO::make_temp_path(archive_path);
         try {
             fs::copy_file(archive_path, temp_path, fs::copy_options::overwrite_existing);
@@ -473,7 +510,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     FilePtr f(fopen(actual_write_path.c_str(), append ? "rb+" : "wb"));
     if (!f) {
-        // Cleanup temp file se fallisce apertura
         if (using_temp && !temp_path.empty()) IO::safe_remove(temp_path);
         return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio."};
     }
@@ -506,7 +542,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
         if (fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f) != res.compressed_data.size())
             return false;
+
+        // ── INTERVENTO #18: STATISTICHE PER-CODEC ────────────────────────────
         result.bytes_out += res.compressed_data.size();
+        result.codec_bytes[res.codec] += res.compressed_data.size();
+        result.codec_chunks[res.codec]++;
         return true;
     };
 
@@ -544,6 +584,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             data.resize(fsize);
         } catch (...) {
             UI::print_error("Memoria insufficiente: " + disk_path);
+            result.skip_count++;
             continue;
         }
 
@@ -588,7 +629,10 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             XXH64_freeState(state);
         }
 
-        if (!read_ok) continue;
+        if (!read_ok) {
+            result.skip_count++;
+            continue;
+        }
 
         ::FileEntry fe;
         fe.name = normalize_path(disk_path);
@@ -597,9 +641,14 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.codec = static_cast<uint8_t>(CodecSelector::select(disk_path, fsize, level));
         fe.meta.timestamp = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(disk_path).time_since_epoch()).count());
 
+        // ── INTERVENTO #18: CONTATORI ─────────────────────────────────────────
+        result.file_count++;
+
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
+            result.dup_count++;
+            UI::print_verbose("Duplicato rilevato: " + fe.name);
         } else {
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
@@ -644,32 +693,43 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     }
 
     // Il file e' completo. Chiudiamo prima della rename.
-    f.~FilePtr();  // Chiudi esplicitamente prima della rename
+    f.~FilePtr();
 
     // ── INTERVENTO #12: RENAME ATOMICA ────────────────────────────────────────
-    // Sostituisce il file originale con il temporaneo completo.
-    // Operazione atomica: o avviene completamente o non avviene.
     if (using_temp && !temp_path.empty()) {
         if (!IO::atomic_rename(temp_path, archive_path)) {
-            // La rename e' fallita. Il temp file e' completo e valido.
-            // Non eliminiamo il temp: l'utente puo' recuperarne il contenuto.
             UI::print_warning("Rename atomica fallita. File temporaneo valido: " + temp_path);
             return {false, "Errore rename atomica. File temporaneo preservato: " + temp_path};
         }
     }
+
+    // ── INTERVENTO #18: STATISTICHE FINALI ────────────────────────────────────
+    auto t_end = std::chrono::steady_clock::now();
+    result.elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
+
+    try {
+        result.archive_size = fs::file_size(archive_path);
+    } catch (...) {}
 
     result.ok = true;
     return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EXTRACT — v2.02
+// EXTRACT — v2.03
 // Intervento #11: Path Traversal Protection (sanitize_path)
+// Intervento #14: -o output directory
+// Intervento #18: TarcResult arricchito
+// Intervento #20: Parallel decompression (scrittura asincrona)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset, bool flat_mode) {
+TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns,
+                   bool test_only, size_t offset, bool flat_mode,
+                   const std::string& output_dir) {
     TarcResult result;
     result.ok = true;
+    auto t_start = std::chrono::steady_clock::now();
 
     FilePtr f(fopen(arch_path.c_str(), "rb"));
     if (!f) return {false, "Archivio non trovato."};
@@ -700,6 +760,35 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     // Traccia i file estratti per risolvere i duplicati
     std::map<uint32_t, std::string> extracted_paths;
+
+    // ── INTERVENTO #20: PARALLEL DECOMPRESSION ────────────────────────────────
+    // Accumula i task di scrittura e li esegue in un thread separato
+    // mentre il thread principale continua a decomprimere il prossimo file.
+    std::future<bool> write_future;
+    bool write_future_active = false;
+
+    auto wait_write = [&]() -> bool {
+        if (!write_future_active) return true;
+        bool ok = write_future.get();
+        write_future_active = false;
+        return ok;
+    };
+
+    auto async_write = [&](ExtractTask task) -> bool {
+        // Prima attendi che la scrittura precedente finisca
+        if (!wait_write()) return false;
+
+        write_future = std::async(std::launch::async, [task]() -> bool {
+            if (!IO::write_file_to_disk(task.final_path, task.data.data(),
+                                         task.data.size(), task.timestamp)) {
+                UI::print_warning("Impossibile scrivere: " + task.final_path);
+                return false;
+            }
+            return true;
+        });
+        write_future_active = true;
+        return true;
+    };
 
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
@@ -735,11 +824,17 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     final_path = filename;
                 }
 
+                // INTERVENTO #14: Aggiungi output_dir se specificato
+                if (!test_only && !output_dir.empty()) {
+                    final_path = output_dir + "/" + final_path;
+                }
+
                 // INTERVENTO #11: Sanitizza percorso prima dell'estrazione
                 if (!test_only) {
                     std::string safe_path = IO::sanitize_path(final_path);
                     if (safe_path.empty()) {
                         UI::print_warning("Percorso pericoloso saltato: " + final_path);
+                        result.skip_count++;
                         continue;
                     }
                     final_path = safe_path;
@@ -751,6 +846,12 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     auto it = extracted_paths.find(fe.meta.duplicate_of_idx);
                     if (it != extracted_paths.end()) {
                         try {
+                            // Crea directory se necessario
+                            fs::path p(final_path);
+                            if (p.has_parent_path()) {
+                                std::error_code ec;
+                                fs::create_directories(p.parent_path(), ec);
+                            }
                             fs::copy_file(it->second, final_path, fs::copy_options::overwrite_existing);
                         } catch (...) {
                             UI::print_warning("Impossibile copiare duplicato: " + fe.name);
@@ -762,6 +863,8 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     UI::print_extract(fe.name, fe.meta.orig_size, true, true);
                 }
                 result.bytes_out += fe.meta.orig_size;
+                result.dup_count++;
+                result.file_count++;
                 extracted_paths[static_cast<uint32_t>(i)] = final_path;
             }
             continue;
@@ -776,6 +879,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             if (src_pos >= current_block.size()) {
                 DecodedChunk chunk = read_next_chunk(f);
                 if (!chunk.valid) {
+                    wait_write();
                     return {false, "Errore lettura chunk durante estrazione."};
                 }
                 current_block = std::move(chunk.data);
@@ -818,15 +922,33 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             final_path = filename;
         }
 
+        // INTERVENTO #14: Aggiungi output_dir se specificato
+        if (!test_only && !output_dir.empty()) {
+            final_path = output_dir + "/" + final_path;
+        }
+
         // INTERVENTO #11: Sanitizza percorso prima della scrittura su disco
         if (!test_only) {
             std::string safe_path = IO::sanitize_path(final_path);
             if (safe_path.empty()) {
                 UI::print_warning("Percorso pericoloso saltato: " + final_path);
+                result.skip_count++;
                 continue;
             }
             final_path = safe_path;
-            IO::write_file_to_disk(final_path, file_data.data(), file_data.size(), fe.meta.timestamp);
+
+            // INTERVENTO #20: Scrittura asincrona in parallelo
+            ExtractTask task;
+            task.toc_index = i;
+            task.final_path = final_path;
+            task.data = std::move(file_data);
+            task.timestamp = fe.meta.timestamp;
+            task.is_duplicate = false;
+            task.xxhash = fe.meta.xxhash;
+            task.orig_size = fe.meta.orig_size;
+            if (!async_write(std::move(task))) {
+                return {false, "Errore scrittura file."};
+            }
         }
 
         // Verifica XXH64 in modalita' test
@@ -841,14 +963,29 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
 
         result.bytes_out += fe.meta.orig_size;
+        result.file_count++;
         extracted_paths[static_cast<uint32_t>(i)] = final_path;
     }
+
+    // Attendi completamento ultima scrittura asincrona
+    wait_write();
+
+    // ── INTERVENTO #18: STATISTICHE FINALI ────────────────────────────────────
+    auto t_end = std::chrono::steady_clock::now();
+    result.elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
+
+    try {
+        result.archive_size = fs::file_size(arch_path);
+    } catch (...) {}
 
     return result;
 }
 
 TarcResult list(const std::string& arch_path, size_t offset) {
     TarcResult res;
+    auto t_start = std::chrono::steady_clock::now();
+
     FilePtr f(fopen(arch_path.c_str(), "rb"));
     if (!f) return {false, "Errore apertura archivio."};
     if (offset > 0) {
@@ -865,14 +1002,240 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) return {false, "Errore TOC"};
 
-    for (const auto& fe : toc)
+    for (const auto& fe : toc) {
         UI::print_list_entry(fe.name, fe.meta.orig_size, fe.meta.is_duplicate ? 0 : 1, static_cast<Codec>(fe.meta.codec));
+        res.file_count++;
+        if (fe.meta.is_duplicate) res.dup_count++;
+        res.bytes_in += fe.meta.orig_size;
+    }
+
+    auto t_end = std::chrono::steady_clock::now();
+    res.elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
+
+    try {
+        res.archive_size = fs::file_size(arch_path);
+    } catch (...) {}
+
     res.ok = true;
     return res;
 }
 
-TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
-    return {false, "Rimozione non supportata in modalita' Solid senza riscrittura completa."};
+// ═══════════════════════════════════════════════════════════════════════════════
+// REMOVE — Intervento #21
+// Implementazione effettiva: riscrive l'archivio senza i file specificati.
+// Usa scritture atomiche per sicurezza.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns) {
+    TarcResult result;
+    auto t_start = std::chrono::steady_clock::now();
+
+    // Leggi l'archivio originale
+    FilePtr f_src(fopen(arch_path.c_str(), "rb"));
+    if (!f_src) return {false, "Impossibile aprire l'archivio."};
+
+    ::Header h;
+    if (fread(&h, sizeof(h), 1, f_src) != 1) return {false, "Header corrotto."};
+    if (!IO::validate_header(h)) return {false, "File non e' un archivio TARC valido."};
+
+    std::vector<::FileEntry> toc;
+    if (!IO::read_toc(f_src, h, toc)) return {false, "Impossibile leggere TOC."};
+
+    // Identifica i file da rimuovere
+    std::set<size_t> remove_set;
+    for (size_t i = 0; i < toc.size(); ++i) {
+        for (const auto& pat : patterns) {
+            if (match_pattern(toc[i].name, pat)) {
+                remove_set.insert(i);
+                break;
+            }
+        }
+    }
+
+    if (remove_set.empty()) {
+        return {false, "Nessun file corrisponde ai pattern specificati."};
+    }
+
+    UI::print_verbose("Rimozione di " + std::to_string(remove_set.size()) + " file dall'archivio.");
+
+    // Leggi tutti i chunk di dati dall'archivio originale
+    if (!IO::seek64(f_src, static_cast<int64_t>(sizeof(::Header)), SEEK_SET))
+        return {false, "Errore seek dati."};
+
+    // Mappa: toc_index -> dati decompressi
+    std::map<size_t, std::vector<char>> file_data_map;
+    std::vector<char> current_block;
+    size_t block_pos = 0;
+
+    for (size_t i = 0; i < toc.size(); ++i) {
+        auto& fe = toc[i];
+
+        if (fe.meta.is_duplicate) {
+            // I duplicati non hanno dati propri, vengono gestiti dopo
+            continue;
+        }
+
+        std::vector<char> file_data;
+        size_t remaining = fe.meta.orig_size;
+
+        while (remaining > 0) {
+            if (block_pos >= current_block.size()) {
+                DecodedChunk chunk = read_next_chunk(f_src);
+                if (!chunk.valid) return {false, "Errore lettura chunk durante rimozione."};
+                current_block = std::move(chunk.data);
+                block_pos = 0;
+            }
+
+            size_t available = current_block.size() - block_pos;
+            size_t to_copy = std::min(available, remaining);
+
+            file_data.insert(file_data.end(),
+                current_block.begin() + block_pos,
+                current_block.begin() + block_pos + to_copy);
+
+            block_pos += to_copy;
+            remaining -= to_copy;
+        }
+
+        // Salva solo se NON va rimosso
+        if (remove_set.find(i) == remove_set.end()) {
+            file_data_map[i] = std::move(file_data);
+        }
+    }
+
+    // Ora riscrivi l'archivio con solo i file NON rimossi
+    std::string temp_path = IO::make_temp_path(arch_path);
+    FilePtr f_dst(fopen(temp_path.c_str(), "wb"));
+    if (!f_dst) return {false, "Impossibile creare archivio temporaneo."};
+
+    ::Header new_h{};
+    memcpy(new_h.magic, TARC_MAGIC, 4);
+    new_h.version = TARC_VERSION;
+    if (fwrite(&new_h, sizeof(new_h), 1, f_dst) != 1) {
+        IO::safe_remove(temp_path);
+        return {false, "Errore scrittura header."};
+    }
+
+    std::vector<::FileEntry> new_toc;
+    std::map<uint64_t, uint32_t> new_hash_map;
+    std::vector<char> solid_buf;
+    solid_buf.reserve(CHUNK_THRESHOLD);
+    Codec last_codec = Codec::LZMA;
+    int level = 6; // Livello default per la ricompressione
+
+    for (size_t i = 0; i < toc.size(); ++i) {
+        // Se il file va rimosso, salta
+        if (remove_set.find(i) != remove_set.end()) {
+            UI::print_delete(toc[i].name);
+            continue;
+        }
+
+        ::FileEntry fe = toc[i];
+
+        // Gestisci duplicati: se l'originale e' stato rimosso, il duplicato diventa originale
+        if (fe.meta.is_duplicate) {
+            uint32_t orig_idx = fe.meta.duplicate_of_idx;
+            if (remove_set.find(orig_idx) != remove_set.end()) {
+                // L'originale e' stato rimosso, questo duplicato deve diventare autonomo
+                // Cerca i dati dall'originale rimosso (non disponibili) o salta
+                UI::print_warning("Duplicato orfano (originale rimosso): " + fe.name);
+                result.skip_count++;
+                continue;
+            }
+
+            // Aggiorna il duplicate_of_idx alla nuova posizione
+            auto it = new_hash_map.find(toc[orig_idx].meta.xxhash);
+            if (it != new_hash_map.end()) {
+                fe.meta.duplicate_of_idx = it->second;
+                fe.meta.is_duplicate = 1;
+            }
+        } else {
+            // File non-duplicato: ricomprimi i suoi dati
+            auto data_it = file_data_map.find(i);
+            if (data_it == file_data_map.end()) {
+                UI::print_warning("Dati mancanti per: " + fe.name);
+                result.skip_count++;
+                continue;
+            }
+
+            fe.meta.xxhash = XXH64(data_it->second.data(), data_it->second.size(), 0);
+            new_hash_map[fe.meta.xxhash] = static_cast<uint32_t>(new_toc.size());
+            fe.meta.is_duplicate = 0;
+
+            Codec chosen = static_cast<Codec>(fe.meta.codec);
+
+            if (solid_buf.size() + data_it->second.size() > CHUNK_THRESHOLD && !solid_buf.empty()) {
+                ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
+                if (!cr.success) {
+                    IO::safe_remove(temp_path);
+                    return {false, "Errore ricompressione chunk."};
+                }
+                ::ChunkHeader ch = { static_cast<uint32_t>(cr.codec), cr.raw_size,
+                                      static_cast<uint32_t>(cr.compressed_data.size()), 0 };
+                ch.checksum = XXH64(cr.compressed_data.data(), cr.compressed_data.size(), 0);
+                fwrite(&ch, sizeof(ch), 1, f_dst);
+                fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f_dst);
+                result.bytes_out += cr.compressed_data.size();
+                result.codec_bytes[cr.codec] += cr.compressed_data.size();
+                result.codec_chunks[cr.codec]++;
+            }
+
+            last_codec = chosen;
+            solid_buf.insert(solid_buf.end(), data_it->second.begin(), data_it->second.end());
+            result.bytes_in += data_it->second.size();
+        }
+
+        result.file_count++;
+        if (fe.meta.is_duplicate) result.dup_count++;
+        new_toc.push_back(fe);
+    }
+
+    // Flush finale solid buffer
+    if (!solid_buf.empty()) {
+        ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
+        if (!cr.success) {
+            IO::safe_remove(temp_path);
+            return {false, "Errore ricompressione chunk finale."};
+        }
+        ::ChunkHeader ch = { static_cast<uint32_t>(cr.codec), cr.raw_size,
+                              static_cast<uint32_t>(cr.compressed_data.size()), 0 };
+        ch.checksum = XXH64(cr.compressed_data.data(), cr.compressed_data.size(), 0);
+        fwrite(&ch, sizeof(ch), 1, f_dst);
+        fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f_dst);
+        result.bytes_out += cr.compressed_data.size();
+        result.codec_bytes[cr.codec] += cr.compressed_data.size();
+        result.codec_chunks[cr.codec]++;
+    }
+
+    // End mark + TOC
+    ::ChunkHeader end_mark = {0, 0, 0, 0};
+    fwrite(&end_mark, sizeof(end_mark), 1, f_dst);
+
+    if (!IO::write_toc(f_dst, new_h, new_toc)) {
+        IO::safe_remove(temp_path);
+        return {false, "Errore scrittura TOC."};
+    }
+
+    // Chiudi e rinomina atomicamente
+    f_dst.~FilePtr();
+    f_src.~FilePtr();
+
+    if (!IO::atomic_rename(temp_path, arch_path)) {
+        UI::print_warning("Rename atomica fallita. File temporaneo: " + temp_path);
+        return {false, "Errore rename atomica."};
+    }
+
+    auto t_end = std::chrono::steady_clock::now();
+    result.elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
+
+    try {
+        result.archive_size = fs::file_size(arch_path);
+    } catch (...) {}
+
+    result.ok = true;
+    return result;
 }
 
 } // namespace Engine

@@ -2,9 +2,10 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
 
 #define TARC_MAGIC     "TRC2"
-#define TARC_VERSION   202
+#define TARC_VERSION   203
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
 
@@ -68,9 +69,29 @@ struct FileEntry {
     std::string name;
 };
 
+// ─── INTERVENTO #18: TARCRISULT ARRICCHITO ─────────────────────────────────────
+// Aggiunge statistiche dettagliate: conteggio file/duplicati, per-codec,
+// tempo impiegato, dimensione archivio su disco.
 struct TarcResult {
-    bool        ok      = true;
+    bool        ok          = true;
     std::string message;
-    uint64_t    bytes_in  = 0;
-    uint64_t    bytes_out = 0;
+
+    // Statistiche base
+    uint64_t    bytes_in    = 0;
+    uint64_t    bytes_out   = 0;
+
+    // Conteggi
+    uint32_t    file_count  = 0;
+    uint32_t    dup_count   = 0;
+    uint32_t    skip_count  = 0;    // File saltati (exclude o errori)
+
+    // Statistiche per-codec
+    std::map<Codec, uint64_t> codec_bytes;     // Byte compressi per codec
+    std::map<Codec, uint32_t> codec_chunks;    // Chunk per codec
+
+    // Tempo impiegato (millisecondi)
+    uint64_t    elapsed_ms  = 0;
+
+    // Dimensione archivio su disco
+    uint64_t    archive_size = 0;
 };

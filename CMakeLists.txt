@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(tarc VERSION 2.02 LANGUAGES CXX C)
+project(tarc VERSION 2.03 LANGUAGES CXX C)
 
 # STANDARD
 set(CMAKE_CXX_STANDARD 17)
@@ -154,5 +154,6 @@ message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
 message(STATUS "  |  Checksum   : XXH64 Chunk Verification")
 message(STATUS "  |  I/O        : 64-bit + Atomic Writes")
 message(STATUS "  |  Security   : Path Traversal Protection")
+message(STATUS "  |  Features   : -o dir, --exclude, -v, -r, ETA")
 message(STATUS "  +==========================================+")
 message(STATUS "")
