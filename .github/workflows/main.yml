@@ -41,35 +41,27 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Windows: scarica librerie statiche con curl
-    - name: Download LZMA source (Windows only)
-      if: runner.os == 'Windows'
-      shell: bash
-      run: |
-        mkdir -p libs/lzma
-        cd libs/lzma
-        curl -L -k https://github.com/tukaani-project/xz/releases/download/v5.4.5/xz-5.4.5.tar.gz -o lzma.tar.gz
-        tar -xzf lzma.tar.gz --strip-components=1
-        rm lzma.tar.gz
-        echo "LZMA downloaded successfully"
-
-    - name: Download XXHASH source (Windows only)
-      if: runner.os == 'Windows'
-      shell: bash
-      run: |
-        mkdir -p libs/xxhash
-        cd libs/xxhash
-        curl -L -k https://github.com/Cyan4973/xxHash/releases/download/v0.8.2/xxhash-0.8.2.tar.gz -o xxhash.tar.gz
-        tar -xzf xxhash.tar.gz --strip-components=1
-        rm xxhash.tar.gz
-        echo "XXHASH downloaded successfully"
-
     # Linux: installa dipendenze
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake liblzma-dev libxxhash-dev
+
+    # Windows: setup vcpkg e installa librerie
+    - name: Setup vcpkg (Windows)
+      if: runner.os == 'Windows'
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: 501db0f17ef6df184fcdbfbe0f87cde2493b6f63
+        vcpkgJsonGlob: 'vcpkg.json'
+
+    - name: Install dependencies via vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        vcpkg install liblzma:x64-windows-static
+        vcpkg install xxhash:x64-windows-static
 
     # macOS Intel (macos-13) - installa dipendenze x86_64
     - name: Install dependencies (macOS Intel)
@@ -178,10 +170,7 @@ jobs:
         cp arm_build/tarc tarc-arm64
         chmod +x tarc-x86_64 tarc-arm64
         
-        # Crea universal binary usando lipo
         lipo -create -output tarc-universal tarc-x86_64 tarc-arm64
-        
-        # Verifica architetture
         lipo -info tarc-universal
         
         echo "Universal binary created successfully"
@@ -211,13 +200,8 @@ jobs:
         VERSION=${GITHUB_REF#refs/tags/}
         echo "📦 Versione: $VERSION"
 
-        # Linux
         find artifacts -type f -name "tarc-linux-x86_64" | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
-
-        # Windows
         find artifacts -type f -name "tarc-windows-x64.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
-
-        # macOS Universal
         find artifacts -type f -name "tarc-macos-universal" | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
 
         chmod +x tarc-$VERSION-* 2>/dev/null || true
