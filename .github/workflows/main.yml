@@ -39,15 +39,17 @@ jobs:
     # Solo Windows scarica i sorgenti delle librerie statiche
     - name: Download LZMA source (Windows only)
       if: runner.os == 'Windows'
+      shell: bash
       run: |
         mkdir -p libs/lzma
         cd libs/lzma
-        curl -L https://git.tukaani.org/?p=xz.git;a=snapshot;h=HEAD;sf=tgz -o lzma.tar.gz
+        curl -L https://github.com/tukaani-project/xz/releases/download/v5.6.4/xz-5.6.4.tar.gz -o lzma.tar.gz
         tar -xzf lzma.tar.gz --strip-components=1
         rm lzma.tar.gz
 
     - name: Download XXHASH source (Windows only)
       if: runner.os == 'Windows'
+      shell: bash
       run: |
         mkdir -p libs/xxhash
         cd libs/xxhash
@@ -59,19 +61,18 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build liblzma-dev libxxhash-dev
+        sudo apt-get install -y build-essential cmake liblzma-dev libxxhash-dev
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install cmake ninja xz xxhash
+        brew install cmake xz xxhash
 
     - name: Setup MSVC (Windows)
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Configure CMake (Linux/macOS)
-      if: runner.os != 'Windows'
+    - name: Configure CMake
       shell: bash
       run: |
         mkdir -p build
@@ -80,20 +81,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_CXX_STANDARD=20 \
           -DCMAKE_C_STANDARD=11 \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-          ${{ matrix.cmake_arch_flags }}
-
-    - name: Configure CMake (Windows)
-      if: runner.os == 'Windows'
-      shell: bash
-      run: |
-        mkdir -p build
-        cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=20 \
-          -DCMAKE_C_STANDARD=11 \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
           ${{ matrix.cmake_arch_flags }}
 
     - name: Build Project
@@ -115,17 +102,15 @@ jobs:
 
     - name: Find executable (Windows)
       if: runner.os == 'Windows'
-      shell: pwsh
+      shell: bash
       run: |
-        if (Test-Path "build/Release/tarc.exe") {
-          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $env:GITHUB_ENV
-        } elseif (Test-Path "build/tarc.exe") {
-          echo "EXECUTABLE_PATH=build/tarc.exe" >> $env:GITHUB_ENV
-        } else {
-          Get-ChildItem -Path build -Filter "tarc.exe" -Recurse |
-          Select-Object -First 1 |
-          ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" >> $env:GITHUB_ENV }
-        }
+        if [ -f "build/Release/tarc.exe" ]; then
+          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $GITHUB_ENV
+        elif [ -f "build/tarc.exe" ]; then
+          echo "EXECUTABLE_PATH=build/tarc.exe" >> $GITHUB_ENV
+        else
+          find build -name "tarc.exe" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
+        fi
 
     - name: Test executable
       shell: bash
