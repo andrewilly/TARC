@@ -11,8 +11,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/W4 /O2 /MT)
     add_compile_options(/D_CRT_SECURE_NO_WARNINGS)
+    add_compile_options(/DXXH_INLINE_ALL)
 else()
-    add_compile_options(-Wall -Wextra -O3)
+    add_compile_options(-Wall -Wextra -O3 -flto)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|amd64)")
         add_compile_options(-march=native)
     endif()
@@ -21,7 +22,7 @@ endif()
 include_directories(include)
 
 # -----------------------------------------------------------------------------
-# XXHASH - compilato dai sorgenti (funziona su tutte le piattaforme)
+# XXHASH - compilato dai sorgenti
 # -----------------------------------------------------------------------------
 set(XXHASH_SOURCES
     libs/xxhash/xxhash.c
@@ -35,42 +36,107 @@ if(MSVC)
 endif()
 
 # -----------------------------------------------------------------------------
-# LZMA - cerca libreria di sistema
+# LZMA - compilato dai sorgenti (per tutte le piattaforme)
 # -----------------------------------------------------------------------------
-if(UNIX)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBLZMA REQUIRED liblzma)
-    set(LZMA_INCLUDE_DIRS ${LIBLZMA_INCLUDE_DIRS})
-    set(LZMA_LIBRARIES ${LIBLZMA_LIBRARIES})
+set(LZMA_SOURCES
+    libs/lzma/src/liblzma/check/check.c
+    libs/lzma/src/liblzma/check/crc32_fast.c
+    libs/lzma/src/liblzma/check/crc32_table.c
+    libs/lzma/src/liblzma/check/crc64_fast.c
+    libs/lzma/src/liblzma/check/crc64_table.c
+    libs/lzma/src/liblzma/check/sha256.c
+    libs/lzma/src/liblzma/common/alone_decoder.c
+    libs/lzma/src/liblzma/common/alone_encoder.c
+    libs/lzma/src/liblzma/common/auto_decoder.c
+    libs/lzma/src/liblzma/common/block_buffer_decoder.c
+    libs/lzma/src/liblzma/common/block_buffer_encoder.c
+    libs/lzma/src/liblzma/common/block_decoder.c
+    libs/lzma/src/liblzma/common/block_encoder.c
+    libs/lzma/src/liblzma/common/block_header_decoder.c
+    libs/lzma/src/liblzma/common/block_header_encoder.c
+    libs/lzma/src/liblzma/common/block_util.c
+    libs/lzma/src/liblzma/common/common.c
+    libs/lzma/src/liblzma/common/easy_buffer_encoder.c
+    libs/lzma/src/liblzma/common/easy_decoder_memusage.c
+    libs/lzma/src/liblzma/common/easy_encoder.c
+    libs/lzma/src/liblzma/common/easy_encoder_memusage.c
+    libs/lzma/src/liblzma/common/easy_preset.c
+    libs/lzma/src/liblzma/common/filter_buffer_decoder.c
+    libs/lzma/src/liblzma/common/filter_buffer_encoder.c
+    libs/lzma/src/liblzma/common/filter_common.c
+    libs/lzma/src/liblzma/common/filter_decoder.c
+    libs/lzma/src/liblzma/common/filter_encoder.c
+    libs/lzma/src/liblzma/common/filter_flags_decoder.c
+    libs/lzma/src/liblzma/common/filter_flags_encoder.c
+    libs/lzma/src/liblzma/common/hardware_cputhreads.c
+    libs/lzma/src/liblzma/common/hardware_physmem.c
+    libs/lzma/src/liblzma/common/index.c
+    libs/lzma/src/liblzma/common/index_decoder.c
+    libs/lzma/src/liblzma/common/index_encoder.c
+    libs/lzma/src/liblzma/common/index_hash.c
+    libs/lzma/src/liblzma/common/microlzma_decoder.c
+    libs/lzma/src/liblzma/common/microlzma_encoder.c
+    libs/lzma/src/liblzma/common/outqueue.c
+    libs/lzma/src/liblzma/common/stream_buffer_decoder.c
+    libs/lzma/src/liblzma/common/stream_buffer_encoder.c
+    libs/lzma/src/liblzma/common/stream_decoder.c
+    libs/lzma/src/liblzma/common/stream_decoder_mt.c
+    libs/lzma/src/liblzma/common/stream_encoder.c
+    libs/lzma/src/liblzma/common/stream_encoder_mt.c
+    libs/lzma/src/liblzma/common/stream_flags_common.c
+    libs/lzma/src/liblzma/common/stream_flags_decoder.c
+    libs/lzma/src/liblzma/common/stream_flags_encoder.c
+    libs/lzma/src/liblzma/common/string_conversion.c
+    libs/lzma/src/liblzma/common/vli_decoder.c
+    libs/lzma/src/liblzma/common/vli_encoder.c
+    libs/lzma/src/liblzma/common/vli_size.c
+    libs/lzma/src/liblzma/delta/delta_common.c
+    libs/lzma/src/liblzma/delta/delta_decoder.c
+    libs/lzma/src/liblzma/delta/delta_encoder.c
+    libs/lzma/src/liblzma/lz/lz_decoder.c
+    libs/lzma/src/liblzma/lz/lz_encoder.c
+    libs/lzma/src/liblzma/lz/lz_encoder_mf.c
+    libs/lzma/src/liblzma/lzma/fastpos_table.c
+    libs/lzma/src/liblzma/lzma/lzma2_decoder.c
+    libs/lzma/src/liblzma/lzma/lzma2_encoder.c
+    libs/lzma/src/liblzma/lzma/lzma_decoder.c
+    libs/lzma/src/liblzma/lzma/lzma_encoder.c
+    libs/lzma/src/liblzma/lzma/lzma_encoder_optimum_fast.c
+    libs/lzma/src/liblzma/lzma/lzma_encoder_optimum_normal.c
+    libs/lzma/src/liblzma/lzma/lzma_encoder_presets.c
+    libs/lzma/src/liblzma/rangecoder/price_table.c
+    libs/lzma/src/liblzma/simple/arm.c
+    libs/lzma/src/liblzma/simple/arm64.c
+    libs/lzma/src/liblzma/simple/armthumb.c
+    libs/lzma/src/liblzma/simple/ia64.c
+    libs/lzma/src/liblzma/simple/powerpc.c
+    libs/lzma/src/liblzma/simple/riscv.c
+    libs/lzma/src/liblzma/simple/simple_coder.c
+    libs/lzma/src/liblzma/simple/simple_decoder.c
+    libs/lzma/src/liblzma/simple/simple_encoder.c
+    libs/lzma/src/liblzma/simple/sparc.c
+    libs/lzma/src/liblzma/simple/x86.c
+    libs/lzma/src/common/tuklib_cpucores.c
+    libs/lzma/src/common/tuklib_physmem.c
+)
+
+add_library(lzma_static STATIC ${LZMA_SOURCES})
+target_include_directories(lzma_static PUBLIC 
+    libs/lzma/src/liblzma/api
+    libs/lzma/src/common
+)
+
+if(MSVC)
+    target_compile_definitions(lzma_static PRIVATE 
+        LZMA_API_STATIC
+        _CRT_SECURE_NO_WARNINGS
+    )
 else()
-    # Windows
-    find_path(LZMA_INCLUDE_DIR lzma.h
-        PATHS "C:/vcpkg/installed/x64-windows/include"
-              "C:/Program Files/liblzma/include"
-              "$ENV{VCPKG_ROOT}/installed/x64-windows/include"
-              ${CMAKE_SOURCE_DIR}/libs/lzma/src/liblzma/api
-    )
-    find_library(LZMA_LIBRARY lzma
-        PATHS "C:/vcpkg/installed/x64-windows/lib"
-              "C:/Program Files/liblzma/lib"
-              "$ENV{VCPKG_ROOT}/installed/x64-windows/lib"
-    )
-    
-    if(NOT LZMA_INCLUDE_DIR)
-        # Usa i sorgenti inclusi se disponibili
-        set(LZMA_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/libs/lzma/src/liblzma/api)
-    endif()
-    
-    set(LZMA_INCLUDE_DIRS ${LZMA_INCLUDE_DIR})
-    set(LZMA_LIBRARIES ${LZMA_LIBRARY})
-endif()
-
-if(NOT LZMA_INCLUDE_DIRS OR NOT LZMA_LIBRARIES)
-    message(FATAL_ERROR "LZMA library not found. Install liblzma-dev (Linux), xz (macOS), or ensure libs/lzma exists on Windows")
+    target_compile_definitions(lzma_static PRIVATE LZMA_API_STATIC)
 endif()
 
 # -----------------------------------------------------------------------------
-# ZLIB per CRC32
+# ZLIB - cerca libreria di sistema
 # -----------------------------------------------------------------------------
 if(UNIX)
     find_path(ZLIB_INCLUDE_DIR zlib.h
@@ -111,19 +177,20 @@ set(SOURCES
 add_executable(tarc ${SOURCES})
 
 target_include_directories(tarc PRIVATE
-    ${LZMA_INCLUDE_DIRS}
     ${ZLIB_INCLUDE_DIR}
     include
 )
 
 target_link_libraries(tarc
     xxhash_static
-    ${LZMA_LIBRARIES}
+    lzma_static
     ${ZLIB_LIBRARY}
 )
 
-find_package(Threads REQUIRED)
-target_link_libraries(tarc Threads::Threads)
+if(UNIX)
+    find_package(Threads REQUIRED)
+    target_link_libraries(tarc Threads::Threads)
+endif()
 
 install(TARGETS tarc RUNTIME DESTINATION bin)
 
@@ -132,7 +199,7 @@ message(STATUS "========================================")
 message(STATUS "TARC Strike v2.0")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "XXHASH: static (compiled from sources)")
-message(STATUS "LZMA: ${LZMA_LIBRARIES}")
+message(STATUS "LZMA: static (compiled from sources)")
 message(STATUS "ZLIB: ${ZLIB_LIBRARY}")
 message(STATUS "========================================")
 message(STATUS "")
