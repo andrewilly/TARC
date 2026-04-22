@@ -37,15 +37,15 @@ target_include_directories(tarc PRIVATE include)
 # Windows (MSYS2): usa librerie di sistema
 # -----------------------------------------------------------------------------
 if(MINGW)
-    message(STATUS "Windows (MSYS2): Building with system libraries")
+    message(STATUS "Windows (MSYS2): Building with MinGW")
     
     # LZMA (xz package in MSYS2)
     find_path(LZMA_INCLUDE_DIR lzma.h PATHS /mingw64/include)
-    find_library(LZMA_LIBRARY NAMES lzma liblzma PATHS /mingw64/lib)
+    find_library(LZMA_LIBRARY NAMES liblzma lzma PATHS /mingw64/lib)
     
     # XXHASH
     find_path(XXHASH_INCLUDE_DIR xxhash.h PATHS /mingw64/include)
-    find_library(XXHASH_LIBRARY NAMES xxhash libxxhash PATHS /mingw64/lib)
+    find_library(XXHASH_LIBRARY NAMES libxxhash xxhash PATHS /mingw64/lib)
     
     if(LZMA_INCLUDE_DIR AND LZMA_LIBRARY)
         target_include_directories(tarc PRIVATE ${LZMA_INCLUDE_DIR})
