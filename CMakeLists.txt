@@ -1,130 +1,155 @@
-cmake_minimum_required(VERSION 3.15)
-project(TARC VERSION 2.0.0 LANGUAGES CXX C)
+cmake_minimum_required(VERSION 3.20)
+project(tarc VERSION 1.05 LANGUAGES CXX C)
 
+# STANDARD
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Opzioni di compilazione
-if(MSVC)
-    add_compile_options(/W4 /O2 /MT)
-    add_compile_options(/D_CRT_SECURE_NO_WARNINGS)
-elseif(MINGW)
-    add_compile_options(-Wall -Wextra -O3 -static)
-    add_link_options(-static)
-else()
-    add_compile_options(-Wall -Wextra -O3)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|amd64)")
-        add_compile_options(-march=native)
-    endif()
+# BUILD TYPE
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Sorgenti principali
+# MULTI-THREADING SUPPORT
+find_package(Threads REQUIRED)
+
+# FETCH CONTENT
+include(FetchContent)
+
+# ── zstd ─────────────────────────────────────────────────────────────────────
+FetchContent_Declare(
+    zstd
+    GIT_REPOSITORY https://github.com/facebook/zstd.git
+    GIT_TAG        v1.5.6
+    SOURCE_SUBDIR  build/cmake
+)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(zstd)
+
+# ── lz4 ──────────────────────────────────────────────────────────────────────
+FetchContent_Declare(
+    lz4
+    GIT_REPOSITORY https://github.com/lz4/lz4.git
+    GIT_TAG        v1.10.0
+    SOURCE_SUBDIR  build/cmake
+)
+set(LZ4_BUILD_CLI    OFF CACHE BOOL "" FORCE)
+set(LZ4_BUILD_LEGACY OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(lz4)
+
+# ── xz/lzma ──────────────────────────────────────────────────────────────────
+FetchContent_Declare(
+    liblzma
+    GIT_REPOSITORY https://github.com/tukaani-project/xz.git
+    GIT_TAG        v5.6.3
+)
+set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
+set(XZ_BUILD_EXECUTABLES OFF CACHE BOOL "" FORCE)
+set(XZ_TOOL_REQUIREMENTS OFF CACHE BOOL "" FORCE)
+set(ENABLE_NLS           OFF CACHE BOOL "" FORCE)
+set(DISABLE_NLS          ON  CACHE BOOL "" FORCE)
+set(ENABLE_SANDBOX       OFF CACHE BOOL "" FORCE)
+set(ENABLE_DOCS          OFF CACHE BOOL "" FORCE)
+set(HAVE_LIBINTL_H       OFF CACHE BOOL "" FORCE)
+set(HAVE_LIBINTL         OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(liblzma)
+
+# ── brotli ───────────────────────────────────────────────────────────────────
+FetchContent_Declare(
+    brotli
+    GIT_REPOSITORY https://github.com/google/brotli.git
+    GIT_TAG        v1.1.0
+)
+set(BROTLI_BUNDLED_MODE ON CACHE BOOL "" FORCE)
+set(BROTLI_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(brotli)
+
+# ── xxhash ───────────────────────────────────────────────────────────────────
+FetchContent_Declare(
+    xxhash
+    GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
+    GIT_TAG        v0.8.2
+)
+FetchContent_MakeAvailable(xxhash)
+add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
+target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
+
+# SORGENTI
 set(TARC_SOURCES
     src/main.cpp
-    src/engine.cpp
-    src/io.cpp
     src/ui.cpp
     src/license.cpp
+    src/io.cpp
+    src/engine.cpp
 )
 
 add_executable(tarc ${TARC_SOURCES})
-target_include_directories(tarc PRIVATE include)
 
-# -----------------------------------------------------------------------------
-# Windows (MSYS2): usa librerie di sistema
-# -----------------------------------------------------------------------------
-if(MINGW)
-    message(STATUS "Windows (MSYS2): Building with MinGW")
-    
-    # LZMA (xz package in MSYS2)
-    find_path(LZMA_INCLUDE_DIR lzma.h PATHS /mingw64/include)
-    find_library(LZMA_LIBRARY NAMES liblzma lzma PATHS /mingw64/lib)
-    
-    # XXHASH
-    find_path(XXHASH_INCLUDE_DIR xxhash.h PATHS /mingw64/include)
-    find_library(XXHASH_LIBRARY NAMES libxxhash xxhash PATHS /mingw64/lib)
-    
-    if(LZMA_INCLUDE_DIR AND LZMA_LIBRARY)
-        target_include_directories(tarc PRIVATE ${LZMA_INCLUDE_DIR})
-        target_link_libraries(tarc ${LZMA_LIBRARY})
-        message(STATUS "Found LZMA: ${LZMA_LIBRARY}")
-    else()
-        message(FATAL_ERROR "LZMA not found. Run: pacman -S mingw-w64-x86_64-xz")
-    endif()
-    
-    if(XXHASH_INCLUDE_DIR AND XXHASH_LIBRARY)
-        target_include_directories(tarc PRIVATE ${XXHASH_INCLUDE_DIR})
-        target_link_libraries(tarc ${XXHASH_LIBRARY})
-        message(STATUS "Found XXHASH: ${XXHASH_LIBRARY}")
-    else()
-        message(FATAL_ERROR "XXHASH not found. Run: pacman -S mingw-w64-x86_64-xxhash")
-    endif()
+target_include_directories(tarc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${zstd_SOURCE_DIR}/lib
+    ${lz4_SOURCE_DIR}/lib
+    ${liblzma_SOURCE_DIR}/src/liblzma/api
+    ${brotli_SOURCE_DIR}/c/include
+    ${xxhash_SOURCE_DIR}
+)
 
-# -----------------------------------------------------------------------------
-# macOS: usa librerie di sistema
-# -----------------------------------------------------------------------------
-elseif(APPLE)
-    message(STATUS "macOS: Building for ${CMAKE_OSX_ARCHITECTURES}")
-    
-    if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
-        set(HOMEBREW_PREFIX "/usr/local")
-    else()
-        set(HOMEBREW_PREFIX "/opt/homebrew")
-    endif()
-    
-    find_path(LZMA_INCLUDE_DIR lzma.h PATHS ${HOMEBREW_PREFIX}/include /usr/include)
-    find_library(LZMA_LIBRARY lzma PATHS ${HOMEBREW_PREFIX}/lib /usr/lib)
-    
-    find_path(XXHASH_INCLUDE_DIR xxhash.h PATHS ${HOMEBREW_PREFIX}/include /usr/include)
-    find_library(XXHASH_LIBRARY xxhash PATHS ${HOMEBREW_PREFIX}/lib /usr/lib)
-    
-    if(NOT LZMA_INCLUDE_DIR OR NOT LZMA_LIBRARY)
-        message(FATAL_ERROR "LZMA not found. Run: brew install xz")
-    endif()
-    
-    if(NOT XXHASH_INCLUDE_DIR OR NOT XXHASH_LIBRARY)
-        message(FATAL_ERROR "XXHASH not found. Run: brew install xxhash")
-    endif()
-    
-    target_include_directories(tarc PRIVATE ${LZMA_INCLUDE_DIR} ${XXHASH_INCLUDE_DIR})
-    target_link_libraries(tarc ${LZMA_LIBRARY} ${XXHASH_LIBRARY})
-    
-    find_package(Threads REQUIRED)
-    target_link_libraries(tarc Threads::Threads)
+# LINK (Aggiunto Threads::Threads)
+target_link_libraries(tarc PRIVATE
+    libzstd_static
+    lz4_static
+    liblzma
+    brotlienc
+    brotlidec
+    brotlicommon
+    xxhash_lib
+    Threads::Threads
+)
 
-# -----------------------------------------------------------------------------
-# Linux: usa pkg-config
-# -----------------------------------------------------------------------------
+# FLAGS OTTIMIZZAZIONE
+if(MSVC)
+    target_compile_options(tarc PRIVATE /O2 /W4 /EHsc /utf-8)
 else()
-    message(STATUS "Linux: Using system libraries")
-    
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBLZMA REQUIRED liblzma)
-    pkg_check_modules(XXHASH REQUIRED libxxhash)
-    
-    target_include_directories(tarc PRIVATE ${LIBLZMA_INCLUDE_DIRS} ${XXHASH_INCLUDE_DIRS})
-    target_link_libraries(tarc ${LIBLZMA_LIBRARIES} ${XXHASH_LIBRARIES})
-    
-    find_package(Threads REQUIRED)
-    target_link_libraries(tarc Threads::Threads)
+    target_compile_options(tarc PRIVATE -O3 -Wall -Wextra -Wpedantic
+        $<$<CXX_COMPILER_ID:GNU>:-march=native>
+        $<$<CXX_COMPILER_ID:Clang>:-march=native>
+    )
 endif()
 
-install(TARGETS tarc RUNTIME DESTINATION bin)
+# DEFINIZIONI SPECIFICHE PER PIATTAFORMA
+if(WIN32)
+    target_compile_definitions(tarc PRIVATE 
+        _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+    target_link_libraries(tarc PRIVATE bcrypt user32)
+endif()
 
+if(APPLE)
+    target_compile_definitions(tarc PRIVATE _DARWIN_C_SOURCE)
+    target_compile_options(tarc PRIVATE -Wno-unused-variable -Wno-unused-parameter)
+endif()
+
+if(UNIX AND NOT APPLE)
+    target_compile_definitions(tarc PRIVATE _GNU_SOURCE)
+    target_link_libraries(tarc PRIVATE dl)
+endif()
+
+# STRIP RELEASE
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
+    target_link_options(tarc PRIVATE -s)
+endif()
+
+# INFO BUILD
 message(STATUS "")
-message(STATUS "========================================")
-message(STATUS "TARC Strike v${PROJECT_VERSION}")
-message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
-if(MINGW)
-    message(STATUS "Platform: Windows (MSYS2/MinGW64)")
-    message(STATUS "Libraries: Static (xz + xxhash)")
-elseif(APPLE)
-    message(STATUS "Platform: macOS (${CMAKE_OSX_ARCHITECTURES})")
-else()
-    message(STATUS "Platform: Linux")
-endif()
-message(STATUS "========================================")
+message(STATUS "  ╔════════════════════════════════════════════╗")
+message(STATUS "  ║         TARC v${PROJECT_VERSION} - BUILD CONFIG       ║")
+message(STATUS "  ╠════════════════════════════════════════════╣")
+message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  ║  Parallel   : Enabled (Multi-threaded)")
+message(STATUS "  ║  Codecs     : ZSTD + LZ4 + LZMA + BROTLI")
+message(STATUS "  ╚════════════════════════════════════════════╝")
 message(STATUS "")
