@@ -20,13 +20,29 @@ endif()
 
 include_directories(include)
 
-# Cerca librerie
+# -----------------------------------------------------------------------------
+# Cerca LZMA (liblzma)
+# -----------------------------------------------------------------------------
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBLZMA REQUIRED liblzma)
-pkg_check_modules(XXHASH REQUIRED libxxhash)
-pkg_check_modules(ZLIB REQUIRED zlib)  # Aggiunto per CRC32
 
+# LZMA - si chiama liblzma su tutte le piattaforme
+pkg_check_modules(LIBLZMA REQUIRED liblzma)
+
+# XXHASH - nome diverso su diverse piattaforme
+if(APPLE)
+    # Su macOS il pacchetto si chiama xxhash (senza lib)
+    pkg_check_modules(XXHASH REQUIRED xxhash)
+else()
+    # Su Linux e altri si chiama libxxhash
+    pkg_check_modules(XXHASH REQUIRED libxxhash)
+endif()
+
+# ZLIB per CRC32
+pkg_check_modules(ZLIB REQUIRED zlib)
+
+# -----------------------------------------------------------------------------
 # Sorgenti
+# -----------------------------------------------------------------------------
 set(SOURCES
     src/main.cpp
     src/engine.cpp
@@ -60,6 +76,8 @@ message(STATUS "")
 message(STATUS "========================================")
 message(STATUS "TARC Strike v2.0")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "Libraries: LZMA + XXHASH + ZLIB")
+message(STATUS "LZMA: ${LIBLZMA_LIBRARIES}")
+message(STATUS "XXHASH: ${XXHASH_LIBRARIES}")
+message(STATUS "ZLIB: ${ZLIB_LIBRARIES}")
 message(STATUS "========================================")
 message(STATUS "")
