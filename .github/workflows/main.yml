@@ -40,12 +40,19 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
+        sudo apt-get install -y build-essential cmake ninja-build liblzma-dev libxxhash-dev
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install cmake ninja
+        brew install cmake ninja xz xxhash
+
+    - name: Install dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        choco install cmake ninja
+        echo "Per Windows, le librerie LZMA e XXHASH devono essere incluse nel progetto come codice sorgente"
+        echo "oppure installate manualmente. Per ora continuiamo senza."
 
     - name: Setup MSVC (Windows)
       if: runner.os == 'Windows'
@@ -140,9 +147,9 @@ jobs:
         VERSION=${GITHUB_REF#refs/tags/}
         echo "📦 Versione: $VERSION"
 
-        find artifacts -type f -name "tarc" | grep linux | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
-        find artifacts -type f -name "tarc.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
-        find artifacts -type f -name "tarc" | grep macos | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
+        find artifacts -type f -name "tarc-linux*" | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
+        find artifacts -type f -name "tarc-windows*" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
+        find artifacts -type f -name "tarc-macos*" | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
 
         chmod +x tarc-$VERSION-* 2>/dev/null || true
 
