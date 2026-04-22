@@ -2,7 +2,6 @@
 #include "io.h"
 #include "ui.h"
 #include "types.h"
-#include "thread_pool.h"
 #include <cstring>
 #include <filesystem>
 #include <fstream>
