@@ -37,6 +37,34 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // Aggiungi dopo License::check_and_activate() nella funzione main:
+
+    // Diagnostica per file .mdb
+    UI::print_info("TARC Strike v2.01 - Modalita' diagnostica attiva");
+    
+    // Opzione per forzare chunk size ridotto con variabile d'ambiente
+    const char* chunk_env = getenv("TARC_CHUNK_MB");
+    if (chunk_env) {
+        size_t mb = atoi(chunk_env);
+        if (mb >= 16 && mb <= 1024) {
+            Engine::set_chunk_threshold(mb * 1024 * 1024);
+        }
+    }
+    
+    // Opzione per disabilitare dedup su estensioni specifiche
+    const char* skip_dedup_env = getenv("TARC_SKIP_DEDUP");
+    if (skip_dedup_env) {
+        std::vector<std::string> exts;
+        std::string s(skip_dedup_env);
+        size_t pos = 0;
+        while ((pos = s.find(',')) != std::string::npos) {
+            exts.push_back(s.substr(0, pos));
+            s.erase(0, pos + 1);
+        }
+        exts.push_back(s);
+        Engine::set_skip_dedup_extensions(exts);
+    }
+    
     bool sfx_requested = false;
     std::string arg_cmd = argv[1];
     
