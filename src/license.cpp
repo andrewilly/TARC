@@ -4,13 +4,12 @@
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
-#include <iostream>  // ← AGGIUNGI QUESTO! Per std::cin
+#include <iostream>
 
 namespace fs = std::filesystem;
 
 namespace License {
 
-// ─── VALIDAZIONE ─────────────────────────────────────────────────────────────
 bool is_valid(const std::string& key) {
     if (key.size() < 12 || key.substr(0, 5) != "TARC-") return false;
     int sum = 0;
@@ -18,22 +17,16 @@ bool is_valid(const std::string& key) {
     return sum % 7 == 0;
 }
 
-// ─── PERCORSO FILE ───────────────────────────────────────────────────────────
 std::string get_license_path() {
 #ifdef _WIN32
     const char* appdata = getenv("APPDATA");
-    return appdata
-        ? std::string(appdata) + "\\TARC\\license.ini"
-        : "license.ini";
+    return appdata ? std::string(appdata) + "\\TARC\\license.ini" : "license.ini";
 #else
     const char* home = getenv("HOME");
-    return home
-        ? std::string(home) + "/.tarc_license.ini"
-        : ".tarc_license.ini";
+    return home ? std::string(home) + "/.tarc_license.ini" : ".tarc_license.ini";
 #endif
 }
 
-// ─── CARICA / SALVA ──────────────────────────────────────────────────────────
 std::string load_saved_key() {
     std::string key;
     std::ifstream ifs(get_license_path());
@@ -54,7 +47,6 @@ bool save_key(const std::string& key) {
     }
 }
 
-// ─── CHECK & ACTIVATE ────────────────────────────────────────────────────────
 void check_and_activate() {
     std::string key = load_saved_key();
 
@@ -65,7 +57,6 @@ void check_and_activate() {
         return;
     }
 
-    // Chiave non trovata o non valida: chiedi all'utente
     printf("\n%s%s╔══════════════════════════════╗\n"
            "║    TARC LICENSE MANAGER      ║\n"
            "╚══════════════════════════════╝%s\n",
@@ -74,8 +65,9 @@ void check_and_activate() {
     printf(" %sLicenza non trovata o non valida.%s\n Inserisci chiave: ",
            Color::RED, Color::RESET);
 
-    // CORREZIONE: std::cin è ora disponibile grazie a #include <iostream>
-    if (!(std::cin >> key) || !is_valid(key)) {
+    std::cin >> key;
+    
+    if (!is_valid(key)) {
         UI::print_error("Chiave non valida. Operazione annullata.");
         std::exit(1);
     }
