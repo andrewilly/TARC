@@ -13,10 +13,6 @@
 #include <algorithm>
 #include <set>
 
-#ifdef _WIN32
-    #include <windows.h>
-#endif
-
 // ─── INCLUDE CODEC ─────────────────────────────────────────────────────────────
 #include <zstd.h>
 #include <lz4.h>
@@ -40,36 +36,59 @@ std::string normalize_path(std::string path) {
     return path;
 }
 
+// ─── INTERVENTO #19: RESOLVE WILDCARDS UNICODE-AWARE ──────────────────────────
+// Cross-platform: usa fs::u8path + fs::directory_iterator al posto di
+// FindFirstFileA (Windows) che non supporta percorsi Unicode.
 void resolve_wildcards(const std::string& pattern, std::vector<std::string>& out) {
-#ifdef _WIN32
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
-    if (hFind == INVALID_HANDLE_VALUE) return;
-    std::string directory = "";
-    size_t last_slash = pattern.find_last_of("\\/");
-    if (last_slash != std::string::npos) directory = pattern.substr(0, last_slash + 1);
-    do {
-        std::string foundName(findData.cFileName);
-        if (foundName != "." && foundName != "..") {
-            std::string fullPath = directory + foundName;
-            if (fs::exists(fullPath)) {
-                if (fs::is_regular_file(fullPath)) out.push_back(normalize_path(fullPath));
-                else if (fs::is_directory(fullPath)) {
-                    for (auto& p : fs::recursive_directory_iterator(fullPath))
-                        if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
+    // Se il pattern contiene wildcard, separa directory e filtro
+    if (pattern.find('*') != std::string::npos || pattern.find('?') != std::string::npos) {
+        fs::path p = fs::u8path(pattern);
+        fs::path dir = p.parent_path();
+        std::string filter = p.filename().string();
+
+        if (dir.empty()) dir = fs::current_path();
+
+        std::error_code ec;
+        if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return;
+
+        for (auto& entry : fs::directory_iterator(dir, ec)) {
+            std::string name = entry.path().filename().string();
+            if (name == "." || name == "..") continue;
+
+            std::string full = normalize_path(entry.path().string());
+
+            if (entry.is_regular_file(ec)) {
+                // Filtra il filename contro il pattern
+                if (filter.find('*') != std::string::npos || filter.find('?') != std::string::npos) {
+                    // Semplice match: confronta con il filtro
+                    if (name.find(filter.substr(0, filter.find('*'))) == 0 ||
+                        filter == "*" || filter == "*.*") {
+                        out.push_back(full);
+                    }
+                } else {
+                    out.push_back(full);
                 }
+            } else if (entry.is_directory(ec)) {
+                // Aggiungi ricorsivamente i file nella sottodirectory
+                for (auto& sub : fs::recursive_directory_iterator(entry.path(), ec))
+                    if (sub.is_regular_file(ec))
+                        out.push_back(normalize_path(sub.path().string()));
             }
         }
-    } while (FindNextFileA(hFind, &findData));
-    FindClose(hFind);
-#else
-    if (fs::exists(pattern)) {
-        if (fs::is_directory(pattern)) {
-            for (auto& p : fs::recursive_directory_iterator(pattern))
-                if (p.is_regular_file()) out.push_back(normalize_path(p.path().string()));
-        } else out.push_back(normalize_path(pattern));
+    } else {
+        // Nessun wildcard: path diretto
+        fs::path p = fs::u8path(pattern);
+        std::error_code ec;
+        if (fs::exists(p, ec)) {
+            if (fs::is_directory(p, ec)) {
+                for (auto& entry : fs::recursive_directory_iterator(p, ec))
+                    if (entry.is_regular_file(ec))
+                        out.push_back(normalize_path(entry.path().string()));
+            } else {
+                out.push_back(normalize_path(p.string()));
+            }
+        }
     }
-#endif
 }
 
 bool match_pattern(const std::string& full_path, const std::string& pattern) {
@@ -99,8 +118,6 @@ bool match_pattern(const std::string& full_path, const std::string& pattern) {
     return true;
 }
 
-// ─── INTERVENTO #15: HELPER EXCLUDE ──────────────────────────────────────────
-// Verifica se un path corrisponde ad almeno uno dei pattern di esclusione
 bool is_excluded(const std::string& path, const std::vector<std::string>& exclude_patterns) {
     for (const auto& pat : exclude_patterns) {
         if (match_pattern(path, pat)) return true;
@@ -108,27 +125,19 @@ bool is_excluded(const std::string& path, const std::vector<std::string>& exclud
     return false;
 }
 
-// ─── LISTA FORMATI INCOMPRESSIBILI ESTESA ─────────────────────────────────────
 const std::set<std::string>& incompressible_extensions() {
     static const std::set<std::string> skip = {
-        // Archivi compressi
         ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
         ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
-        // Immagini compresse
         ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
         ".heif", ".avif", ".jxl",
-        // Audio/Video compressi
         ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
         ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
-        // Documenti compressi
         ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
         ".epub", ".xps",
-        // Font
         ".woff", ".woff2", ".ttf", ".otf", ".eot",
-        // Eseguibili e pacchetti compressi
         ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
         ".msi", ".crx",
-        // Video game assets
         ".ktx", ".ktx2", ".basis", ".dds", ".crn"
     };
     return skip;
@@ -156,14 +165,12 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
 
-    // ── STORE ─────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::STORE) {
         res.compressed_data = std::move(raw_data);
         res.success = true;
         return res;
     }
 
-    // ── ZSTD ──────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::ZSTD) {
         size_t max_out = ZSTD_compressBound(raw_data.size());
         res.compressed_data.resize(max_out);
@@ -171,7 +178,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         size_t result = ZSTD_compress(
             res.compressed_data.data(), max_out,
             raw_data.data(), raw_data.size(), zstd_level);
-
         if (!ZSTD_isError(result)) {
             res.compressed_data.resize(result);
             if (res.compressed_data.size() >= raw_data.size()) {
@@ -188,7 +194,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
 
-    // ── LZ4 ───────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::LZ4) {
         int max_out = LZ4_compressBound(static_cast<int>(raw_data.size()));
         if (max_out <= 0) {
@@ -201,7 +206,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         int result = LZ4_compress_default(
             raw_data.data(), res.compressed_data.data(),
             static_cast<int>(raw_data.size()), max_out);
-
         if (result > 0) {
             res.compressed_data.resize(static_cast<size_t>(result));
             if (res.compressed_data.size() >= raw_data.size()) {
@@ -218,7 +222,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
 
-    // ── BROTLI ────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::BR) {
         size_t max_out = BrotliEncoderMaxCompressedSize(raw_data.size());
         res.compressed_data.resize(max_out);
@@ -228,7 +231,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
             brotli_level, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
             raw_data.size(), reinterpret_cast<const uint8_t*>(raw_data.data()),
             &encoded_size, reinterpret_cast<uint8_t*>(res.compressed_data.data()));
-
         if (ok == BROTLI_TRUE) {
             res.compressed_data.resize(encoded_size);
             if (res.compressed_data.size() >= raw_data.size()) {
@@ -245,18 +247,15 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
 
-    // ── LZMA ──────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::LZMA) {
         size_t max_out = lzma_stream_buffer_bound(raw_data.size());
         res.compressed_data.resize(max_out);
         size_t out_pos = 0;
         uint32_t preset = (level < 0) ? 9 : static_cast<uint32_t>(level);
-
         lzma_ret ret = lzma_easy_buffer_encode(
             preset | LZMA_PRESET_EXTREME, LZMA_CHECK_CRC64, NULL,
             reinterpret_cast<const uint8_t*>(raw_data.data()), raw_data.size(),
             reinterpret_cast<uint8_t*>(res.compressed_data.data()), &out_pos, max_out);
-
         if (ret == LZMA_OK) {
             res.compressed_data.resize(out_pos);
             if (res.compressed_data.size() >= raw_data.size()) {
@@ -273,7 +272,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
 
-    // Codec sconosciuto: STORE
     res.compressed_data = std::move(raw_data);
     res.codec = Codec::STORE;
     res.success = true;
@@ -293,23 +291,15 @@ bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
         memcpy(out_data.data(), comp_data.data(), raw_size);
         return true;
     }
-
     if (codec == static_cast<uint32_t>(Codec::ZSTD)) {
-        size_t result = ZSTD_decompress(
-            out_data.data(), raw_size,
-            comp_data.data(), comp_data.size());
-        if (ZSTD_isError(result)) return false;
-        return true;
+        size_t result = ZSTD_decompress(out_data.data(), raw_size, comp_data.data(), comp_data.size());
+        return !ZSTD_isError(result);
     }
-
     if (codec == static_cast<uint32_t>(Codec::LZ4)) {
-        int result = LZ4_decompress_safe(
-            comp_data.data(), out_data.data(),
-            static_cast<int>(comp_data.size()),
-            static_cast<int>(raw_size));
+        int result = LZ4_decompress_safe(comp_data.data(), out_data.data(),
+            static_cast<int>(comp_data.size()), static_cast<int>(raw_size));
         return result > 0;
     }
-
     if (codec == static_cast<uint32_t>(Codec::BR)) {
         size_t decoded_size = raw_size;
         BrotliDecoderResult result = BrotliDecoderDecompress(
@@ -317,17 +307,14 @@ bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
             &decoded_size, reinterpret_cast<uint8_t*>(out_data.data()));
         return result == BROTLI_DECODER_RESULT_SUCCESS && decoded_size == raw_size;
     }
-
     if (codec == static_cast<uint32_t>(Codec::LZMA)) {
         size_t src_p = 0, dst_p = 0;
         uint64_t limit = UINT64_MAX;
-        lzma_ret ret = lzma_stream_buffer_decode(
-            &limit, 0, NULL,
+        lzma_ret ret = lzma_stream_buffer_decode(&limit, 0, NULL,
             reinterpret_cast<const uint8_t*>(comp_data.data()), &src_p, comp_data.size(),
             reinterpret_cast<uint8_t*>(out_data.data()), &dst_p, raw_size);
         return (ret == LZMA_OK || ret == LZMA_STREAM_END);
     }
-
     return false;
 }
 
@@ -344,16 +331,11 @@ DecodedChunk read_next_chunk(FILE* f) {
     DecodedChunk result;
     ::ChunkHeader ch;
 
-    if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
-        return result;
-    }
+    if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) return result;
 
     std::vector<char> comp(ch.comp_size);
-    if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
-        return result;
-    }
+    if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) return result;
 
-    // Verifica checksum XXH64 se presente (retrocompatibile: checksum=0 -> skip)
     if (ch.checksum != 0) {
         XXH64_hash_t computed = XXH64(comp.data(), ch.comp_size, 0);
         if (computed != ch.checksum) {
@@ -371,8 +353,6 @@ DecodedChunk read_next_chunk(FILE* f) {
     return result;
 }
 
-// ─── INTERVENTO #20: PARALLEL DECOMPRESSION HELPER ────────────────────────────
-// Struttura per un file decompresso pronto per la scrittura
 struct ExtractTask {
     size_t toc_index;
     std::string final_path;
@@ -399,7 +379,6 @@ namespace CodecSelector {
 
     Codec select(const std::string& path, size_t size, int level) {
         if (!is_compressibile(fs::path(path).extension().string())) return Codec::STORE;
-
         if (level <= 2) return Codec::LZ4;
         if (level <= 5) return (size < CODEC_SWITCH_SIZE) ? Codec::ZSTD : Codec::LZMA;
         return Codec::LZMA;
@@ -407,18 +386,25 @@ namespace CodecSelector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENGINE — Implementazione principale v2.03
+// ENGINE — Implementazione principale v2.04
+// Intervento #19: Unicode path support (u8fopen, fs::u8path)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 namespace Engine {
 
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
     std::string stub_path = "tarc_sfx_stub.exe";
-    if (!fs::exists(stub_path)) return {false, "Stub SFX (tarc_sfx_stub.exe) non trovato nella cartella."};
+    if (!fs::exists(fs::u8path(stub_path))) return {false, "Stub SFX non trovato."};
 
+#ifdef _WIN32
+    std::ifstream stub_in(fs::u8path(stub_path), std::ios::binary);
+    std::ifstream data_in(fs::u8path(archive_path), std::ios::binary);
+    std::ofstream sfx_out(fs::u8path(sfx_name), std::ios::binary);
+#else
     std::ifstream stub_in(stub_path, std::ios::binary);
     std::ifstream data_in(archive_path, std::ios::binary);
     std::ofstream sfx_out(sfx_name, std::ios::binary);
+#endif
 
     if (!stub_in || !data_in || !sfx_out) return {false, "Errore fatale durante la fusione SFX."};
 
@@ -429,11 +415,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPRESS — v2.03
-// Intervento #12: Scritture atomiche (temp file + rename)
-// Intervento #13: Validazione magic + versione in append
-// Intervento #15: --exclude patterns per escludere file
-// Intervento #18: TarcResult arricchito con statistiche
+// COMPRESS — v2.04
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs,
@@ -444,7 +426,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) resolve_wildcards(in, expanded_files);
 
-    // ── INTERVENTO #15: FILTRO EXCLUDE ────────────────────────────────────────
     if (!exclude_patterns.empty()) {
         size_t before = expanded_files.size();
         expanded_files.erase(
@@ -452,7 +433,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 [&](const std::string& p) { return is_excluded(p, exclude_patterns); }),
             expanded_files.end());
         result.skip_count += static_cast<uint32_t>(before - expanded_files.size());
-        if (!exclude_patterns.empty() && before != expanded_files.size()) {
+        if (before != expanded_files.size()) {
             UI::print_verbose("Exclude: " + std::to_string(before - expanded_files.size()) +
                               " file esclusi su " + std::to_string(before));
         }
@@ -465,16 +446,14 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     ::Header h{};
 
     // ── APPEND: leggi e VALIDA TOC esistente ──────────────────────────────────
-    // Intervento #13: validazione magic + versione prima di appendere
-    if (append && fs::exists(archive_path)) {
-        FilePtr f_old(fopen(archive_path.c_str(), "rb"));
+    if (append && fs::exists(fs::u8path(archive_path))) {
+        // INTERVENTO #19: u8fopen per percorsi Unicode
+        FilePtr f_old(IO::u8fopen(archive_path, "rb"));
         if (!f_old) return {false, "Impossibile aprire l'archivio per lettura."};
         if (fread(&h, sizeof(h), 1, f_old) != 1) return {false, "Header archivio corrotto."};
 
-        // VALIDAZIONE SICUREZZA: il file DEVE essere un archivio TARC valido
         if (!IO::validate_header(h)) {
-            return {false, "Il file non e' un archivio TARC valido o versione incompatibile. "
-                           "Impossibile eseguire append."};
+            return {false, "Il file non e' un archivio TARC valido o versione incompatibile."};
         }
 
         if (!IO::read_toc(f_old, h, final_toc)) {
@@ -488,7 +467,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         h.version = TARC_VERSION;
     }
 
-    // ── INTERVENTO #12: SCRITTURA ATOMICA ─────────────────────────────────────
+    // ── SCRITTURA ATOMICA ─────────────────────────────────────────────────────
     std::string actual_write_path = archive_path;
     std::string temp_path;
     bool using_temp = !append;
@@ -496,7 +475,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     if (append) {
         temp_path = IO::make_temp_path(archive_path);
         try {
-            fs::copy_file(archive_path, temp_path, fs::copy_options::overwrite_existing);
+            fs::copy_file(fs::u8path(archive_path), fs::u8path(temp_path), fs::copy_options::overwrite_existing);
         } catch (...) {
             return {false, "Impossibile creare file temporaneo per append atomico."};
         }
@@ -508,7 +487,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         using_temp = true;
     }
 
-    FilePtr f(fopen(actual_write_path.c_str(), append ? "rb+" : "wb"));
+    // INTERVENTO #19: u8fopen per percorsi Unicode
+    FilePtr f(IO::u8fopen(actual_write_path, append ? "rb+" : "wb"));
     if (!f) {
         if (using_temp && !temp_path.empty()) IO::safe_remove(temp_path);
         return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio."};
@@ -542,8 +522,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
         if (fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f) != res.compressed_data.size())
             return false;
-
-        // ── INTERVENTO #18: STATISTICHE PER-CODEC ────────────────────────────
         result.bytes_out += res.compressed_data.size();
         result.codec_bytes[res.codec] += res.compressed_data.size();
         result.codec_chunks[res.codec]++;
@@ -573,8 +551,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         const std::string& disk_path = expanded_files[i];
         UI::print_progress(i + 1, expanded_files.size(), fs::path(disk_path).filename().string());
 
-        if (!fs::exists(disk_path)) continue;
-        uintmax_t fsize = fs::file_size(disk_path);
+        std::error_code ec;
+        fs::path disk_p = fs::u8path(disk_path);
+        if (!fs::exists(disk_p, ec)) continue;
+        uintmax_t fsize = fs::file_size(disk_p, ec);
+        if (ec) continue;
 
         std::vector<char> data;
         bool read_ok = false;
@@ -591,38 +572,20 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         XXH64_state_t* const state = XXH64_createState();
         if (state) XXH64_reset(state, 0);
 
-#ifdef _WIN32
-        HANDLE hFile = CreateFileA(disk_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            DWORD bytesReadTotal = 0;
-            DWORD bytesRead = 0;
-            const DWORD BUF_STEP = 1024 * 1024;
-            char* ptr = data.data();
-
-            while (bytesReadTotal < static_cast<DWORD>(fsize)) {
-                DWORD toRead = ((static_cast<DWORD>(fsize) - bytesReadTotal > BUF_STEP) ? BUF_STEP : (static_cast<DWORD>(fsize) - bytesReadTotal));
-                if (ReadFile(hFile, ptr + bytesReadTotal, toRead, &bytesRead, NULL)) {
-                    if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
-                    bytesReadTotal += bytesRead;
-                } else {
-                    UI::print_error("Errore lettura: " + disk_path + " (WinErr: " + std::to_string(GetLastError()) + ")");
-                    break;
+        // INTERVENTO #19: lettura file cross-platform Unicode-aware
+        // Usa IO::u8fopen al posto di CreateFileA/fopen con #ifdef
+        {
+            FilePtr in_f(IO::u8fopen(disk_path, "rb"));
+            if (in_f) {
+                size_t read_res = fread(data.data(), 1, fsize, in_f);
+                if (read_res == fsize) {
+                    read_ok = true;
+                    if (state) XXH64_update(state, data.data(), fsize);
                 }
+            } else {
+                UI::print_error("Accesso negato: " + disk_path);
             }
-            if (bytesReadTotal == static_cast<DWORD>(fsize)) read_ok = true;
-            CloseHandle(hFile);
-        } else UI::print_error("Accesso negato: " + disk_path);
-#else
-        FILE* in_f = fopen(disk_path.c_str(), "rb");
-        if (in_f) {
-            size_t read_res = fread(data.data(), 1, fsize, in_f);
-            if (read_res == fsize) {
-                read_ok = true;
-                if (state) XXH64_update(state, data.data(), fsize);
-            }
-            fclose(in_f);
         }
-#endif
 
         if (state) {
             h64 = XXH64_digest(state);
@@ -639,9 +602,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.orig_size = fsize;
         fe.meta.xxhash = h64;
         fe.meta.codec = static_cast<uint8_t>(CodecSelector::select(disk_path, fsize, level));
-        fe.meta.timestamp = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(disk_path).time_since_epoch()).count());
+        fe.meta.timestamp = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+            fs::last_write_time(disk_p, ec).time_since_epoch()).count());
 
-        // ── INTERVENTO #18: CONTATORI ─────────────────────────────────────────
         result.file_count++;
 
         if (hash_map.count(h64)) {
@@ -692,10 +655,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return {false, "Errore scrittura TOC."};
     }
 
-    // Il file e' completo. Chiudiamo prima della rename.
     f.~FilePtr();
 
-    // ── INTERVENTO #12: RENAME ATOMICA ────────────────────────────────────────
     if (using_temp && !temp_path.empty()) {
         if (!IO::atomic_rename(temp_path, archive_path)) {
             UI::print_warning("Rename atomica fallita. File temporaneo valido: " + temp_path);
@@ -703,25 +664,17 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         }
     }
 
-    // ── INTERVENTO #18: STATISTICHE FINALI ────────────────────────────────────
     auto t_end = std::chrono::steady_clock::now();
     result.elapsed_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
-
-    try {
-        result.archive_size = fs::file_size(archive_path);
-    } catch (...) {}
+    try { result.archive_size = fs::file_size(fs::u8path(archive_path)); } catch (...) {}
 
     result.ok = true;
     return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EXTRACT — v2.03
-// Intervento #11: Path Traversal Protection (sanitize_path)
-// Intervento #14: -o output directory
-// Intervento #18: TarcResult arricchito
-// Intervento #20: Parallel decompression (scrittura asincrona)
+// EXTRACT — v2.04
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns,
@@ -731,7 +684,8 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     result.ok = true;
     auto t_start = std::chrono::steady_clock::now();
 
-    FilePtr f(fopen(arch_path.c_str(), "rb"));
+    // INTERVENTO #19: u8fopen per percorsi Unicode
+    FilePtr f(IO::u8fopen(arch_path, "rb"));
     if (!f) return {false, "Archivio non trovato."};
 
     if (offset > 0) {
@@ -741,29 +695,19 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) return {false, "Header corrotto o illeggibile."};
-
-    // Validazione header anche in estrazione
-    if (!IO::validate_header(h)) {
-        return {false, "File non e' un archivio TARC valido."};
-    }
+    if (!IO::validate_header(h)) return {false, "File non e' un archivio TARC valido."};
 
     std::vector<::FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) return {false, "Impossibile leggere TOC."};
-
     if (!IO::seek64(f, static_cast<int64_t>(offset + sizeof(::Header)), SEEK_SET))
         return {false, "Errore seek dati."};
 
     std::vector<char> current_block;
     size_t block_pos = 0;
     std::map<std::string, int> flat_names_counter;
-
-    // Traccia i file estratti per risolvere i duplicati
     std::map<uint32_t, std::string> extracted_paths;
 
-    // ── INTERVENTO #20: PARALLEL DECOMPRESSION ────────────────────────────────
-    // Accumula i task di scrittura e li esegue in un thread separato
-    // mentre il thread principale continua a decomprimere il prossimo file.
     std::future<bool> write_future;
     bool write_future_active = false;
 
@@ -775,9 +719,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     };
 
     auto async_write = [&](ExtractTask task) -> bool {
-        // Prima attendi che la scrittura precedente finisca
         if (!wait_write()) return false;
-
         write_future = std::async(std::launch::async, [task]() -> bool {
             if (!IO::write_file_to_disk(task.final_path, task.data.data(),
                                          task.data.size(), task.timestamp)) {
@@ -796,14 +738,11 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         bool should_extract = patterns.empty();
         if (!should_extract) {
             for (const auto& pat : patterns) {
-                if (match_pattern(fe.name, pat)) {
-                    should_extract = true;
-                    break;
-                }
+                if (match_pattern(fe.name, pat)) { should_extract = true; break; }
             }
         }
 
-        // ── DUPLICATI ─────────────────────────────────────────────────────────
+        // ── DUPLICATI ────────────────────────────────────────────────────────
         if (fe.meta.is_duplicate) {
             if (should_extract) {
                 std::string final_path = fe.name;
@@ -824,12 +763,10 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     final_path = filename;
                 }
 
-                // INTERVENTO #14: Aggiungi output_dir se specificato
                 if (!test_only && !output_dir.empty()) {
                     final_path = output_dir + "/" + final_path;
                 }
 
-                // INTERVENTO #11: Sanitizza percorso prima dell'estrazione
                 if (!test_only) {
                     std::string safe_path = IO::sanitize_path(final_path);
                     if (safe_path.empty()) {
@@ -846,13 +783,12 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     auto it = extracted_paths.find(fe.meta.duplicate_of_idx);
                     if (it != extracted_paths.end()) {
                         try {
-                            // Crea directory se necessario
-                            fs::path p(final_path);
+                            fs::path p = fs::u8path(final_path);
                             if (p.has_parent_path()) {
                                 std::error_code ec;
                                 fs::create_directories(p.parent_path(), ec);
                             }
-                            fs::copy_file(it->second, final_path, fs::copy_options::overwrite_existing);
+                            fs::copy_file(fs::u8path(it->second), p, fs::copy_options::overwrite_existing);
                         } catch (...) {
                             UI::print_warning("Impossibile copiare duplicato: " + fe.name);
                         }
@@ -922,12 +858,10 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             final_path = filename;
         }
 
-        // INTERVENTO #14: Aggiungi output_dir se specificato
         if (!test_only && !output_dir.empty()) {
             final_path = output_dir + "/" + final_path;
         }
 
-        // INTERVENTO #11: Sanitizza percorso prima della scrittura su disco
         if (!test_only) {
             std::string safe_path = IO::sanitize_path(final_path);
             if (safe_path.empty()) {
@@ -937,7 +871,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
             final_path = safe_path;
 
-            // INTERVENTO #20: Scrittura asincrona in parallelo
             ExtractTask task;
             task.toc_index = i;
             task.final_path = final_path;
@@ -951,7 +884,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
         }
 
-        // Verifica XXH64 in modalita' test
         if (test_only && fe.meta.xxhash != 0) {
             XXH64_hash_t computed = XXH64(file_data.data(), file_data.size(), 0);
             bool hash_ok = (computed == fe.meta.xxhash);
@@ -967,17 +899,12 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         extracted_paths[static_cast<uint32_t>(i)] = final_path;
     }
 
-    // Attendi completamento ultima scrittura asincrona
     wait_write();
 
-    // ── INTERVENTO #18: STATISTICHE FINALI ────────────────────────────────────
     auto t_end = std::chrono::steady_clock::now();
     result.elapsed_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
-
-    try {
-        result.archive_size = fs::file_size(arch_path);
-    } catch (...) {}
+    try { result.archive_size = fs::file_size(fs::u8path(arch_path)); } catch (...) {}
 
     return result;
 }
@@ -986,7 +913,8 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     TarcResult res;
     auto t_start = std::chrono::steady_clock::now();
 
-    FilePtr f(fopen(arch_path.c_str(), "rb"));
+    // INTERVENTO #19: u8fopen
+    FilePtr f(IO::u8fopen(arch_path, "rb"));
     if (!f) return {false, "Errore apertura archivio."};
     if (offset > 0) {
         if (!IO::seek64(f, static_cast<int64_t>(offset), SEEK_SET))
@@ -994,8 +922,6 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     }
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) return {false, "Errore Header"};
-
-    // Validazione header in list
     if (!IO::validate_header(h)) return {false, "File non e' un archivio TARC valido."};
 
     std::vector<::FileEntry> toc;
@@ -1012,27 +938,21 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     auto t_end = std::chrono::steady_clock::now();
     res.elapsed_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
-
-    try {
-        res.archive_size = fs::file_size(arch_path);
-    } catch (...) {}
+    try { res.archive_size = fs::file_size(fs::u8path(arch_path)); } catch (...) {}
 
     res.ok = true;
     return res;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REMOVE — Intervento #21
-// Implementazione effettiva: riscrive l'archivio senza i file specificati.
-// Usa scritture atomiche per sicurezza.
+// REMOVE — v2.04 (Unicode-aware)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns) {
     TarcResult result;
     auto t_start = std::chrono::steady_clock::now();
 
-    // Leggi l'archivio originale
-    FilePtr f_src(fopen(arch_path.c_str(), "rb"));
+    FilePtr f_src(IO::u8fopen(arch_path, "rb"));
     if (!f_src) return {false, "Impossibile aprire l'archivio."};
 
     ::Header h;
@@ -1042,7 +962,6 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
     std::vector<::FileEntry> toc;
     if (!IO::read_toc(f_src, h, toc)) return {false, "Impossibile leggere TOC."};
 
-    // Identifica i file da rimuovere
     std::set<size_t> remove_set;
     for (size_t i = 0; i < toc.size(); ++i) {
         for (const auto& pat : patterns) {
@@ -1053,28 +972,20 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
         }
     }
 
-    if (remove_set.empty()) {
-        return {false, "Nessun file corrisponde ai pattern specificati."};
-    }
+    if (remove_set.empty()) return {false, "Nessun file corrisponde ai pattern specificati."};
 
     UI::print_verbose("Rimozione di " + std::to_string(remove_set.size()) + " file dall'archivio.");
 
-    // Leggi tutti i chunk di dati dall'archivio originale
     if (!IO::seek64(f_src, static_cast<int64_t>(sizeof(::Header)), SEEK_SET))
         return {false, "Errore seek dati."};
 
-    // Mappa: toc_index -> dati decompressi
     std::map<size_t, std::vector<char>> file_data_map;
     std::vector<char> current_block;
     size_t block_pos = 0;
 
     for (size_t i = 0; i < toc.size(); ++i) {
         auto& fe = toc[i];
-
-        if (fe.meta.is_duplicate) {
-            // I duplicati non hanno dati propri, vengono gestiti dopo
-            continue;
-        }
+        if (fe.meta.is_duplicate) continue;
 
         std::vector<char> file_data;
         size_t remaining = fe.meta.orig_size;
@@ -1098,15 +1009,14 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
             remaining -= to_copy;
         }
 
-        // Salva solo se NON va rimosso
         if (remove_set.find(i) == remove_set.end()) {
             file_data_map[i] = std::move(file_data);
         }
     }
 
-    // Ora riscrivi l'archivio con solo i file NON rimossi
+    // Riscrivi l'archivio
     std::string temp_path = IO::make_temp_path(arch_path);
-    FilePtr f_dst(fopen(temp_path.c_str(), "wb"));
+    FilePtr f_dst(IO::u8fopen(temp_path, "wb"));
     if (!f_dst) return {false, "Impossibile creare archivio temporaneo."};
 
     ::Header new_h{};
@@ -1122,10 +1032,9 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     Codec last_codec = Codec::LZMA;
-    int level = 6; // Livello default per la ricompressione
+    int level = 6;
 
     for (size_t i = 0; i < toc.size(); ++i) {
-        // Se il file va rimosso, salta
         if (remove_set.find(i) != remove_set.end()) {
             UI::print_delete(toc[i].name);
             continue;
@@ -1133,25 +1042,19 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
 
         ::FileEntry fe = toc[i];
 
-        // Gestisci duplicati: se l'originale e' stato rimosso, il duplicato diventa originale
         if (fe.meta.is_duplicate) {
             uint32_t orig_idx = fe.meta.duplicate_of_idx;
             if (remove_set.find(orig_idx) != remove_set.end()) {
-                // L'originale e' stato rimosso, questo duplicato deve diventare autonomo
-                // Cerca i dati dall'originale rimosso (non disponibili) o salta
                 UI::print_warning("Duplicato orfano (originale rimosso): " + fe.name);
                 result.skip_count++;
                 continue;
             }
-
-            // Aggiorna il duplicate_of_idx alla nuova posizione
             auto it = new_hash_map.find(toc[orig_idx].meta.xxhash);
             if (it != new_hash_map.end()) {
                 fe.meta.duplicate_of_idx = it->second;
                 fe.meta.is_duplicate = 1;
             }
         } else {
-            // File non-duplicato: ricomprimi i suoi dati
             auto data_it = file_data_map.find(i);
             if (data_it == file_data_map.end()) {
                 UI::print_warning("Dati mancanti per: " + fe.name);
@@ -1167,10 +1070,7 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
 
             if (solid_buf.size() + data_it->second.size() > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
-                if (!cr.success) {
-                    IO::safe_remove(temp_path);
-                    return {false, "Errore ricompressione chunk."};
-                }
+                if (!cr.success) { IO::safe_remove(temp_path); return {false, "Errore ricompressione chunk."}; }
                 ::ChunkHeader ch = { static_cast<uint32_t>(cr.codec), cr.raw_size,
                                       static_cast<uint32_t>(cr.compressed_data.size()), 0 };
                 ch.checksum = XXH64(cr.compressed_data.data(), cr.compressed_data.size(), 0);
@@ -1191,13 +1091,9 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
         new_toc.push_back(fe);
     }
 
-    // Flush finale solid buffer
     if (!solid_buf.empty()) {
         ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
-        if (!cr.success) {
-            IO::safe_remove(temp_path);
-            return {false, "Errore ricompressione chunk finale."};
-        }
+        if (!cr.success) { IO::safe_remove(temp_path); return {false, "Errore ricompressione chunk finale."}; }
         ::ChunkHeader ch = { static_cast<uint32_t>(cr.codec), cr.raw_size,
                               static_cast<uint32_t>(cr.compressed_data.size()), 0 };
         ch.checksum = XXH64(cr.compressed_data.data(), cr.compressed_data.size(), 0);
@@ -1208,7 +1104,6 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
         result.codec_chunks[cr.codec]++;
     }
 
-    // End mark + TOC
     ::ChunkHeader end_mark = {0, 0, 0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f_dst);
 
@@ -1217,7 +1112,6 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
         return {false, "Errore scrittura TOC."};
     }
 
-    // Chiudi e rinomina atomicamente
     f_dst.~FilePtr();
     f_src.~FilePtr();
 
@@ -1229,10 +1123,7 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
     auto t_end = std::chrono::steady_clock::now();
     result.elapsed_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
-
-    try {
-        result.archive_size = fs::file_size(arch_path);
-    } catch (...) {}
+    try { result.archive_size = fs::file_size(fs::u8path(arch_path)); } catch (...) {}
 
     result.ok = true;
     return result;

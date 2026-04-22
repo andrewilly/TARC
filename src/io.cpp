@@ -18,14 +18,30 @@ namespace fs = std::filesystem;
 namespace IO {
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// INTERVENTO #19: UNICODE-AWARE FOPEN
+// Su Windows, converte il percorso UTF-8 in wide string e usa _wfopen().
+// Su POSIX, UTF-8 e' nativo, quindi fopen() diretto.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+FILE* u8fopen(const std::string& utf8_path, const char* mode) {
+#ifdef _WIN32
+    // Converti percorso UTF-8 → wide string tramite fs::u8path
+    auto p = fs::u8path(utf8_path);
+
+    // Converti mode (sempre ASCII) in wide string
+    std::wstring wmode;
+    for (const char* c = mode; *c; ++c) {
+        wmode += static_cast<wchar_t>(*c);
+    }
+
+    return _wfopen(p.c_str(), wmode.c_str());
+#else
+    return fopen(utf8_path.c_str(), mode);
+#endif
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SICUREZZA PERCORSI — Intervento #11
-// Previene Path Traversal: un archivio malevolo potrebbe contenere percorsi
-// come "../../etc/passwd" o percorsi assoluti che scrivono fuori dalla
-// directory di estrazione. Questa funzione:
-// 1. Rifiuta percorsi assoluti (C:\, /, \)
-// 2. Rimuove componenti ".." (parent directory traversal)
-// 3. Normalizza i separatori a /
-// 4. Rifiuta percorsi che tentano di uscire dalla radice relativa
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string sanitize_path(const std::string& path) {
@@ -33,7 +49,6 @@ std::string sanitize_path(const std::string& path) {
 
     // Rifiuta percorsi assoluti
 #ifdef _WIN32
-    // C:\, \\, X:\, ecc.
     if (path.size() >= 2 && path[1] == ':') return "";
     if (path.size() >= 2 && path[0] == '\\' && path[1] == '\\') return "";
 #endif
@@ -55,12 +70,9 @@ std::string sanitize_path(const std::string& path) {
     while (std::getline(iss, part, '/')) {
         if (part.empty() || part == ".") continue;
         if (part == "..") {
-            // Se non possiamo tornare indietro (nessun componente), rifiuta
             if (parts.empty()) return "";
             parts.pop_back();
         } else {
-            // Rifiuta componenti con caratteri pericolosi
-            // (caratteri non stampabili, null byte, ecc.)
             for (char c : part) {
                 if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return "";
             }
@@ -70,7 +82,6 @@ std::string sanitize_path(const std::string& path) {
 
     if (parts.empty()) return "";
 
-    // Ricostruisci il percorso sicuro
     std::string safe_path;
     for (size_t i = 0; i < parts.size(); ++i) {
         if (i > 0) safe_path += '/';
@@ -81,32 +92,20 @@ std::string sanitize_path(const std::string& path) {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // VALIDAZIONE HEADER — Intervento #13
-// Verifica che un file sia un archivio TARC valido prima di eseguire append.
-// Controlla il magic number e la versione per compatibilita'.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 bool validate_header(const Header& h) {
-    // Verifica magic number
     if (memcmp(h.magic, TARC_MAGIC, 4) != 0) return false;
-
-    // Verifica versione: deve essere tra 200 e TARC_VERSION (corrente)
-    // Questo permette append da archivi v200 in poi
     if (h.version < 200 || h.version > TARC_VERSION) return false;
-
-    // Verifica sanity check: toc_offset deve essere almeno sizeof(Header)
     if (h.toc_offset > 0 && h.toc_offset < sizeof(Header)) return false;
-
     return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCRITTURE ATOMICHE — Intervento #12
-// Genera un nome file temporaneo nella stessa directory del target,
-// cosi' la rename() finale e' atomica (stesso filesystem).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string make_temp_path(const std::string& target_path) {
-    // Genera 8 caratteri hex randomici per unicita'
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
@@ -120,18 +119,19 @@ std::string make_temp_path(const std::string& target_path) {
 
 bool atomic_rename(const std::string& from, const std::string& to) {
 #ifdef _WIN32
-    // MoveFileExA con MOVEFILE_REPLACE_EXISTING e' atomica su NTFS
-    return MoveFileExA(from.c_str(), to.c_str(),
+    // Converte percorsi UTF-8 a wide string per MoveFileExW
+    auto wfrom = fs::u8path(from).wstring();
+    auto wto   = fs::u8path(to).wstring();
+    return MoveFileExW(wfrom.c_str(), wto.c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
-    // rename() e' atomica su POSIX (stesso filesystem)
     return rename(from.c_str(), to.c_str()) == 0;
 #endif
 }
 
 bool safe_remove(const std::string& path) {
     std::error_code ec;
-    fs::remove(path, ec);
+    fs::remove(fs::u8path(path), ec);
     return !ec;
 }
 
@@ -139,7 +139,6 @@ bool safe_remove(const std::string& path) {
 // FUNZIONI I/O ESISTENTI
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Garantisce che l'estensione sia sempre .strk
 std::string ensure_ext(const std::string& path) {
     if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {
         return path + ".strk";
@@ -147,22 +146,22 @@ std::string ensure_ext(const std::string& path) {
     return path;
 }
 
-// Espansione percorsi con supporto directory ricorsivo
+// INTERVENTO #19: Espansione percorsi Unicode-aware (cross-platform)
 void expand_path(const std::string& pattern, std::vector<std::string>& out) {
-    if (fs::exists(pattern)) {
-        if (fs::is_directory(pattern)) {
-            for (auto& p : fs::recursive_directory_iterator(pattern))
-                if (p.is_regular_file()) out.push_back(p.path().string());
+    auto p = fs::u8path(pattern);
+    std::error_code ec;
+    if (fs::exists(p, ec)) {
+        if (fs::is_directory(p)) {
+            for (auto& entry : fs::recursive_directory_iterator(p, ec))
+                if (entry.is_regular_file()) out.push_back(entry.path().string());
         } else {
-            out.push_back(pattern);
+            out.push_back(p.string());
         }
     }
 }
 
-// Legge il catalogo (TOC) dall'archivio
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (h.toc_offset == 0) return false;
-
     if (!seek64(f, static_cast<int64_t>(h.toc_offset), SEEK_SET)) return false;
 
     toc.clear();
@@ -171,8 +170,6 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     for (uint32_t i = 0; i < h.file_count; ++i) {
         FileEntry fe;
         if (fread(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
-
-        // Protezione contro name_len corrotto (usa costante nominata)
         if (fe.meta.name_len > MAX_NAME_LEN) return false;
 
         std::vector<char> name_buf(fe.meta.name_len + 1, 0);
@@ -209,7 +206,8 @@ bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 
 bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp) {
     try {
-        fs::path p(path);
+        // INTERVENTO #19: Usa fs::u8path per supporto Unicode
+        fs::path p = fs::u8path(path);
 
         if (p.has_parent_path()) {
             std::error_code ec;
@@ -217,7 +215,12 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
             if (ec) return false;
         }
 
+        // Apri il file con percorso Unicode-safe
+#ifdef _WIN32
+        std::ofstream out(p, std::ios::binary);
+#else
         std::ofstream out(path, std::ios::binary);
+#endif
         if (!out) return false;
 
         if (size > 0 && data != nullptr) {

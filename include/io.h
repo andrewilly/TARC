@@ -34,32 +34,26 @@ struct FilePtr {
 // ─── IO NAMESPACE ──────────────────────────────────────────────────────────────
 namespace IO {
 
+    // ─── INTERVENTO #19: UNICODE-AWARE FOPEN ───────────────────────────────────
+    // Apre un file con percorso UTF-8. Su Windows converte internamente
+    // a wide string e usa _wfopen(). Su POSIX usa fopen() direttamente.
+    FILE* u8fopen(const std::string& utf8_path, const char* mode);
+
     // Aggiunge estensione se mancante (.strk)
     std::string ensure_ext(const std::string& path);
 
-    // Espansione percorsi e wildcards (Windows/Linux)
+    // Espansione percorsi e wildcards (Unicode-aware cross-platform)
     void expand_path(const std::string& pattern, std::vector<std::string>& out);
 
     // --- SICUREZZA PERCORSI (Intervento #11) ---
 
-    // Sanitizza un percorso per prevenire Path Traversal.
-    // Rimuove componenti "..", percorsi assoluti, e caratteri pericolosi.
-    // Restituisce stringa vuota se il percorso e' irrimediabilmente pericoloso.
     std::string sanitize_path(const std::string& path);
-
-    // Valida che un header sia un archivio TARC valido (magic + versione)
-    // Intervento #13: usato in append per rifiutare file non-TARC
     bool validate_header(const Header& h);
 
     // --- GESTIONE ARCHIVIO ---
 
-    // Legge Header + TOC
     bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc);
-
-    // Scrive TOC e aggiorna Header
     bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc);
-
-    // Scrive un file su disco con gestione cartelle e timestamp
     bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp);
 
     // --- HELPERS I/O LOW LEVEL ---
@@ -74,15 +68,8 @@ namespace IO {
 
     // --- SCRITTURE ATOMICHE (Intervento #12) ---
 
-    // Genera un nome file temporaneo unico nella stessa directory del path target.
-    // Formato: <basename>.strk.tmp<random_hex>
     std::string make_temp_path(const std::string& target_path);
-
-    // Rinomina atomicamente un file. Su Windows usa MoveFileExA,
-    // su POSIX usa rename() (atomico sullo stesso filesystem).
     bool atomic_rename(const std::string& from, const std::string& to);
-
-    // Rimuove un file in modo sicuro (per cleanup in caso di errore).
     bool safe_remove(const std::string& path);
 
 } // namespace IO
