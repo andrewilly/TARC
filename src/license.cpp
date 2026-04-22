@@ -73,8 +73,9 @@ bool is_valid(const std::string& key) {
 
     // Normalizza a lowercase per il calcolo
     std::string g1 = group1, g2 = group2;
-    std::transform(g1.begin(), g1.end(), g1.begin(), ::tolower);
-    std::transform(g2.begin(), g2.end(), g2.begin(), ::tolower);
+    auto to_lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+    std::transform(g1.begin(), g1.end(), g1.begin(), to_lower);
+    std::transform(g2.begin(), g2.end(), g2.begin(), to_lower);
 
     // Calcola checksum atteso
     uint32_t expected = compute_license_checksum(g1, g2);
@@ -82,7 +83,7 @@ bool is_valid(const std::string& key) {
     // Converte group3 da hex a uint32
     uint32_t provided = 0;
     std::string g3 = group3;
-    std::transform(g3.begin(), g3.end(), g3.begin(), ::tolower);
+    std::transform(g3.begin(), g3.end(), g3.begin(), to_lower);
     try {
         provided = static_cast<uint32_t>(std::stoul(g3, nullptr, 16));
     } catch (...) {
@@ -98,16 +99,12 @@ bool is_valid(const std::string& key) {
 std::string get_license_path() {
 #ifdef _WIN32
     // INTERVENTO #19: Usa _wgetenv per supporto Unicode
+    // fs::path converte automaticamente wide string a UTF-8 via u8string()
+    // senza bisogno di WideCharToMultiByte (evita dipendenza da <windows.h>)
     const wchar_t* appdata = _wgetenv(L"APPDATA");
     if (appdata) {
-        std::wstring wpath = std::wstring(appdata) + L"\\TARC\\license.ini";
-        // Converti wide string a UTF-8
-        int len = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (len > 0) {
-            std::string result(len - 1, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, result.data(), len, nullptr, nullptr);
-            return result;
-        }
+        fs::path p = fs::path(appdata) / L"TARC" / L"license.ini";
+        return p.u8string();
     }
     return "license.ini";
 #else

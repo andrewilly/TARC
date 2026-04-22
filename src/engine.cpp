@@ -373,7 +373,8 @@ struct ExtractTask {
 namespace CodecSelector {
     bool is_compressibile(const std::string& ext) {
         std::string e = ext;
-        std::transform(e.begin(), e.end(), e.begin(), ::tolower);
+        std::transform(e.begin(), e.end(), e.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return incompressible_extensions().find(e) == incompressible_extensions().end();
     }
 
