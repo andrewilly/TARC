@@ -1,16 +1,20 @@
 #include "io.h"
 #include "types.h"
+#include "ui.h"
 #include <filesystem>
 #include <fstream>
 #include <vector>
 #include <chrono>
 #include <cstring>
 
+#ifdef _WIN32
+    #include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace IO {
 
-// Garantisce che l'estensione sia sempre .strk
 std::string ensure_ext(const std::string& path) {
     if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {
         return path + ".strk";
@@ -18,22 +22,23 @@ std::string ensure_ext(const std::string& path) {
     return path;
 }
 
-// Legge il catalogo (TOC) dall'archivio
 bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (h.toc_offset == 0) return false;
     
-    if (fseek(f, (long)h.toc_offset, SEEK_SET) != 0) return false;
+#ifdef _WIN32
+    if (_fseeki64(f, (__int64)h.toc_offset, SEEK_SET) != 0) return false;
+#else
+    if (fseeko(f, (off_t)h.toc_offset, SEEK_SET) != 0) return false;
+#endif
     
     toc.clear();
-    // Riserva spazio per il TOC se il numero di file è alto, per performance
     toc.reserve(h.file_count);
     
     for (uint32_t i = 0; i < h.file_count; ++i) {
         FileEntry fe;
         if (fread(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
         
-        // Protezione contro name_len corrotto
-        if (fe.meta.name_len > 4096) return false; 
+        if (fe.meta.name_len > 4096) return false;
         
         std::vector<char> name_buf(fe.meta.name_len + 1, 0);
         if (fread(name_buf.data(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
@@ -46,10 +51,17 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 
 bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     fflush(f);
-    long toc_pos = ftell(f);
-    if (toc_pos == -1) return false;
     
+#ifdef _WIN32
+    __int64 toc_pos = _ftelli64(f);
+    if (toc_pos == -1) return false;
     h.toc_offset = (uint64_t)toc_pos;
+#else
+    off_t toc_pos = ftello(f);
+    if (toc_pos == -1) return false;
+    h.toc_offset = (uint64_t)toc_pos;
+#endif
+    
     h.file_count = static_cast<uint32_t>(toc.size());
 
     for (auto& fe : toc) {
@@ -73,28 +85,40 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
         if (p.has_parent_path()) {
             std::error_code ec;
             fs::create_directories(p.parent_path(), ec);
-            if (ec) return false; // Gestione errore creazione cartella
+            if (ec) {
+                UI::print_warning("Impossibile creare directory per: " + path);
+                return false;
+            }
         }
-
-        // Apertura file con eccezioni disabilitate per controllo manuale
-        std::ofstream out(path, std::ios::binary);
-        if (!out) return false;
-
+        
+        // Usa FILE* per scritture di grandi dimensioni
+        FILE* out = fopen(path.c_str(), "wb");
+        if (!out) {
+            UI::print_warning("Impossibile aprire in scrittura: " + path);
+            return false;
+        }
+        
+        size_t bytes_written = 0;
         if (size > 0 && data != nullptr) {
-            out.write(data, size);
+            bytes_written = fwrite(data, 1, size, out);
         }
-        out.close();
-
-        // Imposta timestamp solo se scrittura ok
-        if (out.good()) {
-             auto sys_time = std::chrono::system_clock::from_time_t((time_t)timestamp);
-             std::error_code ec;
-             fs::last_write_time(p, fs::file_time_type(sys_time.time_since_epoch()), ec);
-             // Ignoriamo errore timestamp critico (non tutti i FS supportano i microsecondi)
+        fclose(out);
+        
+        if (bytes_written != size && size > 0) {
+            UI::print_warning("Scrittura incompleta per: " + path);
+            return false;
+        }
+        
+        // Imposta timestamp
+        if (timestamp > 0) {
+            auto sys_time = std::chrono::system_clock::from_time_t((time_t)timestamp);
+            std::error_code ec;
+            fs::last_write_time(p, fs::file_time_type(sys_time.time_since_epoch()), ec);
         }
         
         return true;
-    } catch (...) {
+    } catch (const std::exception& e) {
+        UI::print_warning("Eccezione in write_file_to_disk: " + std::string(e.what()));
         return false;
     }
 }
