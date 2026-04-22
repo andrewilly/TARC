@@ -31,6 +31,54 @@ constexpr size_t MAX_FILES_IN_ARCHIVE = 10'000'000;
 // Limite chunk di default
 constexpr size_t DEFAULT_CHUNK_THRESHOLD = 256 * 1024 * 1024;  // 256 MB
 
+// ========== CLASSE ROLLBACK PER COMPRESSIONE ==========
+class CompressionRollback {
+private:
+    FILE* file = nullptr;
+    std::string archive_path;
+    bool committed = false;
+    long original_size = 0;
+    
+public:
+    CompressionRollback(const std::string& path, FILE* f) 
+        : file(f), archive_path(path) {
+        if (file) {
+            fseek(file, 0, SEEK_END);
+            original_size = ftell(file);
+        }
+    }
+    
+    ~CompressionRollback() {
+        if (!committed && file) {
+            // Rollback: tronca il file alla dimensione originale
+            fclose(file);
+#ifdef _WIN32
+            HANDLE h = CreateFileA(archive_path.c_str(), GENERIC_WRITE, 0, NULL,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                LARGE_INTEGER li;
+                li.QuadPart = original_size;
+                SetFilePointerEx(h, li, NULL, FILE_BEGIN);
+                SetEndOfFile(h);
+                CloseHandle(h);
+            }
+#else
+            truncate(archive_path.c_str(), original_size);
+#endif
+        } else if (file) {
+            fclose(file);
+        }
+    }
+    
+    void commit() { 
+        committed = true; 
+    }
+    
+    FILE* get_file() const { return file; }
+};
+
+// ========== FUNZIONI DI UTILITY ==========
+
 // Funzione per disabilitare deduplicazione su file problematici
 static bool should_skip_dedup(const std::string& path) {
     std::string ext = fs::path(path).extension().string();
@@ -40,9 +88,9 @@ static bool should_skip_dedup(const std::string& path) {
 
 // Buffer di lettura adattivo in base alla dimensione del file
 static size_t get_read_buffer_size(uintmax_t file_size) {
-    if (file_size > 100 * 1024 * 1024) return 4 * 1024 * 1024;
-    if (file_size > 10 * 1024 * 1024) return 2 * 1024 * 1024;
-    return 1024 * 1024;
+    if (file_size > 100 * 1024 * 1024) return 4 * 1024 * 1024;  // 4 MB per file > 100MB
+    if (file_size > 10 * 1024 * 1024) return 2 * 1024 * 1024;   // 2 MB per file > 10MB
+    return 1024 * 1024;  // 1 MB default
 }
 
 namespace CodecSelector {
@@ -251,14 +299,15 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio: " + std::string(strerror(errno))};
     }
 
+    // ROLLBACK: se qualcosa va storto, l'archivio viene ripristinato
+    CompressionRollback rollback(archive_path, f);
+
     if (append) {
         if (fseek(f, static_cast<long>(h.toc_offset), SEEK_SET) != 0) {
-            fclose(f);
             return {false, "Errore seek in modalità append."};
         }
     } else {
         if (fwrite(&h, sizeof(h), 1, f) != 1) {
-            fclose(f);
             return {false, "Errore scrittura header."};
         }
     }
@@ -283,7 +332,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             static_cast<uint32_t>(res.codec), 
             res.raw_size, 
             static_cast<uint32_t>(res.compressed_data.size()),
-            res.data_hash
+            res.data_hash,
+            0,  // crc32 (riservato per futuro)
+            0   // reserved
         };
         
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
@@ -398,6 +449,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             fe.meta.timestamp = 0;
         }
 
+        // SKIP DEDUP PER FILE .mdb
         bool skip_dedup = should_skip_dedup(disk_path);
         
         if (!skip_dedup && hash_map.count(h64)) {
@@ -411,7 +463,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             
             if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 if (worker_active && !write_worker(future_chunk)) {
-                    fclose(f);
                     return {false, "Errore compressione chunk."};
                 }
                 future_chunk = std::async(std::launch::async, compress_worker, std::move(solid_buf), level, static_cast<Codec>(fe.meta.codec));
@@ -433,7 +484,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 } catch (const std::bad_alloc&) {
                     UI::print_error("Memoria esaurita per chunk, forzo scrittura...");
                     if (worker_active && !write_worker(future_chunk)) {
-                        fclose(f);
                         return {false, "Memoria insufficiente"};
                     }
                     worker_active = false;
@@ -441,7 +491,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                     try {
                         solid_buf.reserve(CHUNK_THRESHOLD);
                     } catch (const std::bad_alloc&) {
-                        fclose(f);
                         return {false, "Memoria insufficiente per continuare"};
                     }
                 }
@@ -452,7 +501,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         }
         
         if (final_toc.size() > MAX_FILES_IN_ARCHIVE) {
-            fclose(f);
             return {false, "Troppi file nell'archivio. Massimo: " + std::to_string(MAX_FILES_IN_ARCHIVE)};
         }
         
@@ -460,7 +508,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     }
 
     if (worker_active && !write_worker(future_chunk)) {
-        fclose(f);
         return {false, "Errore chunk finale."};
     }
     
@@ -471,31 +518,30 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             static_cast<uint32_t>(last.codec), 
             last.raw_size, 
             static_cast<uint32_t>(last.compressed_data.size()),
-            last.data_hash
+            last.data_hash,
+            0,  // crc32
+            0   // reserved
         };
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) {
-            fclose(f);
             return {false, "Errore scrittura chunk finale."};
         }
         if (fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f) != last.compressed_data.size()) {
-            fclose(f);
             return {false, "Errore scrittura dati chunk finale."};
         }
         result.bytes_out += last.compressed_data.size();
     }
 
-    ::ChunkHeader end_mark = {0, 0, 0, 0};
+    ::ChunkHeader end_mark = {0, 0, 0, 0, 0, 0};
     if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
-        fclose(f);
         return {false, "Errore scrittura marcatore fine."};
     }
     
     if (!IO::write_toc(f, h, final_toc)) {
-        fclose(f);
         return {false, "Errore scrittura TOC."};
     }
     
-    fclose(f);
+    // COMMIT: tutto ok, il rollback non deve annullare
+    rollback.commit();
     
     result.ok = true;
     UI::print_info("Compressione completata: " + UI::human_size(result.bytes_in) + 
