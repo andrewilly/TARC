@@ -66,7 +66,7 @@ void show_help() {
 
 void show_banner() {
     printf("%s========================================================================\n", Color::CYAN);
-    printf("TARC STRIKE v2.0             Advanced Solid Compression (C++20)\n");
+    printf("TARC STRIKE v2.0             Advanced Solid Compression\n");
     printf("Copyright (C) 2026            André Willy Rizzo\n");
     printf("========================================================================%s\n", Color::RESET);
 }
