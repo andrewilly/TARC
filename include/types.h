@@ -5,6 +5,7 @@
 #include <atomic>
 #include <shared_mutex>
 #include <optional>
+#include <mutex>   // <--- AGGIUNGI QUESTA RIGA
 
 #define TARC_MAGIC     "TRC2"
 #define TARC_VERSION   200
