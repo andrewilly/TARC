@@ -1,0 +1,27 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <cstdint>
+#include "types.h"
+
+namespace CodecSelector {
+    // Seleziona il codec migliore in base all'estensione, dimensione e livello
+    Codec select(const std::string& path, size_t size, int level);
+    bool is_compressibile(const std::string& ext);
+}
+
+namespace Engine {
+
+    // Funzioni Core Release 2.01
+    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
+
+    // Firma con flat_mode per estrazione senza percorsi
+    TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {}, bool test_only = false, size_t offset = 0, bool flat_mode = false);
+
+    TarcResult list(const std::string& arch_path, size_t offset = 0);
+    TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
+
+    // Generazione Autoestraente
+    TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name);
+
+} // namespace Engine

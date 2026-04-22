@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(tarc VERSION 1.05 LANGUAGES CXX C)
+project(tarc VERSION 2.01 LANGUAGES CXX C)
 
 # STANDARD
 set(CMAKE_CXX_STANDARD 17)
@@ -99,7 +99,7 @@ target_include_directories(tarc PRIVATE
     ${xxhash_SOURCE_DIR}
 )
 
-# LINK (Aggiunto Threads::Threads)
+# LINK
 target_link_libraries(tarc PRIVATE
     libzstd_static
     lz4_static
@@ -123,7 +123,7 @@ endif()
 
 # DEFINIZIONI SPECIFICHE PER PIATTAFORMA
 if(WIN32)
-    target_compile_definitions(tarc PRIVATE 
+    target_compile_definitions(tarc PRIVATE
         _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
     target_link_libraries(tarc PRIVATE bcrypt user32)
 endif()
@@ -145,11 +145,13 @@ endif()
 
 # INFO BUILD
 message(STATUS "")
-message(STATUS "  ╔════════════════════════════════════════════╗")
-message(STATUS "  ║         TARC v${PROJECT_VERSION} - BUILD CONFIG       ║")
-message(STATUS "  ╠════════════════════════════════════════════╣")
-message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
-message(STATUS "  ║  Parallel   : Enabled (Multi-threaded)")
-message(STATUS "  ║  Codecs     : ZSTD + LZ4 + LZMA + BROTLI")
-message(STATUS "  ╚════════════════════════════════════════════╝")
+message(STATUS "  +==========================================+")
+message(STATUS "  |       TARC v${PROJECT_VERSION} - BUILD CONFIG        |")
+message(STATUS "  +==========================================+")
+message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  |  Parallel   : Enabled (Multi-threaded)")
+message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
+message(STATUS "  |  Checksum   : XXH64 Chunk Verification")
+message(STATUS "  |  I/O        : 64-bit (Large File Support)")
+message(STATUS "  +==========================================+")
 message(STATUS "")
