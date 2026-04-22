@@ -28,7 +28,6 @@ namespace fs = std::filesystem;
 static bool should_skip_dedup(const std::string& path) {
     std::string ext = fs::path(path).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    // Disabilita deduplicazione per file di database
     return ext == ".mdb" || ext == ".accdb" || ext == ".ldb" || ext == ".sdf";
 }
 
@@ -257,17 +256,12 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.codec = (uint8_t)CodecSelector::select(disk_path, fsize);
         fe.meta.timestamp = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(fs::last_write_time(disk_path).time_since_epoch()).count();
 
-        // Controlla se dobbiamo saltare la deduplicazione per questo file
+        // MODIFICA: Salta deduplicazione per file .mdb e simili
         bool skip_dedup = should_skip_dedup(disk_path);
-        
-        if (skip_dedup) {
-            UI::print_info("Deduplicazione disabilitata per: " + fs::path(disk_path).filename().string());
-        }
         
         if (!skip_dedup && hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
-            UI::print_warning("DUPLICATO rilevato: " + fe.name);
         } else {
             if (!skip_dedup) {
                 hash_map[h64] = (uint32_t)final_toc.size();
@@ -280,24 +274,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 worker_active = true;
                 solid_buf.clear();
                 solid_buf.reserve(CHUNK_THRESHOLD);
-            }
-            
-            // Verifica capacità prima di inserire (previene crash)
-            if (solid_buf.capacity() < solid_buf.size() + fsize) {
-                size_t new_cap = std::max(solid_buf.capacity() * 2, solid_buf.size() + fsize);
-                new_cap = std::min(new_cap, CHUNK_THRESHOLD * 2);
-                try {
-                    solid_buf.reserve(new_cap);
-                } catch (const std::bad_alloc&) {
-                    UI::print_error("Memoria esaurita per chunk, salvataggio...");
-                    if (worker_active && !write_worker(future_chunk)) {
-                        fclose(f);
-                        return {false, "Memoria insufficiente"};
-                    }
-                    worker_active = false;
-                    solid_buf.clear();
-                    solid_buf.reserve(CHUNK_THRESHOLD);
-                }
             }
             
             solid_buf.insert(solid_buf.end(), data.begin(), data.end());
@@ -327,8 +303,6 @@ bool match_pattern(const std::string& full_path, const std::string& pattern) {
     if (pattern.empty()) return true;
     
     // Estrae il nome del file dal percorso completo se il pattern non contiene slash.
-    // Esempio: Se il pattern è "tarc40.*" e il file è "cartella/tarc40.txt",
-    // confronta solo "tarc40.txt" invece dell'intero percorso.
     std::string target = full_path;
     if (pattern.find('/') == std::string::npos && pattern.find('\\') == std::string::npos) {
         target = fs::path(full_path).filename().string();
@@ -338,18 +312,13 @@ bool match_pattern(const std::string& full_path, const std::string& pattern) {
     size_t star_pos = pattern.find('*');
     
     if (star_pos == std::string::npos) {
-        // Nessun asterisco: corrispondenza parziale (contiene la stringa)
         return (target.find(pattern) != std::string::npos);
     }
 
-    // C'è un asterisco: formato Prefisso*Suffix
     std::string prefix = pattern.substr(0, star_pos);
     std::string suffix = pattern.substr(star_pos + 1);
 
-    // Controlla se inizia col prefisso
     if (!prefix.empty() && target.find(prefix) != 0) return false;
-
-    // Controlla se finisce col suffisso
     if (!suffix.empty()) {
         if (suffix.length() > target.length()) return false;
         if (target.compare(target.length() - suffix.length(), suffix.length(), suffix) != 0) return false;
