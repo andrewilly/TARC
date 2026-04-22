@@ -35,15 +35,14 @@ constexpr size_t DEFAULT_CHUNK_THRESHOLD = 256 * 1024 * 1024;  // 256 MB
 static bool should_skip_dedup(const std::string& path) {
     std::string ext = fs::path(path).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    // Disabilita deduplicazione per file di database (causano falsi positivi)
     return ext == ".mdb" || ext == ".accdb" || ext == ".ldb" || ext == ".sdf";
 }
 
 // Buffer di lettura adattivo in base alla dimensione del file
-static DWORD get_read_buffer_size(uintmax_t file_size) {
-    if (file_size > 100 * 1024 * 1024) return 4 * 1024 * 1024;  // 4 MB per file > 100MB
-    if (file_size > 10 * 1024 * 1024) return 2 * 1024 * 1024;   // 2 MB per file > 10MB
-    return 1024 * 1024;  // 1 MB default
+static size_t get_read_buffer_size(uintmax_t file_size) {
+    if (file_size > 100 * 1024 * 1024) return 4 * 1024 * 1024;
+    if (file_size > 10 * 1024 * 1024) return 2 * 1024 * 1024;
+    return 1024 * 1024;
 }
 
 namespace CodecSelector {
@@ -104,7 +103,7 @@ struct ChunkResult {
     uint32_t raw_size = 0;
     Codec codec = Codec::STORE;
     bool success = false;
-    uint64_t content_hash = 0;  // Per verifica integrità
+    uint64_t data_hash = 0;
 };
 
 ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
@@ -116,17 +115,16 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     if (chosen_codec == Codec::STORE) {
         res.compressed_data = std::move(raw_data);
         res.success = true;
-        res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
+        res.data_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
     } else {
         size_t max_out = lzma_stream_buffer_bound(raw_data.size());
         
-        // Protezione da overflow
         if (max_out == 0 || max_out > std::numeric_limits<size_t>::max() / 2) {
             UI::print_warning("Dimensione massima compressione non valida, fallback a STORE");
             res.compressed_data = std::move(raw_data);
             res.codec = Codec::STORE;
             res.success = true;
-            res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
+            res.data_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
             return res;
         }
         
@@ -137,7 +135,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
             res.compressed_data = std::move(raw_data);
             res.codec = Codec::STORE;
             res.success = true;
-            res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
+            res.data_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
             return res;
         }
         
@@ -151,7 +149,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         if (ret == LZMA_OK) { 
             res.compressed_data.resize(out_pos); 
             res.success = true;
-            res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
+            res.data_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
         } else {
             const char* err_msg = "Unknown error";
             switch(ret) {
@@ -165,7 +163,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
             res.compressed_data = std::move(raw_data);
             res.codec = Codec::STORE;
             res.success = true;
-            res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
+            res.data_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
         }
     }
     return res;
@@ -207,7 +205,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     
     for (const auto& in : inputs) {
         resolve_wildcards(in, expanded_files);
-        // Protezione da overflow del TOC
         if (expanded_files.size() > MAX_FILES_IN_ARCHIVE) {
             return {false, "Troppi file da archiviare. Massimo: " + std::to_string(MAX_FILES_IN_ARCHIVE)};
         }
@@ -234,7 +231,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             IO::read_toc(f_old, h, final_toc);
             fclose(f_old);
             
-            // Protezione da overflow
             if (final_toc.size() > MAX_FILES_IN_ARCHIVE) {
                 return {false, "Archivio esistente ha troppi file. Massimo: " + std::to_string(MAX_FILES_IN_ARCHIVE)};
             }
@@ -270,10 +266,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::vector<char> solid_buf;
     size_t CHUNK_THRESHOLD = DEFAULT_CHUNK_THRESHOLD;
     
-    // Chunk adattivo: se pochi file, riduci la soglia
     if (expanded_files.size() < 10) {
-        CHUNK_THRESHOLD = 32 * 1024 * 1024;  // 32 MB per pochi file
-        UI::print_verbose("Chunk threshold ridotto a 32MB per pochi file");
+        CHUNK_THRESHOLD = 32 * 1024 * 1024;
     }
     
     solid_buf.reserve(CHUNK_THRESHOLD);
@@ -289,7 +283,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             static_cast<uint32_t>(res.codec), 
             res.raw_size, 
             static_cast<uint32_t>(res.compressed_data.size()),
-            res.content_hash
+            res.data_hash
         };
         
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
@@ -319,7 +313,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         bool read_ok = false;
         uint64_t h64 = 0;
         
-        // Protezione da file troppo grandi
         if (fsize > static_cast<uintmax_t>(CHUNK_THRESHOLD) * 4) {
             UI::print_warning("File molto grande (" + UI::human_size(fsize) + "), potrebbe richiedere molta memoria");
         }
@@ -334,7 +327,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         XXH64_state_t* const state = XXH64_createState();
         if (state) XXH64_reset(state, 0);
 
-        DWORD read_buffer_size = get_read_buffer_size(fsize);
+        size_t read_buffer_size = get_read_buffer_size(fsize);
 
 #ifdef _WIN32
         HANDLE hFile = CreateFileA(disk_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, 
@@ -345,8 +338,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             char* ptr = data.data();
             
             while (bytesReadTotal < static_cast<DWORD>(fsize)) {
-                DWORD toRead = (static_cast<DWORD>(fsize) - bytesReadTotal > read_buffer_size) 
-                                ? read_buffer_size : static_cast<DWORD>(fsize) - bytesReadTotal;
+                DWORD toRead = (static_cast<DWORD>(fsize) - bytesReadTotal > static_cast<DWORD>(read_buffer_size)) 
+                                ? static_cast<DWORD>(read_buffer_size) : static_cast<DWORD>(fsize) - bytesReadTotal;
                 if (ReadFile(hFile, ptr + bytesReadTotal, toRead, &bytesRead, NULL)) {
                     if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
                     bytesReadTotal += bytesRead;
@@ -368,7 +361,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             size_t bytes_read = 0;
             
             while (total_read < fsize) {
-                size_t to_read = std::min(static_cast<size_t>(fsize - total_read), static_cast<size_t>(read_buffer_size));
+                size_t to_read = std::min(static_cast<size_t>(fsize - total_read), read_buffer_size);
                 bytes_read = fread(ptr + total_read, 1, to_read, in_f);
                 if (bytes_read == 0) break;
                 if (state) XXH64_update(state, ptr + total_read, bytes_read);
@@ -397,7 +390,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.xxhash = h64;
         fe.meta.codec = static_cast<uint8_t>(CodecSelector::select(disk_path, static_cast<size_t>(fsize)));
         
-        // Timestamp con gestione errori
         auto ftime = fs::last_write_time(disk_path, ec);
         if (!ec) {
             fe.meta.timestamp = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
@@ -406,13 +398,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             fe.meta.timestamp = 0;
         }
 
-        // Skip dedup per file problematici
         bool skip_dedup = should_skip_dedup(disk_path);
         
         if (!skip_dedup && hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
-            UI::print_verbose("Duplicato rilevato: " + fe.name);
         } else {
             if (!skip_dedup) {
                 hash_map[h64] = static_cast<uint32_t>(final_toc.size());
@@ -428,7 +418,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 worker_active = true;
                 solid_buf.clear();
                 
-                // Ripristina capacità
                 try {
                     solid_buf.reserve(CHUNK_THRESHOLD);
                 } catch (const std::bad_alloc&) {
@@ -436,7 +425,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
                 }
             }
             
-            // Verifica capacità prima di inserire
             if (solid_buf.capacity() < solid_buf.size() + fsize) {
                 size_t new_cap = std::max(solid_buf.capacity() * 2, solid_buf.size() + fsize);
                 new_cap = std::min(new_cap, CHUNK_THRESHOLD * 2);
@@ -463,7 +451,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             result.bytes_in += fsize;
         }
         
-        // Protezione da overflow del TOC
         if (final_toc.size() > MAX_FILES_IN_ARCHIVE) {
             fclose(f);
             return {false, "Troppi file nell'archivio. Massimo: " + std::to_string(MAX_FILES_IN_ARCHIVE)};
@@ -484,7 +471,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             static_cast<uint32_t>(last.codec), 
             last.raw_size, 
             static_cast<uint32_t>(last.compressed_data.size()),
-            last.content_hash
+            last.data_hash
         };
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) {
             fclose(f);
@@ -564,7 +551,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         return {false, "Header corrotto o illeggibile."};
     }
     
-    // Verifica magic number
     if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
         fclose(f);
         return {false, "Magic number non valido - file non è un archivio TARC."};
@@ -587,7 +573,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     size_t block_pos = 0;
     std::map<std::string, int> flat_names_counter;
     
-    // Conta quanti file estrarre
     size_t total_to_extract = 0;
     for (const auto& fe : toc) {
         if (patterns.empty()) {
@@ -618,7 +603,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
 
         if (!should_extract) {
-            // Salta file, ma avanza nel chunk
             if (!fe.meta.is_duplicate) {
                 if (block_pos >= current_block.size()) {
                     ::ChunkHeader ch;
@@ -677,10 +661,10 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 return {false, "Errore lettura dati compressi."};
             }
             
-            // Verifica integrità chunk
-            if (ch.content_hash != 0) {
+            // Verifica integrità chunk usando checksum
+            if (ch.checksum != 0) {
                 uint64_t computed_hash = XXH64(comp.data(), ch.comp_size, 0);
-                if (computed_hash != ch.content_hash) {
+                if (computed_hash != ch.checksum) {
                     UI::print_warning("Hash mismatch nel chunk - possibile corruzione dati");
                 }
             }
@@ -771,7 +755,6 @@ TarcResult list(const std::string& arch_path, size_t offset) {
         return {false, "Errore Header."};
     }
     
-    // Verifica magic number
     if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
         fclose(f);
         return {false, "Magic number non valido - file non è un archivio TARC."};
