@@ -225,7 +225,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 
     // ── BROTLI ────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::BR) {
-        size_t max_out = BrotliEncoderMaxCompressSize(raw_data.size());
+        size_t max_out = BrotliEncoderMaxCompressedSize(raw_data.size());
         if (max_out == 0) {
             // Input troppo grande per Brotli
             res.compressed_data = std::move(raw_data);
