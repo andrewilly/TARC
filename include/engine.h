@@ -2,8 +2,6 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <future>
-#include <atomic>
 #include "types.h"
 
 namespace CodecSelector {
@@ -13,19 +11,11 @@ namespace CodecSelector {
 }
 
 namespace Engine {
-
-    // Funzioni Core Release 2.0
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
-    
     TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {}, bool test_only = false, size_t offset = 0, bool flat_mode = false);
-    
     TarcResult list(const std::string& arch_path, size_t offset = 0);
     TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
-    
     TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name);
-    
-    // Utilità per diagnostics
     void set_skip_dedup_extensions(const std::vector<std::string>& exts);
     void set_chunk_threshold(size_t threshold);
-
-} // namespace Engine
+}
