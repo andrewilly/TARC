@@ -88,16 +88,35 @@ file(GLOB_RECURSE LZMA_SOURCES
     "libs/lzma/src/common/*.c"
 )
 
+# Rimuovi file problematici o non necessari
 list(REMOVE_ITEM LZMA_SOURCES 
     "libs/lzma/src/liblzma/check/crc32_arm64.c"
     "libs/lzma/src/liblzma/check/crc32_small.c"
     "libs/lzma/src/liblzma/check/crc64_small.c"
+    "libs/lzma/src/liblzma/simple/arm64.c"
+    "libs/lzma/src/liblzma/simple/riscv.c"
 )
 
-add_library(lzma_static STATIC ${LZMA_SOURCES})
+# Aggiungi i file header ai sorgenti (per permettere a CMake di trovarli)
+file(GLOB_RECURSE LZMA_HEADERS
+    "libs/lzma/src/liblzma/*.h"
+    "libs/lzma/src/common/*.h"
+)
+
+add_library(lzma_static STATIC ${LZMA_SOURCES} ${LZMA_HEADERS})
+
+# Include directories per LZMA
 target_include_directories(lzma_static PUBLIC 
     libs/lzma/src/liblzma/api
+    libs/lzma/src/liblzma
     libs/lzma/src/common
+    libs/lzma/src/liblzma/check
+    libs/lzma/src/liblzma/common
+    libs/lzma/src/liblzma/lz
+    libs/lzma/src/liblzma/lzma
+    libs/lzma/src/liblzma/rangecoder
+    libs/lzma/src/liblzma/simple
+    libs/lzma/src/liblzma/delta
 )
 
 if(MSVC)
@@ -108,11 +127,6 @@ if(MSVC)
 else()
     target_compile_definitions(lzma_static PRIVATE LZMA_API_STATIC)
 endif()
-
-# -----------------------------------------------------------------------------
-# CRC32 implementation (senza zlib)
-# -----------------------------------------------------------------------------
-# Usiamo una CRC32 table precalcolata interna (non serve zlib)
 
 # -----------------------------------------------------------------------------
 # Sorgenti principali
