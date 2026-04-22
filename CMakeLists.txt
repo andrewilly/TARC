@@ -19,18 +19,30 @@ else()
     endif()
 endif()
 
-# Directory dei headers
-include_directories(include)
-
 # -----------------------------------------------------------------------------
 # Su Windows: usa librerie statiche incluse
 # Su Linux/macOS: usa librerie di sistema
 # -----------------------------------------------------------------------------
+
+# Prima creiamo l'eseguibile
+set(TARC_SOURCES
+    src/main.cpp
+    src/engine.cpp
+    src/io.cpp
+    src/ui.cpp
+    src/license.cpp
+)
+
+add_executable(tarc ${TARC_SOURCES})
+target_include_directories(tarc PRIVATE include)
+
 if(WIN32)
     message(STATUS "Windows: Building with static libraries from libs/")
     
-    include_directories(libs/lzma/src/liblzma/api)
-    include_directories(libs/xxhash)
+    target_include_directories(tarc PRIVATE 
+        libs/lzma/src/liblzma/api
+        libs/xxhash
+    )
     
     # XXHASH - Build statico dai sorgenti
     set(XXHASH_SOURCES
@@ -134,27 +146,22 @@ if(WIN32)
         _CRT_SECURE_NO_WARNINGS
     )
     
-    set(EXTRA_LIBS lzma_static xxhash_static)
+    target_link_libraries(tarc lzma_static xxhash_static ole32 user32)
     
 elseif(APPLE)
     message(STATUS "macOS: Using system libraries (brew install xz xxhash)")
     
-    find_path(LZMA_INCLUDE_DIR lzma.h
-        PATHS /opt/homebrew/include /usr/local/include /usr/include
-    )
-    find_library(LZMA_LIBRARY lzma
-        PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
-    )
+    find_path(LZMA_INCLUDE_DIR lzma.h PATHS /opt/homebrew/include /usr/local/include /usr/include)
+    find_library(LZMA_LIBRARY lzma PATHS /opt/homebrew/lib /usr/local/lib /usr/lib)
     
-    find_path(XXHASH_INCLUDE_DIR xxhash.h
-        PATHS /opt/homebrew/include /usr/local/include /usr/include
-    )
-    find_library(XXHASH_LIBRARY xxhash
-        PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
-    )
+    find_path(XXHASH_INCLUDE_DIR xxhash.h PATHS /opt/homebrew/include /usr/local/include /usr/include)
+    find_library(XXHASH_LIBRARY xxhash PATHS /opt/homebrew/lib /usr/local/lib /usr/lib)
     
     target_include_directories(tarc PRIVATE ${LZMA_INCLUDE_DIR} ${XXHASH_INCLUDE_DIR})
-    set(EXTRA_LIBS ${LZMA_LIBRARY} ${XXHASH_LIBRARY})
+    target_link_libraries(tarc ${LZMA_LIBRARY} ${XXHASH_LIBRARY})
+    
+    find_package(Threads REQUIRED)
+    target_link_libraries(tarc Threads::Threads)
     
 else()
     message(STATUS "Linux: Using system libraries (sudo apt install liblzma-dev libxxhash-dev)")
@@ -163,42 +170,12 @@ else()
     pkg_check_modules(LIBLZMA REQUIRED liblzma)
     pkg_check_modules(XXHASH REQUIRED libxxhash)
     
-    set(EXTRA_LIBS ${LIBLZMA_LIBRARIES} ${XXHASH_LIBRARIES})
     target_include_directories(tarc PRIVATE ${LIBLZMA_INCLUDE_DIRS} ${XXHASH_INCLUDE_DIRS})
+    target_link_libraries(tarc ${LIBLZMA_LIBRARIES} ${XXHASH_LIBRARIES})
     
-endif()
-
-# -----------------------------------------------------------------------------
-# TARC - Eseguibile principale
-# -----------------------------------------------------------------------------
-set(TARC_SOURCES
-    src/main.cpp
-    src/engine.cpp
-    src/io.cpp
-    src/ui.cpp
-    src/license.cpp
-)
-
-add_executable(tarc ${TARC_SOURCES})
-
-target_include_directories(tarc PRIVATE
-    include
-)
-
-target_link_libraries(tarc ${EXTRA_LIBS})
-
-# Su Windows, aggiungi librerie di sistema
-if(WIN32)
-    target_link_libraries(tarc
-        ole32
-        user32
-    )
-endif()
-
-# Su Unix, aggiungi pthread
-if(UNIX)
     find_package(Threads REQUIRED)
     target_link_libraries(tarc Threads::Threads)
+    
 endif()
 
 # -----------------------------------------------------------------------------
