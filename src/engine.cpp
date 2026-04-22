@@ -16,6 +16,9 @@
 
 #ifdef _WIN32
     #include <windows.h>
+#else
+    #include <unistd.h>
+    #include <fcntl.h>
 #endif
 
 #include "lzma.h"
@@ -31,7 +34,7 @@ constexpr size_t MAX_FILES_IN_ARCHIVE = 10'000'000;
 // Limite chunk di default
 constexpr size_t DEFAULT_CHUNK_THRESHOLD = 256 * 1024 * 1024;  // 256 MB
 
-// ========== CLASSE ROLLBACK PER COMPRESSIONE ==========
+// ========== CLASSE ROLLBACK PER COMPRESSIONE (multipiattaforma) ==========
 class CompressionRollback {
 private:
     FILE* file = nullptr;
@@ -50,8 +53,8 @@ public:
     
     ~CompressionRollback() {
         if (!committed && file) {
-            // Rollback: tronca il file alla dimensione originale
             fclose(file);
+            
 #ifdef _WIN32
             HANDLE h = CreateFileA(archive_path.c_str(), GENERIC_WRITE, 0, NULL,
                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -63,7 +66,12 @@ public:
                 CloseHandle(h);
             }
 #else
-            truncate(archive_path.c_str(), original_size);
+            // POSIX: usa ftruncate (funziona su macOS e Linux)
+            int fd = open(archive_path.c_str(), O_RDWR);
+            if (fd >= 0) {
+                ftruncate(fd, original_size);
+                close(fd);
+            }
 #endif
         } else if (file) {
             fclose(file);
