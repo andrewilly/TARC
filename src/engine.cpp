@@ -48,15 +48,12 @@ namespace CodecSelector {
     
     Codec select(const std::string& path, size_t size) {
         if (!is_compressibile(fs::path(path).extension().string())) return Codec::STORE;
-        
-        // Selezione codec basata su dimensione e tipo
-        if (size < 1024 * 512) return Codec::ZSTD;      // File piccoli: ZSTD veloce
-        if (size > 100 * 1024 * 1024) return Codec::LZMA; // File grandi: LZMA
-        return Codec::LZMA;  // Default LZMA
+        if (size < 1024 * 512) return Codec::ZSTD;
+        if (size > 100 * 1024 * 1024) return Codec::LZMA;
+        return Codec::LZMA;
     }
 }
 
-// Thread pool per compressione asincrona
 class ThreadPool {
 private:
     std::vector<std::thread> workers;
@@ -85,8 +82,8 @@ public:
     }
     
     template<class F, class... Args>
-    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type> {
-        using return_type = typename std::result_of<F(Args...)>::type;
+    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args...>> {
+        using return_type = typename std::invoke_result_t<F, Args...>;
         
         auto task = std::make_shared<std::packaged_task<return_type()>>(
             std::bind(std::forward<F>(f), std::forward<Args>(args)...)
@@ -114,7 +111,7 @@ public:
 
 static std::unique_ptr<ThreadPool> g_pool;
 static std::atomic<size_t> g_global_progress{0};
-static size_t g_chunk_threshold = 256 * 1024 * 1024; // 256MB
+static size_t g_chunk_threshold = 256 * 1024 * 1024;
 
 namespace Engine {
 
@@ -173,88 +170,55 @@ struct ChunkResult {
     uint64_t content_hash;
 };
 
-// Versione migliorata di compress_worker con dizionario adattivo
+// Versione semplificata e corretta di compress_worker
 ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
     ChunkResult res;
     res.raw_size = (uint32_t)raw_data.size();
     res.codec = chosen_codec;
     res.success = false;
+    res.content_hash = 0;
     
     if (chosen_codec == Codec::STORE) {
         res.compressed_data = std::move(raw_data);
         res.success = true;
-        // Calcola hash per integrità
-        res.content_hash = XXH3_64bits(res.compressed_data.data(), res.compressed_data.size());
+        // Usa XXH64 invece di XXH3
+        res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
     } else if (chosen_codec == Codec::LZMA) {
-        // Dizionario adattivo basato sulla dimensione
-        uint32_t dict_size = 1 << 23; // 8MB default
-        
-        if (raw_data.size() > 64 * 1024 * 1024) dict_size = 1 << 27;      // 128MB
-        else if (raw_data.size() > 16 * 1024 * 1024) dict_size = 1 << 26; // 64MB
-        else if (raw_data.size() > 4 * 1024 * 1024) dict_size = 1 << 25;  // 32MB
-        else if (raw_data.size() > 1024 * 1024) dict_size = 1 << 24;       // 16MB
-        
-        lzma_options_lzma opt = LZMA_OPTIONS_INITIALIZER;
-        opt.dict_size = dict_size;
-        
-        // Imposta preset
+        // Usa l'API standard lzma_easy_buffer_encode
+        size_t max_out = lzma_stream_buffer_bound(raw_data.size());
+        res.compressed_data.resize(max_out);
+        size_t out_pos = 0;
         uint32_t preset = (level < 0) ? 9 : (uint32_t)level;
-        if (lzma_lzma_preset(&opt, preset | LZMA_PRESET_EXTREME) != LZMA_OK) {
-            // Fallback a preset standard
-            opt.preset = preset;
-        }
         
-        lzma_stream strm = LZMA_STREAM_INIT;
-        lzma_ret ret = lzma_alone_encoder(&strm, &opt);
-        
-        if (ret == LZMA_OK) {
-            size_t max_out = raw_data.size() + (raw_data.size() / 10) + 128;
-            res.compressed_data.resize(max_out);
+        lzma_ret ret = lzma_easy_buffer_encode(preset | LZMA_PRESET_EXTREME, LZMA_CHECK_CRC64, NULL,
+            (const uint8_t*)raw_data.data(), raw_data.size(),
+            (uint8_t*)res.compressed_data.data(), &out_pos, max_out);
             
-            strm.next_in = (const uint8_t*)raw_data.data();
-            strm.avail_in = raw_data.size();
-            strm.next_out = (uint8_t*)res.compressed_data.data();
-            strm.avail_out = max_out;
-            
-            ret = lzma_code(&strm, LZMA_FINISH);
-            
-            if (ret == LZMA_STREAM_END) {
-                res.compressed_data.resize(strm.total_out);
-                res.success = true;
-                res.content_hash = XXH3_64bits(res.compressed_data.data(), res.compressed_data.size());
-            } else {
-                UI::print_warning("LZMA compression failed with code: " + std::to_string(ret));
-                // Fallback a STORE
-                res.compressed_data = std::move(raw_data);
-                res.codec = Codec::STORE;
-                res.success = true;
-                res.content_hash = XXH3_64bits(res.compressed_data.data(), res.compressed_data.size());
-            }
-            
-            lzma_end(&strm);
+        if (ret == LZMA_OK) { 
+            res.compressed_data.resize(out_pos); 
+            res.success = true;
+            res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
         } else {
-            UI::print_warning("LZMA encoder initialization failed, falling back to STORE");
+            UI::print_warning("LZMA failed, falling back to STORE for chunk.");
             res.compressed_data = std::move(raw_data);
             res.codec = Codec::STORE;
             res.success = true;
-            res.content_hash = XXH3_64bits(res.compressed_data.data(), res.compressed_data.size());
+            res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
         }
     } else {
-        // Altri codec (ZSTD, LZ4, BR) - placeholder per ora usa STORE
+        // Altri codec - fallback a STORE
         res.compressed_data = std::move(raw_data);
         res.codec = Codec::STORE;
         res.success = true;
-        res.content_hash = XXH3_64bits(res.compressed_data.data(), res.compressed_data.size());
+        res.content_hash = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
     }
     
     return res;
 }
 
-// Versione migliorata con fseek64
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
     std::string stub_path = "tarc_sfx_stub.exe";
     if (!fs::exists(stub_path)) {
-        // Cerca nella stessa cartella dell'eseguibile
 #ifdef _WIN32
         char module_path[MAX_PATH];
         GetModuleFileNameA(NULL, module_path, MAX_PATH);
@@ -288,14 +252,12 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     
     UI::print_info("Preparazione compressione di " + std::to_string(expanded_files.size()) + " file...");
     
-    // Inizializza thread pool
     if (!g_pool) g_pool = std::make_unique<ThreadPool>();
     
     std::vector<::FileEntry> final_toc;
     ConcurrentHashMap hash_map;
     ::Header h{};
     
-    // Gestione append
     if (append && fs::exists(archive_path)) {
         FILE* f_old = fopen(archive_path.c_str(), "rb");
         if (f_old) {
@@ -314,12 +276,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         h.version = TARC_VERSION;
     }
     
-    // Apertura file con gestione errori migliorata
     FILE* f = fopen(archive_path.c_str(), append ? "rb+" : "wb");
     if (!f) return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio: " + std::string(strerror(errno))};
     
     if (append) {
-        if (fseek64(f, (off64_t)h.toc_offset, SEEK_SET) != 0) {
+        if (fseek64(f, (off_t)h.toc_offset, SEEK_SET) != 0) {
             fclose(f);
             return {false, "ERRORE: Seek fallito in modalità append"};
         }
@@ -350,7 +311,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return true;
     };
     
-    // Progress tracking
     g_global_progress = 0;
     size_t total_files = expanded_files.size();
     
@@ -365,7 +325,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         
         uintmax_t fsize = fs::file_size(disk_path);
         
-        // Verifica memoria disponibile
         if (fsize > g_chunk_threshold * 2) {
             UI::print_warning("File molto grande (" + UI::human_size(fsize) + 
                             "), potrebbe richiedere molta memoria");
@@ -375,7 +334,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         bool read_ok = false;
         uint64_t h64 = 0;
         
-        // Allocazione sicura con try-catch
         try {
             data.resize(fsize);
         } catch (const std::bad_alloc& e) {
@@ -383,9 +341,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             continue;
         }
         
-        // Lettura file con XXH3 per hash migliore
-        XXH3_state_t* const state = XXH3_createState();
-        if (state) XXH3_64bits_reset(state);
+        // Usa XXH64_state_t invece di XXH3
+        XXH64_state_t* const state = XXH64_createState();
+        if (state) XXH64_reset(state, 0);
         
 #ifdef _WIN32
         HANDLE hFile = CreateFileA(disk_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, 
@@ -393,13 +351,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD bytesReadTotal = 0;
             DWORD bytesRead = 0;
-            const DWORD BUF_STEP = 1024 * 1024; // 1MB buffer
+            const DWORD BUF_STEP = 1024 * 1024;
             char* ptr = data.data();
             
             while (bytesReadTotal < (DWORD)fsize) {
                 DWORD toRead = ((DWORD)fsize - bytesReadTotal > BUF_STEP) ? BUF_STEP : ((DWORD)fsize - bytesReadTotal);
                 if (ReadFile(hFile, ptr + bytesReadTotal, toRead, &bytesRead, NULL)) {
-                    if (state) XXH3_64bits_update(state, ptr + bytesReadTotal, bytesRead);
+                    if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
                     bytesReadTotal += bytesRead;
                 } else {
                     UI::print_error("Errore lettura: " + disk_path + " (WinErr: " + std::to_string(GetLastError()) + ")");
@@ -414,14 +372,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
-            size_t bytes_read = 0;
             size_t total_read = 0;
             char* ptr = data.data();
             
             while (total_read < fsize) {
-                bytes_read = fread(ptr + total_read, 1, fsize - total_read, in_f);
+                size_t bytes_read = fread(ptr + total_read, 1, fsize - total_read, in_f);
                 if (bytes_read == 0) break;
-                if (state) XXH3_64bits_update(state, ptr + total_read, bytes_read);
+                if (state) XXH64_update(state, ptr + total_read, bytes_read);
                 total_read += bytes_read;
             }
             
@@ -433,8 +390,8 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 #endif
         
         if (state) {
-            h64 = XXH3_64bits_digest(state);
-            XXH3_freeState(state);
+            h64 = XXH64_digest(state);
+            XXH64_freeState(state);
         }
         
         if (!read_ok) {
@@ -450,7 +407,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         fe.meta.timestamp = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(
             fs::last_write_time(disk_path).time_since_epoch()).count();
         
-        // Controllo skip dedup per estensioni problematiche
         bool skip_dedup = CodecSelector::should_skip_dedup(disk_path);
         std::string ext = fs::path(disk_path).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -463,21 +419,18 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             if (!skip_dedup) hash_map.insert(h64, (uint32_t)final_toc.size(), ext);
             fe.meta.is_duplicate = 0;
             
-            // Gestione chunk con controllo capacità
             if (solid_buf.size() + fsize > g_chunk_threshold && !solid_buf.empty()) {
                 if (worker_active && !write_worker(future_chunk)) {
                     fclose(f);
                     return {false, "Errore compressione chunk."};
                 }
                 
-                // Avvia compressione asincrona
                 future_chunk = g_pool->enqueue(compress_worker, std::move(solid_buf), level, (Codec)fe.meta.codec);
                 worker_active = true;
                 solid_buf.clear();
                 solid_buf.reserve(g_chunk_threshold);
             }
             
-            // Verifica capacità prima di inserire
             if (solid_buf.capacity() < solid_buf.size() + fsize) {
                 size_t new_cap = std::max(solid_buf.capacity() * 2, solid_buf.size() + fsize);
                 new_cap = std::min(new_cap, g_chunk_threshold * 2);
@@ -502,7 +455,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         g_global_progress++;
     }
     
-    // Finalizza chunk pendenti
     if (worker_active && !write_worker(future_chunk)) {
         fclose(f);
         return {false, "Errore chunk finale."};
@@ -522,7 +474,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         result.bytes_out += last.compressed_data.size();
     }
     
-    // Terminatore chunk
     ::ChunkHeader end_mark = {0, 0, 0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     
@@ -537,24 +488,20 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     return result;
 }
 
-// match_pattern migliorato con supporto wildcard esteso
 bool match_pattern(const std::string& full_path, const std::string& pattern) {
     if (pattern.empty()) return true;
     
     std::string target = full_path;
     
-    // Se pattern non contiene slash, usa solo filename
     if (pattern.find('/') == std::string::npos && pattern.find('\\') == std::string::npos) {
         target = fs::path(full_path).filename().string();
     }
     
-    // Supporto per wildcard multipli
     size_t star_pos = pattern.find('*');
     if (star_pos == std::string::npos) {
         return target.find(pattern) != std::string::npos;
     }
     
-    // Supporto pattern come "*.txt" o "prefix*" o "*suffix"
     std::string prefix = pattern.substr(0, star_pos);
     std::string suffix = pattern.substr(star_pos + 1);
     
@@ -573,7 +520,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     if (!f) return {false, "Archivio non trovato: " + arch_path};
     
     if (offset > 0) {
-        if (fseek64(f, (off64_t)offset, SEEK_SET) != 0) {
+        if (fseek64(f, (off_t)offset, SEEK_SET) != 0) {
             fclose(f);
             return {false, "Offset non valido"};
         }
@@ -585,7 +532,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         return {false, "Header corrotto o illeggibile"};
     }
     
-    // Verifica magic number
     if (memcmp(h.magic, TARC_MAGIC, 4) != 0) {
         fclose(f);
         return {false, "Magic number non valido - file non è un archivio TARC"};
@@ -599,7 +545,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         return {false, "Impossibile leggere TOC"};
     }
     
-    if (fseek64(f, (off64_t)(offset + sizeof(::Header)), SEEK_SET) != 0) {
+    if (fseek64(f, (off_t)(offset + sizeof(::Header)), SEEK_SET) != 0) {
         fclose(f);
         return {false, "Seek fallito dopo header"};
     }
@@ -610,7 +556,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     size_t extracted_count = 0;
     size_t total_to_extract = 0;
     
-    // Conta quanti file da estrarre
     for (const auto& fe : toc) {
         if (patterns.empty()) {
             total_to_extract++;
@@ -638,7 +583,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
         
         if (!should_extract) {
-            // Salta file, ma deve avanzare nei chunk se necessario
             if (!fe.meta.is_duplicate) {
                 if (block_pos >= current_block.size()) {
                     ::ChunkHeader ch;
@@ -652,14 +596,9 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     if (ch.codec == (uint32_t)Codec::LZMA) {
                         size_t src_p = 0, dst_p = 0;
                         uint64_t limit = UINT64_MAX;
-                        lzma_ret ret = lzma_stream_buffer_decode(&limit, 0, NULL,
+                        lzma_stream_buffer_decode(&limit, 0, NULL,
                             (const uint8_t*)comp.data(), &src_p, ch.comp_size,
                             (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
-                            
-                        if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
-                            fclose(f);
-                            return {false, "Errore decompressione LZMA (codice: " + std::to_string(ret) + ")"};
-                        }
                     } else {
                         memcpy(current_block.data(), comp.data(), ch.raw_size);
                     }
@@ -671,7 +610,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
         
         if (fe.meta.is_duplicate) {
-            // Trova il file originale
             if (fe.meta.duplicate_of_idx < toc.size()) {
                 UI::print_extract(fe.name, fe.meta.orig_size, test_only, true);
                 result.bytes_out += fe.meta.orig_size;
@@ -682,7 +620,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             continue;
         }
         
-        // Carica chunk se necessario
         if (block_pos >= current_block.size()) {
             ::ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
@@ -696,10 +633,12 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 return {false, "Errore lettura dati compressi"};
             }
             
-            // Verifica integrità chunk
-            uint64_t computed_hash = XXH3_64bits(comp.data(), ch.comp_size);
-            if (computed_hash != ch.content_hash && ch.content_hash != 0) {
-                UI::print_warning("Hash mismatch nel chunk - possibile corruzione");
+            // Verifica integrità chunk (opzionale, solo se hash presente)
+            if (ch.content_hash != 0) {
+                uint64_t computed_hash = XXH64(comp.data(), ch.comp_size, 0);
+                if (computed_hash != ch.content_hash) {
+                    UI::print_warning("Hash mismatch nel chunk - possibile corruzione");
+                }
             }
             
             current_block.resize(ch.raw_size);
@@ -711,13 +650,14 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     (const uint8_t*)comp.data(), &src_p, ch.comp_size,
                     (uint8_t*)current_block.data(), &dst_p, ch.raw_size);
                     
-                const char* err_msg = "Unknown error";
                 if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
+                    const char* err_msg = "Unknown error";
                     switch(ret) {
                         case LZMA_MEM_ERROR: err_msg = "Memoria insufficiente"; break;
                         case LZMA_FORMAT_ERROR: err_msg = "Formato non valido"; break;
                         case LZMA_DATA_ERROR: err_msg = "Dati corrotti"; break;
                         case LZMA_BUF_ERROR: err_msg = "Buffer insufficiente"; break;
+                        default: break;
                     }
                     fclose(f);
                     return {false, "Errore decompressione LZMA: " + std::string(err_msg)};
@@ -775,7 +715,7 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     if (!f) return {false, "Errore apertura archivio"};
     
     if (offset > 0) {
-        if (fseek64(f, (off64_t)offset, SEEK_SET) != 0) {
+        if (fseek64(f, (off_t)offset, SEEK_SET) != 0) {
             fclose(f);
             return {false, "Offset non valido"};
         }
