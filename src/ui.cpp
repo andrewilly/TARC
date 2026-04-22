@@ -61,11 +61,6 @@ void show_help() {
     printf("  %s--sfx%s        Genera archivio Autoestraente (.exe)\n", W, R);
     printf("  %s--flat%s       Estrazione Flat: ignora percorsi\n", W, R);
 
-    printf("\nEnvironment:\n");
-    printf("  %sTARC_CHUNK_MB%s   Imposta chunk size in MB (default: 256)\n", Y, R);
-    printf("  %sTARC_WORKERS%s    Imposta thread per compressione (default: CPU cores)\n", Y, R);
-    printf("  %sTARC_SKIP_DEDUP%s Disabilita dedup per estensioni (es: .mdb,.accdb)\n", Y, R);
-
     printf("\n%sTARC Strike v2.0 - ABSOLUTELY NO WARRANTY.%s\n\n", D, R);
 }
 
