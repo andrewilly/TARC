@@ -12,7 +12,7 @@ namespace CodecSelector {
 
 namespace Engine {
 
-    // Funzioni Core Release 2.01
+    // Funzioni Core Release 2.02
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, bool append, int level);
 
     // Firma con flat_mode per estrazione senza percorsi

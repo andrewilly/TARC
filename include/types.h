@@ -4,9 +4,17 @@
 #include <vector>
 
 #define TARC_MAGIC     "TRC2"
-#define TARC_VERSION   201
+#define TARC_VERSION   202
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
+
+// ─── COSTANTI NOMINATE ────────────────────────────────────────────────────────
+// Soglia dimensione chunk solid (256 MB)
+constexpr size_t CHUNK_THRESHOLD       = 256ULL * 1024 * 1024;
+// Soglia per codec switch: sotto questa dimensione ZSTD, sopra LZMA (512 KB)
+constexpr size_t CODEC_SWITCH_SIZE     = 512ULL * 1024;
+// Dimensione massima nome file nel TOC
+constexpr uint16_t MAX_NAME_LEN        = 4096;
 
 enum class Codec : uint8_t {
     ZSTD = 0,

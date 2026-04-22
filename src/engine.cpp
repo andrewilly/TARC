@@ -18,7 +18,6 @@
 #endif
 
 // ─── INCLUDE CODEC ─────────────────────────────────────────────────────────────
-// Tutti i codec sono ora effettivamente utilizzati, non solo linkati.
 #include <zstd.h>
 #include <lz4.h>
 #include <lzma.h>
@@ -33,7 +32,6 @@ namespace fs = std::filesystem;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NAMESPACE ANONIMO — Helper interni, non visibili all'linker
-// Intervento #7: tutte le funzioni helper private sono qui dentro
 // ═══════════════════════════════════════════════════════════════════════════════
 namespace {
 
@@ -77,21 +75,17 @@ void resolve_wildcards(const std::string& pattern, std::vector<std::string>& out
 bool match_pattern(const std::string& full_path, const std::string& pattern) {
     if (pattern.empty()) return true;
 
-    // Estrae il nome del file dal percorso completo se il pattern non contiene slash.
     std::string target = full_path;
     if (pattern.find('/') == std::string::npos && pattern.find('\\') == std::string::npos) {
         target = fs::path(full_path).filename().string();
     }
 
-    // Gestione Wildcard *
     size_t star_pos = pattern.find('*');
 
     if (star_pos == std::string::npos) {
-        // Nessun asterisco: corrispondenza parziale (contiene la stringa)
         return (target.find(pattern) != std::string::npos);
     }
 
-    // C'e' un asterisco: formato Prefisso*Suffix
     std::string prefix = pattern.substr(0, star_pos);
     std::string suffix = pattern.substr(star_pos + 1);
 
@@ -106,8 +100,6 @@ bool match_pattern(const std::string& full_path, const std::string& pattern) {
 }
 
 // ─── LISTA FORMATI INCOMPRESSIBILI ESTESA ─────────────────────────────────────
-// Intervento #8: lista significativamente ampliata per evitare compressione
-// inutile su file gia' compressi, con risparmio di tempo e dimensione.
 const std::set<std::string>& incompressible_extensions() {
     static const std::set<std::string> skip = {
         // Archivi compressi
@@ -134,10 +126,7 @@ const std::set<std::string>& incompressible_extensions() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPRESS WORKER MULTI-CODEC — Intervento #1
-// Ogni codec e' ora effettivamente implementato, non solo dichiarato.
-// Se un codec fallisce, fallback automatico a STORE.
-// Se la compressione produce dati piu' grandi dell'originale, fallback a STORE.
+// COMPRESS WORKER MULTI-CODEC
 // ═══════════════════════════════════════════════════════════════════════════════
 
 struct ChunkResult {
@@ -153,13 +142,12 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     res.codec = chosen_codec;
     res.success = false;
 
-    // Dati vuoti: successo immediato
     if (raw_data.empty()) {
         res.success = true;
         return res;
     }
 
-    // ── STORE (nessuna compressione) ──────────────────────────────────────────
+    // ── STORE ─────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::STORE) {
         res.compressed_data = std::move(raw_data);
         res.success = true;
@@ -177,7 +165,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 
         if (!ZSTD_isError(result)) {
             res.compressed_data.resize(result);
-            // Se compresso > originale, fallback a STORE
             if (res.compressed_data.size() >= raw_data.size()) {
                 res.compressed_data = std::move(raw_data);
                 res.codec = Codec::STORE;
@@ -208,7 +195,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 
         if (result > 0) {
             res.compressed_data.resize(static_cast<size_t>(result));
-            // Se compresso > originale, fallback a STORE
             if (res.compressed_data.size() >= raw_data.size()) {
                 res.compressed_data = std::move(raw_data);
                 res.codec = Codec::STORE;
@@ -226,13 +212,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     // ── BROTLI ────────────────────────────────────────────────────────────────
     if (chosen_codec == Codec::BR) {
         size_t max_out = BrotliEncoderMaxCompressedSize(raw_data.size());
-        if (max_out == 0) {
-            // Input troppo grande per Brotli
-            res.compressed_data = std::move(raw_data);
-            res.codec = Codec::STORE;
-            res.success = true;
-            return res;
-        }
         res.compressed_data.resize(max_out);
         int brotli_level = std::clamp(level, 0, 11);
         size_t encoded_size = max_out;
@@ -243,7 +222,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 
         if (ok == BROTLI_TRUE) {
             res.compressed_data.resize(encoded_size);
-            // Se compresso > originale, fallback a STORE
             if (res.compressed_data.size() >= raw_data.size()) {
                 res.compressed_data = std::move(raw_data);
                 res.codec = Codec::STORE;
@@ -272,7 +250,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 
         if (ret == LZMA_OK) {
             res.compressed_data.resize(out_pos);
-            // Se compresso > originale, fallback a STORE
             if (res.compressed_data.size() >= raw_data.size()) {
                 res.compressed_data = std::move(raw_data);
                 res.codec = Codec::STORE;
@@ -295,22 +272,19 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DECOMPRESS HELPER — Supporto multi-codec in estrazione
-// Intervento #1: decompressione effettiva per tutti i codec
+// DECOMPRESS HELPER — Multi-codec
 // ═══════════════════════════════════════════════════════════════════════════════
 
 bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
                       std::vector<char>& out_data, uint32_t raw_size) {
     out_data.resize(raw_size);
 
-    // ── STORE ─────────────────────────────────────────────────────────────────
     if (codec == static_cast<uint32_t>(Codec::STORE)) {
         if (raw_size > comp_data.size()) return false;
         memcpy(out_data.data(), comp_data.data(), raw_size);
         return true;
     }
 
-    // ── ZSTD ──────────────────────────────────────────────────────────────────
     if (codec == static_cast<uint32_t>(Codec::ZSTD)) {
         size_t result = ZSTD_decompress(
             out_data.data(), raw_size,
@@ -319,7 +293,6 @@ bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
         return true;
     }
 
-    // ── LZ4 ───────────────────────────────────────────────────────────────────
     if (codec == static_cast<uint32_t>(Codec::LZ4)) {
         int result = LZ4_decompress_safe(
             comp_data.data(), out_data.data(),
@@ -328,7 +301,6 @@ bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
         return result > 0;
     }
 
-    // ── BROTLI ────────────────────────────────────────────────────────────────
     if (codec == static_cast<uint32_t>(Codec::BR)) {
         size_t decoded_size = raw_size;
         BrotliDecoderResult result = BrotliDecoderDecompress(
@@ -337,7 +309,6 @@ bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
         return result == BROTLI_DECODER_RESULT_SUCCESS && decoded_size == raw_size;
     }
 
-    // ── LZMA ──────────────────────────────────────────────────────────────────
     if (codec == static_cast<uint32_t>(Codec::LZMA)) {
         size_t src_p = 0, dst_p = 0;
         uint64_t limit = UINT64_MAX;
@@ -348,14 +319,11 @@ bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
         return (ret == LZMA_OK || ret == LZMA_STREAM_END);
     }
 
-    // Codec sconosciuto
     return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// READ NEXT CHUNK HELPER — Intervento #2 + #3
-// Elimina la duplicazione di codice in extract().
-// Verifica checksum XXH64 se presente (retrocompatibile: checksum=0 → skip).
+// READ NEXT CHUNK HELPER — Con verifica checksum
 // ═══════════════════════════════════════════════════════════════════════════════
 
 struct DecodedChunk {
@@ -368,7 +336,7 @@ DecodedChunk read_next_chunk(FILE* f) {
     ::ChunkHeader ch;
 
     if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
-        return result;  // End mark o errore
+        return result;
     }
 
     std::vector<char> comp(ch.comp_size);
@@ -376,8 +344,7 @@ DecodedChunk read_next_chunk(FILE* f) {
         return result;
     }
 
-    // Intervento #3: Verifica checksum XXH64 se presente
-    // Retrocompatibile: vecchi archivi hanno checksum=0, il check viene saltato
+    // Verifica checksum XXH64 se presente (retrocompatibile: checksum=0 → skip)
     if (ch.checksum != 0) {
         XXH64_hash_t computed = XXH64(comp.data(), ch.comp_size, 0);
         if (computed != ch.checksum) {
@@ -398,8 +365,7 @@ DecodedChunk read_next_chunk(FILE* f) {
 } // namespace anonimo
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CODEC SELECTOR — Intervento #8
-// Selezione intelligente basata su livello, dimensione ed estensione
+// CODEC SELECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
 namespace CodecSelector {
@@ -409,21 +375,17 @@ namespace CodecSelector {
         return incompressible_extensions().find(e) == incompressible_extensions().end();
     }
 
-    // Intervento #1: selezione codec basata sul livello di compressione
-    // Level 1-2: LZ4 (velocita' massima)
-    // Level 3-5: ZSTD per piccoli, LZMA per grandi (bilanciato)
-    // Level 6-9: LZMA sempre (massimo rapporto di compressione)
     Codec select(const std::string& path, size_t size, int level) {
         if (!is_compressibile(fs::path(path).extension().string())) return Codec::STORE;
 
         if (level <= 2) return Codec::LZ4;
-        if (level <= 5) return (size < 512 * 1024) ? Codec::ZSTD : Codec::LZMA;
+        if (level <= 5) return (size < CODEC_SWITCH_SIZE) ? Codec::ZSTD : Codec::LZMA;
         return Codec::LZMA;
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENGINE — Implementazione principale
+// ENGINE — Implementazione principale v2.02
 // ═══════════════════════════════════════════════════════════════════════════════
 
 namespace Engine {
@@ -445,12 +407,9 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPRESS — Interventi #1, #3, #4, #6, #10
-// - Multi-codec effettivo (#1)
-// - Checksum XXH64 nei ChunkHeader (#3)
-// - Gestione file > 256MB (#4)
-// - RAII FilePtr (#6)
-// - Check errori fwrite (#10)
+// COMPRESS — v2.02
+// Intervento #12: Scritture atomiche (temp file + rename)
+// Intervento #13: Validazione magic + versione in append
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs, bool append, int level) {
@@ -463,50 +422,87 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     std::map<uint64_t, uint32_t> hash_map;
     ::Header h{};
 
-    // ── APPEND: leggi TOC esistente ───────────────────────────────────────────
+    // ── APPEND: leggi e VALIDA TOC esistente ──────────────────────────────────
+    // Intervento #13: validazione magic + versione prima di appendere
     if (append && fs::exists(archive_path)) {
         FilePtr f_old(fopen(archive_path.c_str(), "rb"));
-        if (f_old) {
-            if (fread(&h, sizeof(h), 1, f_old) != 1) return {false, "Header archivio corrotto."};
-            IO::read_toc(f_old, h, final_toc);
-            for (size_t k = 0; k < final_toc.size(); ++k) {
-                if (!final_toc[k].meta.is_duplicate) hash_map[final_toc[k].meta.xxhash] = static_cast<uint32_t>(k);
-            }
+        if (!f_old) return {false, "Impossibile aprire l'archivio per lettura."};
+        if (fread(&h, sizeof(h), 1, f_old) != 1) return {false, "Header archivio corrotto."};
+
+        // VALIDAZIONE SICUREZZA: il file DEVE essere un archivio TARC valido
+        if (!IO::validate_header(h)) {
+            return {false, "Il file non e' un archivio TARC valido o versione incompatibile. "
+                           "Impossibile eseguire append."};
+        }
+
+        if (!IO::read_toc(f_old, h, final_toc)) {
+            return {false, "Impossibile leggere TOC dall'archivio."};
+        }
+        for (size_t k = 0; k < final_toc.size(); ++k) {
+            if (!final_toc[k].meta.is_duplicate) hash_map[final_toc[k].meta.xxhash] = static_cast<uint32_t>(k);
         }
     } else {
         memcpy(h.magic, TARC_MAGIC, 4);
         h.version = TARC_VERSION;
     }
 
-    // Intervento #6: RAII FilePtr — fclose automatico
-    FilePtr f(fopen(archive_path.c_str(), append ? "rb+" : "wb"));
-    if (!f) return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio."};
+    // ── INTERVENTO #12: SCRITTURA ATOMICA ─────────────────────────────────────
+    // Scrive sempre su un file temporaneo nella stessa directory del target.
+    // Solo a operazione completata con successo, rinomina atomicamente.
+    // In caso di crash, il file originale rimane intatto.
+    std::string actual_write_path = archive_path;
+    std::string temp_path;
+    bool using_temp = !append;  // Per creazione usa sempre temp, per append usiamo temp dopo
 
-    // Intervento #5: seek64 per archivi > 2GB
     if (append) {
-        if (!IO::seek64(f, static_cast<int64_t>(h.toc_offset), SEEK_SET))
-            return {false, "Errore seek nell'archivio."};
+        // In append, dobbiamo copiare prima i dati esistenti su un temp,
+        // poi lavorare sul temp. Questo protegge l'originale in caso di crash.
+        temp_path = IO::make_temp_path(archive_path);
+        try {
+            fs::copy_file(archive_path, temp_path, fs::copy_options::overwrite_existing);
+        } catch (...) {
+            return {false, "Impossibile creare file temporaneo per append atomico."};
+        }
+        actual_write_path = temp_path;
+        using_temp = true;
     } else {
-        if (fwrite(&h, sizeof(h), 1, f) != 1) return {false, "Errore scrittura header."};
+        temp_path = IO::make_temp_path(archive_path);
+        actual_write_path = temp_path;
+        using_temp = true;
+    }
+
+    FilePtr f(fopen(actual_write_path.c_str(), append ? "rb+" : "wb"));
+    if (!f) {
+        // Cleanup temp file se fallisce apertura
+        if (using_temp && !temp_path.empty()) IO::safe_remove(temp_path);
+        return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio."};
+    }
+
+    if (append) {
+        if (!IO::seek64(f, static_cast<int64_t>(h.toc_offset), SEEK_SET)) {
+            IO::safe_remove(temp_path);
+            return {false, "Errore seek nell'archivio."};
+        }
+    } else {
+        if (fwrite(&h, sizeof(h), 1, f) != 1) {
+            IO::safe_remove(temp_path);
+            return {false, "Errore scrittura header."};
+        }
     }
 
     // ── SOLID BUFFER E GESTIONE CHUNK ─────────────────────────────────────────
     std::vector<char> solid_buf;
-    solid_buf.reserve(256 * 1024 * 1024);
+    solid_buf.reserve(CHUNK_THRESHOLD);
 
-    const size_t CHUNK_THRESHOLD = 256 * 1024 * 1024;
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
-    Codec last_codec = Codec::LZMA;  // Traccia l'ultimo codec usato
+    Codec last_codec = Codec::LZMA;
 
-    // Intervento #3: Scrittura chunk con checksum XXH64
     auto write_chunk_result = [&](ChunkResult& res) -> bool {
         if (!res.success) return false;
         ::ChunkHeader ch = { static_cast<uint32_t>(res.codec), res.raw_size,
                               static_cast<uint32_t>(res.compressed_data.size()), 0 };
-        // Checksum XXH64 del dato compresso
         ch.checksum = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
-        // Intervento #10: check fwrite
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
         if (fwrite(res.compressed_data.data(), 1, res.compressed_data.size(), f) != res.compressed_data.size())
             return false;
@@ -514,7 +510,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return true;
     };
 
-    // Attende e scrive il chunk async pendente
     auto write_pending_async = [&]() -> bool {
         if (!worker_active) return true;
         ChunkResult res = future_chunk.get();
@@ -522,7 +517,6 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return write_chunk_result(res);
     };
 
-    // Svuota il solid buffer avviando compressione async
     auto flush_solid_buf = [&](Codec codec) -> bool {
         if (solid_buf.empty()) return true;
         if (!write_pending_async()) return false;
@@ -610,11 +604,11 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
 
-            // Intervento #4: Gestione file grandi (> 256MB)
-            // Se il file supera la soglia, prima svuota il buffer corrente
-            // Il file grande diventera' il suo chunk dedicato
             if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
-                if (!flush_solid_buf(last_codec)) return {false, "Errore compressione chunk."};
+                if (!flush_solid_buf(last_codec)) {
+                    IO::safe_remove(temp_path);
+                    return {false, "Errore compressione chunk."};
+                }
             }
 
             last_codec = static_cast<Codec>(fe.meta.codec);
@@ -625,36 +619,52 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     }
 
     // ── FLUSH FINALE ──────────────────────────────────────────────────────────
-    // Attende l'ultimo chunk async
-    if (!write_pending_async()) return {false, "Errore chunk finale (async)."};
-
-    // Compressione dell'ultimo solid_buf residuo
-    if (!solid_buf.empty()) {
-        ChunkResult last = compress_worker(std::move(solid_buf), level, last_codec);
-        if (!last.success) return {false, "Errore compressione chunk finale."};
-        if (!write_chunk_result(last)) return {false, "Errore scrittura chunk finale."};
+    if (!write_pending_async()) {
+        IO::safe_remove(temp_path);
+        return {false, "Errore chunk finale (async)."};
     }
 
-    // End mark
-    ::ChunkHeader end_mark = {0, 0, 0, 0};
-    if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) return {false, "Errore scrittura end mark."};
+    if (!solid_buf.empty()) {
+        ChunkResult last = compress_worker(std::move(solid_buf), level, last_codec);
+        if (!last.success || !write_chunk_result(last)) {
+            IO::safe_remove(temp_path);
+            return {false, "Errore compressione/scrittura chunk finale."};
+        }
+    }
 
-    // Scrittura TOC
-    if (!IO::write_toc(f, h, final_toc)) return {false, "Errore scrittura TOC."};
+    ::ChunkHeader end_mark = {0, 0, 0, 0};
+    if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
+        IO::safe_remove(temp_path);
+        return {false, "Errore scrittura end mark."};
+    }
+
+    if (!IO::write_toc(f, h, final_toc)) {
+        IO::safe_remove(temp_path);
+        return {false, "Errore scrittura TOC."};
+    }
+
+    // Il file e' completo. Chiudiamo prima della rename.
+    f.~FilePtr();  // Chiudi esplicitamente prima della rename
+
+    // ── INTERVENTO #12: RENAME ATOMICA ────────────────────────────────────────
+    // Sostituisce il file originale con il temporaneo completo.
+    // Operazione atomica: o avviene completamente o non avviene.
+    if (using_temp && !temp_path.empty()) {
+        if (!IO::atomic_rename(temp_path, archive_path)) {
+            // La rename e' fallita. Il temp file e' completo e valido.
+            // Non eliminiamo il temp: l'utente puo' recuperarne il contenuto.
+            UI::print_warning("Rename atomica fallita. File temporaneo valido: " + temp_path);
+            return {false, "Errore rename atomica. File temporaneo preservato: " + temp_path};
+        }
+    }
 
     result.ok = true;
     return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EXTRACT — Interventi #1, #2, #3, #4, #5, #6
-// - Multi-codec decompressione (#1)
-// - Refactor con read_next_chunk helper (#2)
-// - Verifica checksum (#3)
-// - Gestione file spanning su piu' chunk (#4)
-// - seek64 per archivi grandi (#5)
-// - RAII FilePtr (#6)
-// - Estrazione duplicati migliorata
+// EXTRACT — v2.02
+// Intervento #11: Path Traversal Protection (sanitize_path)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset, bool flat_mode) {
@@ -671,6 +681,11 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) return {false, "Header corrotto o illeggibile."};
+
+    // Validazione header anche in estrazione
+    if (!IO::validate_header(h)) {
+        return {false, "File non e' un archivio TARC valido."};
+    }
 
     std::vector<::FileEntry> toc;
     h.toc_offset += offset;
@@ -699,7 +714,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
         }
 
-        // ── DUPLICATI: nessun dato nel flusso chunk ────────────────────────────
+        // ── DUPLICATI ─────────────────────────────────────────────────────────
         if (fe.meta.is_duplicate) {
             if (should_extract) {
                 std::string final_path = fe.name;
@@ -720,10 +735,19 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     final_path = filename;
                 }
 
+                // INTERVENTO #11: Sanitizza percorso prima dell'estrazione
+                if (!test_only) {
+                    std::string safe_path = IO::sanitize_path(final_path);
+                    if (safe_path.empty()) {
+                        UI::print_warning("Percorso pericoloso saltato: " + final_path);
+                        continue;
+                    }
+                    final_path = safe_path;
+                }
+
                 UI::print_progress(i + 1, toc.size(), fe.name);
 
                 if (!test_only) {
-                    // Cerca il file originale gia' estratto e copialo
                     auto it = extracted_paths.find(fe.meta.duplicate_of_idx);
                     if (it != extracted_paths.end()) {
                         try {
@@ -735,7 +759,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                         UI::print_warning("Originale non estratto per duplicato: " + fe.name);
                     }
                 } else {
-                    // Test: il duplicato ha lo stesso hash dell'originale
                     UI::print_extract(fe.name, fe.meta.orig_size, true, true);
                 }
                 result.bytes_out += fe.meta.orig_size;
@@ -744,14 +767,12 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             continue;
         }
 
-        // ── NON-DUPLICATO: leggi dati dal flusso chunk ─────────────────────────
-        // Intervento #4: gestisce file che spannano piu' chunk
+        // ── NON-DUPLICATO ──────────────────────────────────────────────────────
         std::vector<char> file_data;
         size_t remaining = fe.meta.orig_size;
         size_t src_pos = block_pos;
 
         while (remaining > 0) {
-            // Se abbiamo consumato il chunk corrente, leggi il prossimo
             if (src_pos >= current_block.size()) {
                 DecodedChunk chunk = read_next_chunk(f);
                 if (!chunk.valid) {
@@ -779,7 +800,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         UI::print_progress(i + 1, toc.size(), fe.name);
 
-        // Gestione percorso flat
         std::string final_path = fe.name;
         if (flat_mode) {
             fs::path p(fe.name);
@@ -798,7 +818,14 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             final_path = filename;
         }
 
+        // INTERVENTO #11: Sanitizza percorso prima della scrittura su disco
         if (!test_only) {
+            std::string safe_path = IO::sanitize_path(final_path);
+            if (safe_path.empty()) {
+                UI::print_warning("Percorso pericoloso saltato: " + final_path);
+                continue;
+            }
+            final_path = safe_path;
             IO::write_file_to_disk(final_path, file_data.data(), file_data.size(), fe.meta.timestamp);
         }
 
@@ -830,6 +857,9 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     }
     ::Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) return {false, "Errore Header"};
+
+    // Validazione header in list
+    if (!IO::validate_header(h)) return {false, "File non e' un archivio TARC valido."};
 
     std::vector<::FileEntry> toc;
     h.toc_offset += offset;

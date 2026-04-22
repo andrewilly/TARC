@@ -27,8 +27,7 @@ void enable_vtp() {
 #endif
 }
 
-// ─── HELP (Stile UPX 5.1.1) ──────────────────────────────────────────────────
-// Intervento #9: Help aggiornato con indicazione codec multipli
+// ─── HELP ─────────────────────────────────────────────────────────────────────
 void show_help() {
     const char* C = Color::CYAN;
     const char* R = Color::RESET;
@@ -56,7 +55,7 @@ void show_help() {
     printf("  %s--flat%s       Estrazione Flat: ignora percorsi, file nella cartella corrente\n", W, R);
 
     printf("\nCodecs: ZSTD | LZMA | LZ4 | Brotli | STORE (auto-selezione)\n");
-    printf("Engine: Solid 256MB, Deduplicazione XXH64, Chunk Checksum, 64-bit I/O\n\n");
+    printf("Security: Path Traversal Protection, Atomic Writes, Header Validation\n\n");
 
     printf("Type 'tarc --help' for more detailed help.\n");
     printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n\n", D, R);
@@ -65,13 +64,12 @@ void show_help() {
 // ─── BANNER ──────────────────────────────────────────────────────────────────
 void show_banner() {
     printf("%s========================================================================\n", Color::CYAN);
-    printf("TARC STRIKE v2.01             Advanced Solid Compression\n");
+    printf("TARC STRIKE v2.02             Advanced Solid Compression\n");
     printf("Copyright (C) 2026            Andre Willy Rizzo\n");
     printf("========================================================================%s\n", Color::RESET);
 }
 
 // ─── PROGRESS BAR ───────────────────────────────────────────────────────────
-// Intervento #9: uniformato a printf per consistenza
 void print_progress(size_t current, size_t total, const std::string& current_file) {
     float percent = (total > 0) ? (static_cast<float>(current) / total * 100.0f) : 100.0f;
     int width = 25;
@@ -155,7 +153,6 @@ void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Cod
             Color::RESET);
 }
 
-// Intervento #9: uniformato a printf puro (rimosso std::cout misto)
 void print_summary(const TarcResult& r, const std::string& op) {
     printf("\n");
     if (!r.ok) {

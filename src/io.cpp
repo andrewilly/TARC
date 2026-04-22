@@ -5,10 +5,139 @@
 #include <vector>
 #include <chrono>
 #include <cstring>
+#include <random>
+#include <algorithm>
+#include <sstream>
+
+#ifdef _WIN32
+    #include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace IO {
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SICUREZZA PERCORSI — Intervento #11
+// Previene Path Traversal: un archivio malevolo potrebbe contenere percorsi
+// come "../../etc/passwd" o percorsi assoluti che scrivono fuori dalla
+// directory di estrazione. Questa funzione:
+// 1. Rifiuta percorsi assoluti (C:\, /, \)
+// 2. Rimuove componenti ".." (parent directory traversal)
+// 3. Normalizza i separatori a /
+// 4. Rifiuta percorsi che tentano di uscire dalla radice relativa
+// ═══════════════════════════════════════════════════════════════════════════════
+
+std::string sanitize_path(const std::string& path) {
+    if (path.empty()) return "";
+
+    // Rifiuta percorsi assoluti
+#ifdef _WIN32
+    // C:\, \\, X:\, ecc.
+    if (path.size() >= 2 && path[1] == ':') return "";
+    if (path.size() >= 2 && path[0] == '\\' && path[1] == '\\') return "";
+#endif
+    if (!path.empty() && path[0] == '/') return "";
+
+    // Normalizza i separatori a /
+    std::string normalized = path;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+
+    // Rimuovi doppi slash
+    std::string::iterator new_end = std::unique(normalized.begin(), normalized.end(),
+        [](char a, char b) { return a == '/' && b == '/'; });
+    normalized.erase(new_end, normalized.end());
+
+    // Split in componenti e ricostruisci senza ".."
+    std::vector<std::string> parts;
+    std::string part;
+    std::istringstream iss(normalized);
+    while (std::getline(iss, part, '/')) {
+        if (part.empty() || part == ".") continue;
+        if (part == "..") {
+            // Se non possiamo tornare indietro (nessun componente), rifiuta
+            if (parts.empty()) return "";
+            parts.pop_back();
+        } else {
+            // Rifiuta componenti con caratteri pericolosi
+            // (caratteri non stampabili, null byte, ecc.)
+            for (char c : part) {
+                if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return "";
+            }
+            parts.push_back(part);
+        }
+    }
+
+    if (parts.empty()) return "";
+
+    // Ricostruisci il percorso sicuro
+    std::string safe_path;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) safe_path += '/';
+        safe_path += parts[i];
+    }
+    return safe_path;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VALIDAZIONE HEADER — Intervento #13
+// Verifica che un file sia un archivio TARC valido prima di eseguire append.
+// Controlla il magic number e la versione per compatibilita'.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool validate_header(const Header& h) {
+    // Verifica magic number
+    if (memcmp(h.magic, TARC_MAGIC, 4) != 0) return false;
+
+    // Verifica versione: deve essere tra 200 e TARC_VERSION (corrente)
+    // Questo permette append da archivi v200 in poi
+    if (h.version < 200 || h.version > TARC_VERSION) return false;
+
+    // Verifica sanity check: toc_offset deve essere almeno sizeof(Header)
+    if (h.toc_offset > 0 && h.toc_offset < sizeof(Header)) return false;
+
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCRITTURE ATOMICHE — Intervento #12
+// Genera un nome file temporaneo nella stessa directory del target,
+// cosi' la rename() finale e' atomica (stesso filesystem).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+std::string make_temp_path(const std::string& target_path) {
+    // Genera 8 caratteri hex randomici per unicita'
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
+    uint32_t r = dist(gen);
+
+    char hex[9];
+    snprintf(hex, sizeof(hex), "%08x", r);
+
+    return target_path + ".tmp" + hex;
+}
+
+bool atomic_rename(const std::string& from, const std::string& to) {
+#ifdef _WIN32
+    // MoveFileExA con MOVEFILE_REPLACE_EXISTING e' atomica su NTFS
+    return MoveFileExA(from.c_str(), to.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    // rename() e' atomica su POSIX (stesso filesystem)
+    return rename(from.c_str(), to.c_str()) == 0;
+#endif
+}
+
+bool safe_remove(const std::string& path) {
+    std::error_code ec;
+    fs::remove(path, ec);
+    return !ec;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNZIONI I/O ESISTENTI
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // Garantisce che l'estensione sia sempre .strk
 std::string ensure_ext(const std::string& path) {
@@ -37,15 +166,14 @@ bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (!seek64(f, static_cast<int64_t>(h.toc_offset), SEEK_SET)) return false;
 
     toc.clear();
-    // Riserva spazio per il TOC se il numero di file e' alto, per performance
     toc.reserve(h.file_count);
 
     for (uint32_t i = 0; i < h.file_count; ++i) {
         FileEntry fe;
         if (fread(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
 
-        // Protezione contro name_len corrotto
-        if (fe.meta.name_len > 4096) return false;
+        // Protezione contro name_len corrotto (usa costante nominata)
+        if (fe.meta.name_len > MAX_NAME_LEN) return false;
 
         std::vector<char> name_buf(fe.meta.name_len + 1, 0);
         if (fread(name_buf.data(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
@@ -65,7 +193,8 @@ bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     h.file_count = static_cast<uint32_t>(toc.size());
 
     for (auto& fe : toc) {
-        fe.meta.name_len = static_cast<uint16_t>(fe.name.length());
+        fe.meta.name_len = static_cast<uint16_t>(
+            std::min(static_cast<size_t>(fe.name.length()), static_cast<size_t>(MAX_NAME_LEN)));
         if (fwrite(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
         if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }
@@ -88,7 +217,6 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
             if (ec) return false;
         }
 
-        // Apertura file con eccezioni disabilitate per controllo manuale
         std::ofstream out(path, std::ios::binary);
         if (!out) return false;
 
@@ -97,12 +225,10 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
         }
         out.close();
 
-        // Imposta timestamp solo se scrittura ok
         if (out.good()) {
              auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
              std::error_code ec;
              fs::last_write_time(p, fs::file_time_type(sys_time.time_since_epoch()), ec);
-             // Ignoriamo errore timestamp critico (non tutti i FS supportano i microsecondi)
         }
 
         return true;
