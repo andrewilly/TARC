@@ -21,24 +21,91 @@ endif()
 include_directories(include)
 
 # -----------------------------------------------------------------------------
-# Cerca LZMA (liblzma)
+# Cerca LZMA (usa pkg-config su Unix, percorsi diretti su Windows)
 # -----------------------------------------------------------------------------
-find_package(PkgConfig REQUIRED)
-
-# LZMA - si chiama liblzma su tutte le piattaforme
-pkg_check_modules(LIBLZMA REQUIRED liblzma)
-
-# XXHASH - nome diverso su diverse piattaforme
-if(APPLE)
-    # Su macOS il pacchetto si chiama xxhash (senza lib)
-    pkg_check_modules(XXHASH REQUIRED xxhash)
+if(UNIX)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBLZMA REQUIRED liblzma)
+    set(LZMA_INCLUDE_DIRS ${LIBLZMA_INCLUDE_DIRS})
+    set(LZMA_LIBRARIES ${LIBLZMA_LIBRARIES})
 else()
-    # Su Linux e altri si chiama libxxhash
-    pkg_check_modules(XXHASH REQUIRED libxxhash)
+    find_path(LZMA_INCLUDE_DIR lzma.h
+        PATHS "C:/vcpkg/installed/x64-windows/include"
+              "C:/Program Files/liblzma/include"
+              "$ENV{VCPKG_ROOT}/installed/x64-windows/include"
+    )
+    find_library(LZMA_LIBRARY lzma
+        PATHS "C:/vcpkg/installed/x64-windows/lib"
+              "C:/Program Files/liblzma/lib"
+              "$ENV{VCPKG_ROOT}/installed/x64-windows/lib"
+    )
+    set(LZMA_INCLUDE_DIRS ${LZMA_INCLUDE_DIR})
+    set(LZMA_LIBRARIES ${LZMA_LIBRARY})
 endif()
 
-# ZLIB per CRC32
-pkg_check_modules(ZLIB REQUIRED zlib)
+if(NOT LZMA_INCLUDE_DIRS OR NOT LZMA_LIBRARIES)
+    message(FATAL_ERROR "LZMA library not found. Install liblzma-dev (Linux), xz (macOS), or liblzma (Windows)")
+endif()
+
+# -----------------------------------------------------------------------------
+# Cerca XXHASH (senza pkg-config per compatibilità cross-platform)
+# -----------------------------------------------------------------------------
+if(UNIX)
+    # Cerca in percorsi standard Unix
+    find_path(XXHASH_INCLUDE_DIR xxhash.h
+        PATHS /usr/include /usr/local/include /opt/homebrew/include
+    )
+    find_library(XXHASH_LIBRARY
+        NAMES xxhash libxxhash
+        PATHS /usr/lib /usr/local/lib /opt/homebrew/lib
+    )
+else()
+    # Windows
+    find_path(XXHASH_INCLUDE_DIR xxhash.h
+        PATHS "C:/vcpkg/installed/x64-windows/include"
+              "C:/Program Files/xxhash/include"
+              "$ENV{VCPKG_ROOT}/installed/x64-windows/include"
+    )
+    find_library(XXHASH_LIBRARY
+        NAMES xxhash libxxhash
+        PATHS "C:/vcpkg/installed/x64-windows/lib"
+              "C:/Program Files/xxhash/lib"
+              "$ENV{VCPKG_ROOT}/installed/x64-windows/lib"
+    )
+endif()
+
+if(NOT XXHASH_INCLUDE_DIR OR NOT XXHASH_LIBRARY)
+    message(FATAL_ERROR "XXHASH library not found. Install libxxhash-dev (Linux), xxhash (macOS), or xxhash (Windows)")
+endif()
+
+# -----------------------------------------------------------------------------
+# Cerca ZLIB (per CRC32)
+# -----------------------------------------------------------------------------
+if(UNIX)
+    find_path(ZLIB_INCLUDE_DIR zlib.h
+        PATHS /usr/include /usr/local/include /opt/homebrew/include
+    )
+    find_library(ZLIB_LIBRARY
+        NAMES z
+        PATHS /usr/lib /usr/local/lib /opt/homebrew/lib
+    )
+else()
+    find_path(ZLIB_INCLUDE_DIR zlib.h
+        PATHS "C:/vcpkg/installed/x64-windows/include"
+              "C:/Program Files/zlib/include"
+              "$ENV{VCPKG_ROOT}/installed/x64-windows/include"
+    )
+    find_library(ZLIB_LIBRARY
+        NAMES zlib z
+        PATHS "C:/vcpkg/installed/x64-windows/lib"
+              "C:/Program Files/zlib/lib"
+              "$ENV{VCPKG_ROOT}/installed/x64-windows/lib"
+    )
+endif()
+
+if(NOT ZLIB_INCLUDE_DIR OR NOT ZLIB_LIBRARY)
+    message(FATAL_ERROR "ZLIB library not found. Install zlib1g-dev (Linux), zlib (macOS), or zlib (Windows)")
+endif()
 
 # -----------------------------------------------------------------------------
 # Sorgenti
@@ -55,16 +122,16 @@ set(SOURCES
 add_executable(tarc ${SOURCES})
 
 target_include_directories(tarc PRIVATE
-    ${LIBLZMA_INCLUDE_DIRS}
-    ${XXHASH_INCLUDE_DIRS}
-    ${ZLIB_INCLUDE_DIRS}
+    ${LZMA_INCLUDE_DIRS}
+    ${XXHASH_INCLUDE_DIR}
+    ${ZLIB_INCLUDE_DIR}
     include
 )
 
 target_link_libraries(tarc
-    ${LIBLZMA_LIBRARIES}
-    ${XXHASH_LIBRARIES}
-    ${ZLIB_LIBRARIES}
+    ${LZMA_LIBRARIES}
+    ${XXHASH_LIBRARY}
+    ${ZLIB_LIBRARY}
 )
 
 find_package(Threads REQUIRED)
@@ -76,8 +143,8 @@ message(STATUS "")
 message(STATUS "========================================")
 message(STATUS "TARC Strike v2.0")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "LZMA: ${LIBLZMA_LIBRARIES}")
-message(STATUS "XXHASH: ${XXHASH_LIBRARIES}")
-message(STATUS "ZLIB: ${ZLIB_LIBRARIES}")
+message(STATUS "LZMA: ${LZMA_LIBRARIES}")
+message(STATUS "XXHASH: ${XXHASH_LIBRARY}")
+message(STATUS "ZLIB: ${ZLIB_LIBRARY}")
 message(STATUS "========================================")
 message(STATUS "")
