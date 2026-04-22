@@ -48,20 +48,41 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential cmake liblzma-dev libxxhash-dev
 
-    # Windows: setup vcpkg e installa librerie
-    - name: Setup vcpkg (Windows)
+    # Windows: setup msys2 e installa librerie
+    - name: Setup MSYS2 (Windows)
       if: runner.os == 'Windows'
-      uses: lukka/run-vcpkg@v11
+      uses: msys2/setup-msys2@v2
       with:
-        vcpkgGitCommitId: 501db0f17ef6df184fcdbfbe0f87cde2493b6f63
-        vcpkgJsonGlob: 'vcpkg.json'
+        msystem: MINGW64
+        install: |
+          mingw-w64-x86_64-gcc
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-lzma
+          mingw-w64-x86_64-xxhash
+          mingw-w64-x86_64-make
 
-    - name: Install dependencies via vcpkg (Windows)
+    # Windows: compila con MSYS2
+    - name: Build with MSYS2 (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: |
+        mkdir -p build
+        cd build
+        cmake .. -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release
+        cmake --build . --parallel 2
+
+    # Windows: trova eseguibile
+    - name: Find executable (Windows)
       if: runner.os == 'Windows'
       shell: bash
       run: |
-        vcpkg install liblzma:x64-windows-static
-        vcpkg install xxhash:x64-windows-static
+        if [ -f "build/tarc.exe" ]; then
+          echo "EXECUTABLE_PATH=build/tarc.exe" >> $GITHUB_ENV
+        elif [ -f "build/Release/tarc.exe" ]; then
+          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $GITHUB_ENV
+        else
+          find build -name "tarc.exe" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
+        fi
 
     # macOS Intel (macos-13) - installa dipendenze x86_64
     - name: Install dependencies (macOS Intel)
@@ -75,12 +96,8 @@ jobs:
       run: |
         brew install cmake xz xxhash
 
-    - name: Setup MSVC (Windows)
-      if: runner.os == 'Windows'
-      uses: ilammy/msvc-dev-cmd@v1
-
-    - name: Configure CMake (Linux/Windows)
-      if: runner.os != 'macOS'
+    - name: Configure CMake (Linux/macOS)
+      if: runner.os != 'Windows'
       shell: bash
       run: |
         mkdir -p build
@@ -91,19 +108,8 @@ jobs:
           -DCMAKE_C_STANDARD=11 \
           ${{ matrix.cmake_arch_flags }}
 
-    - name: Configure CMake (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: |
-        mkdir -p build
-        cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=17 \
-          -DCMAKE_C_STANDARD=11 \
-          ${{ matrix.cmake_arch_flags }}
-
-    - name: Build Project
+    - name: Build Project (Linux/macOS)
+      if: runner.os != 'Windows'
       shell: bash
       run: |
         cd build
@@ -118,18 +124,6 @@ jobs:
           echo "EXECUTABLE_PATH=build/Release/tarc" >> $GITHUB_ENV
         else
           find build -name "tarc" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
-        fi
-
-    - name: Find executable (Windows)
-      if: runner.os == 'Windows'
-      shell: bash
-      run: |
-        if [ -f "build/Release/tarc.exe" ]; then
-          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $GITHUB_ENV
-        elif [ -f "build/tarc.exe" ]; then
-          echo "EXECUTABLE_PATH=build/tarc.exe" >> $GITHUB_ENV
-        else
-          find build -name "tarc.exe" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
         fi
 
     - name: Test executable
@@ -200,8 +194,13 @@ jobs:
         VERSION=${GITHUB_REF#refs/tags/}
         echo "📦 Versione: $VERSION"
 
+        # Linux
         find artifacts -type f -name "tarc-linux-x86_64" | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
+
+        # Windows
         find artifacts -type f -name "tarc-windows-x64.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
+
+        # macOS Universal
         find artifacts -type f -name "tarc-macos-universal" | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
 
         chmod +x tarc-$VERSION-* 2>/dev/null || true
