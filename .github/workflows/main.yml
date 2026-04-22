@@ -36,16 +36,17 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Solo Windows scarica i sorgenti delle librerie statiche
+    # Windows: scarica librerie statiche
     - name: Download LZMA source (Windows only)
       if: runner.os == 'Windows'
       shell: bash
       run: |
         mkdir -p libs/lzma
         cd libs/lzma
-        curl -L https://github.com/tukaani-project/xz/releases/download/v5.6.4/xz-5.6.4.tar.gz -o lzma.tar.gz
+        curl -L https://github.com/tukaani-project/xz/releases/download/v5.4.5/xz-5.4.5.tar.gz -o lzma.tar.gz
         tar -xzf lzma.tar.gz --strip-components=1
         rm lzma.tar.gz
+        ls -la
 
     - name: Download XXHASH source (Windows only)
       if: runner.os == 'Windows'
@@ -56,6 +57,7 @@ jobs:
         curl -L https://github.com/Cyan4973/xxHash/releases/download/v0.8.2/xxhash-0.8.2.tar.gz -o xxhash.tar.gz
         tar -xzf xxhash.tar.gz --strip-components=1
         rm xxhash.tar.gz
+        ls -la
 
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
@@ -79,7 +81,7 @@ jobs:
         cd build
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=20 \
+          -DCMAKE_CXX_STANDARD=17 \
           -DCMAKE_C_STANDARD=11 \
           ${{ matrix.cmake_arch_flags }}
 
