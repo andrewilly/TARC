@@ -25,80 +25,45 @@ jobs:
           - os: windows-latest
             artifact_name: tarc-windows-x64.exe
             executable: tarc.exe
-            cmake_arch_flags: ""
-
-          - os: macos-13
-            artifact_name: tarc-macos-x86_64
-            executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64'"
+            cmake_arch_flags: "-A x64"
 
           - os: macos-latest
-            artifact_name: tarc-macos-arm64
+            artifact_name: tarc-macos-universal
             executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES='arm64'"
+            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'"
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Linux: installa dipendenze
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake liblzma-dev libxxhash-dev
+        sudo apt-get install -y build-essential cmake ninja-build
 
-    # Windows: setup MSYS2 con toolchain completo
-    - name: Setup MSYS2 (Windows)
-      if: runner.os == 'Windows'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        install: |
-          mingw-w64-x86_64-toolchain
-          mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-make
-          mingw-w64-x86_64-xz
-          mingw-w64-x86_64-xxhash
-          git
-          make
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja
 
-    # Windows: compila con MSYS2 usando il toolchain corretto
-    - name: Build with MSYS2 (Windows)
+    - name: Setup MSVC (Windows)
       if: runner.os == 'Windows'
-      shell: msys2 {0}
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Configure CMake (Linux/Windows)
+      if: runner.os != 'macOS'
+      shell: bash
       run: |
         mkdir -p build
         cd build
-        cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc
-        cmake --build . --parallel 2
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_C_STANDARD=11 \
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          ${{ matrix.cmake_arch_flags }}
 
-    # Windows: trova eseguibile
-    - name: Find executable (Windows)
-      if: runner.os == 'Windows'
-      shell: bash
-      run: |
-        if [ -f "build/tarc.exe" ]; then
-          echo "EXECUTABLE_PATH=build/tarc.exe" >> $GITHUB_ENV
-        elif [ -f "build/Release/tarc.exe" ]; then
-          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $GITHUB_ENV
-        else
-          find build -name "tarc.exe" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
-        fi
-
-    # macOS Intel (macos-13) - installa dipendenze x86_64
-    - name: Install dependencies (macOS Intel)
-      if: runner.os == 'macOS' && matrix.os == 'macos-13'
-      run: |
-        arch -x86_64 brew install cmake xz xxhash
-
-    # macOS ARM (macos-latest) - installa dipendenze arm64
-    - name: Install dependencies (macOS ARM)
-      if: runner.os == 'macOS' && matrix.os == 'macos-latest'
-      run: |
-        brew install cmake xz xxhash
-
-    # Configura CMake (macOS)
     - name: Configure CMake (macOS)
       if: runner.os == 'macOS'
       shell: bash
@@ -109,38 +74,15 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_CXX_STANDARD=17 \
           -DCMAKE_C_STANDARD=11 \
-          ${{ matrix.cmake_arch_flags }}
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
 
-    # Build (macOS)
-    - name: Build Project (macOS)
-      if: runner.os == 'macOS'
+    - name: Build Project
       shell: bash
       run: |
         cd build
         cmake --build . --config Release --parallel 2
 
-    # Configura CMake (Linux)
-    - name: Configure CMake (Linux)
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        mkdir -p build
-        cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=17 \
-          -DCMAKE_C_STANDARD=11 \
-          ${{ matrix.cmake_arch_flags }}
-
-    # Build (Linux)
-    - name: Build Project (Linux)
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        cd build
-        cmake --build . --config Release --parallel 2
-
-    # Trova eseguibile (Linux/macOS)
     - name: Find executable (Linux/macOS)
       if: runner.os != 'Windows'
       run: |
@@ -152,14 +94,26 @@ jobs:
           find build -name "tarc" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
         fi
 
-    # Test eseguibile
+    - name: Find executable (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        if (Test-Path "build/Release/tarc.exe") {
+          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $env:GITHUB_ENV
+        } elseif (Test-Path "build/tarc.exe") {
+          echo "EXECUTABLE_PATH=build/tarc.exe" >> $env:GITHUB_ENV
+        } else {
+          Get-ChildItem -Path build -Filter "tarc.exe" -Recurse |
+          Select-Object -First 1 |
+          ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" >> $env:GITHUB_ENV }
+        }
+
     - name: Test executable
       shell: bash
       run: |
         chmod +x ${{ env.EXECUTABLE_PATH }} 2>/dev/null || true
         ${{ env.EXECUTABLE_PATH }} -h || true
 
-    # Upload artifact
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -167,45 +121,9 @@ jobs:
         path: ${{ env.EXECUTABLE_PATH }}
         if-no-files-found: error
 
-  # Job separato per creare Universal Binary su macOS
-  create-universal:
-    name: Create macOS Universal Binary
-    needs: build
-    runs-on: macos-latest
-    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
-    steps:
-    - name: Download Intel artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: tarc-macos-x86_64
-        path: intel_build
-
-    - name: Download ARM artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: tarc-macos-arm64
-        path: arm_build
-
-    - name: Create Universal Binary
-      run: |
-        cp intel_build/tarc tarc-x86_64
-        cp arm_build/tarc tarc-arm64
-        chmod +x tarc-x86_64 tarc-arm64
-        
-        lipo -create -output tarc-universal tarc-x86_64 tarc-arm64
-        lipo -info tarc-universal
-        
-        echo "Universal binary created successfully"
-
-    - name: Upload universal artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: tarc-macos-universal
-        path: tarc-universal
-
   create-release:
     name: Create Release
-    needs: [build, create-universal]
+    needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -222,14 +140,9 @@ jobs:
         VERSION=${GITHUB_REF#refs/tags/}
         echo "📦 Versione: $VERSION"
 
-        # Linux
-        find artifacts -type f -name "tarc-linux-x86_64" | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
-
-        # Windows
-        find artifacts -type f -name "tarc-windows-x64.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
-
-        # macOS Universal
-        find artifacts -type f -name "tarc-macos-universal" | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
+        find artifacts -type f -name "tarc" | grep linux | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
+        find artifacts -type f -name "tarc.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
+        find artifacts -type f -name "tarc" | grep macos | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
 
         chmod +x tarc-$VERSION-* 2>/dev/null || true
 
