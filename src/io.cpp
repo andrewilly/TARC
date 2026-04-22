@@ -70,8 +70,6 @@ void update_header_checksum(Header& h) {
 
 } // namespace IO
 
-namespace IO {
-
 std::string ensure_ext(const std::string& path) {
     if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {
         return path + ".strk";
