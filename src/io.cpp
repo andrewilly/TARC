@@ -91,7 +91,6 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
             }
         }
         
-        // Usa FILE* per scritture di grandi dimensioni
         FILE* out = fopen(path.c_str(), "wb");
         if (!out) {
             UI::print_warning("Impossibile aprire in scrittura: " + path);
@@ -109,7 +108,6 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
             return false;
         }
         
-        // Imposta timestamp
         if (timestamp > 0) {
             auto sys_time = std::chrono::system_clock::from_time_t((time_t)timestamp);
             std::error_code ec;
