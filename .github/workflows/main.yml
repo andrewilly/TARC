@@ -48,7 +48,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential cmake liblzma-dev libxxhash-dev
 
-    # Windows: setup msys2 e installa librerie
+    # Windows: setup MSYS2 con pacchetti corretti
     - name: Setup MSYS2 (Windows)
       if: runner.os == 'Windows'
       uses: msys2/setup-msys2@v2
@@ -57,9 +57,9 @@ jobs:
         install: |
           mingw-w64-x86_64-gcc
           mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-lzma
-          mingw-w64-x86_64-xxhash
           mingw-w64-x86_64-make
+          mingw-w64-x86_64-xz
+          mingw-w64-x86_64-xxhash
 
     # Windows: compila con MSYS2
     - name: Build with MSYS2 (Windows)
@@ -96,6 +96,7 @@ jobs:
       run: |
         brew install cmake xz xxhash
 
+    # Configura CMake (Linux/macOS)
     - name: Configure CMake (Linux/macOS)
       if: runner.os != 'Windows'
       shell: bash
@@ -108,6 +109,7 @@ jobs:
           -DCMAKE_C_STANDARD=11 \
           ${{ matrix.cmake_arch_flags }}
 
+    # Build (Linux/macOS)
     - name: Build Project (Linux/macOS)
       if: runner.os != 'Windows'
       shell: bash
@@ -115,6 +117,7 @@ jobs:
         cd build
         cmake --build . --config Release --parallel 2
 
+    # Trova eseguibile (Linux/macOS)
     - name: Find executable (Linux/macOS)
       if: runner.os != 'Windows'
       run: |
@@ -126,12 +129,14 @@ jobs:
           find build -name "tarc" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
         fi
 
+    # Test eseguibile
     - name: Test executable
       shell: bash
       run: |
         chmod +x ${{ env.EXECUTABLE_PATH }} 2>/dev/null || true
         ${{ env.EXECUTABLE_PATH }} -h || true
 
+    # Upload artifact
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
