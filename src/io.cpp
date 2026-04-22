@@ -3,15 +3,72 @@
 #include "ui.h"
 #include <filesystem>
 #include <fstream>
+#include <vector>
 #include <chrono>
 #include <cstring>
-#include <algorithm>
 
 #ifdef _WIN32
     #include <windows.h>
 #endif
 
+// Per CRC32
+#include <zlib.h>
+
 namespace fs = std::filesystem;
+
+namespace IO {
+
+// ========== NUOVE FUNZIONI CRC32 ==========
+
+uint32_t calculate_crc32(const void* data, size_t size) {
+    return crc32(0L, static_cast<const Bytef*>(data), static_cast<uInt>(size));
+}
+
+uint32_t calculate_crc32_file(FILE* f, uint64_t offset, uint64_t size) {
+    if (fseek(f, static_cast<long>(offset), SEEK_SET) != 0) {
+        return 0;
+    }
+    
+    constexpr size_t BUFFER_SIZE = 64 * 1024;
+    std::vector<char> buffer(BUFFER_SIZE);
+    uint32_t crc = crc32(0L, nullptr, 0);
+    uint64_t remaining = size;
+    
+    while (remaining > 0) {
+        size_t to_read = (remaining > BUFFER_SIZE) ? BUFFER_SIZE : static_cast<size_t>(remaining);
+        size_t read = fread(buffer.data(), 1, to_read, f);
+        if (read == 0) break;
+        crc = crc32(crc, reinterpret_cast<const Bytef*>(buffer.data()), static_cast<uInt>(read));
+        remaining -= read;
+    }
+    
+    return crc;
+}
+
+bool verify_header_checksum(const Header& h) {
+    if (h.header_checksum == 0) {
+        return true;
+    }
+    
+    Header temp = h;
+    temp.header_checksum = 0;
+    uint32_t computed = calculate_crc32(&temp, sizeof(Header) - sizeof(uint32_t) * 3);
+    return computed == h.header_checksum;
+}
+
+void update_header_checksum(Header& h) {
+    h.flags |= TARC_FLAG_HAS_CRC32;
+    Header temp = h;
+    temp.header_checksum = 0;
+    h.header_checksum = calculate_crc32(&temp, sizeof(Header) - sizeof(uint32_t) * 3);
+}
+
+// ========== FUNZIONI ESISTENTI (mantieni le tue implementazioni originali) ==========
+
+// ... mantieni qui tutto il tuo codice io.cpp esistente ...
+// (ensure_ext, read_toc, write_toc, write_file_to_disk, ecc.)
+
+} // namespace IO
 
 namespace IO {
 
