@@ -100,12 +100,14 @@ std::string human_size(uint64_t b) {
     return std::string(buf);
 }
 
+// Sostituisci la funzione compress_ratio in ui.cpp con questa versione migliorata:
 std::string compress_ratio(uint64_t orig, uint64_t comp) {
     if (orig == 0) return "  -  ";
-    char buf[16];
-    double r = 100.0 * (1.0 - (double)comp / (double)orig);
-    if (r < 0) r = 0; 
-    snprintf(buf, sizeof(buf), "%.1f%%", r);
+    char buf[32];
+    double ratio = 100.0 * (1.0 - (double)comp / (double)orig);
+    if (ratio < 0) ratio = 0;
+    if (ratio > 99.9) snprintf(buf, sizeof(buf), "%.1f%%", ratio);
+    else snprintf(buf, sizeof(buf), "%.2f%%", ratio);
     return std::string(buf);
 }
 
