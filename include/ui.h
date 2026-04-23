@@ -37,7 +37,9 @@ namespace UI {
 
     // ─── INTERVENTO #17: PROGRESS BAR CON ETA ──────────────────────────────────
     // Barra di progresso con stima tempo rimanente
-    void print_progress(size_t current, size_t total, const std::string& current_file);
+    // test_ok: -1 = non testando, 0 = FAIL, 1 = OK (mostra [OK]/[FAIL] inline)
+    void print_progress(size_t current, size_t total, const std::string& current_file,
+                        int test_ok = -1);
 
     // Resetta il timer interno per il calcolo ETA (chiamare prima di ogni operazione)
     void progress_timer_reset();

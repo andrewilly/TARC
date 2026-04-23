@@ -126,27 +126,17 @@ bool is_excluded(const std::string& path, const std::vector<std::string>& exclud
 }
 
 const std::set<std::string>& incompressible_extensions() {
-//    static const std::set<std::string> skip = {
-//        ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
-//        ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
-//        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
-//        ".heif", ".avif", ".jxl",
-//        ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
-//        ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
-//        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
-//        ".epub", ".xps",
-//        ".woff", ".woff2", ".ttf", ".otf", ".eot",
-//        ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
-//        ".msi", ".crx",
-//        ".ktx", ".ktx2", ".basis", ".dds", ".crn"
-//   };
-        static const std::set<std::string> skip = {
+    static const std::set<std::string> skip = {
         ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
         ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
         ".heif", ".avif", ".jxl",
         ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
         ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
+        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
+        ".epub", ".xps",
         ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
         ".msi", ".crx",
         ".ktx", ".ktx2", ".basis", ".dds", ".crn"
     };
@@ -788,9 +778,11 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     final_path = safe_path;
                 }
 
-                UI::print_progress(i + 1, toc.size(), fe.name);
-
-                if (!test_only) {
+                if (test_only) {
+                    // Modalita' test: barra singola con [OK] inline
+                    UI::print_progress(i + 1, toc.size(), fe.name, 1);
+                } else {
+                    UI::print_progress(i + 1, toc.size(), fe.name);
                     auto it = extracted_paths.find(fe.meta.duplicate_of_idx);
                     if (it != extracted_paths.end()) {
                         try {
@@ -806,8 +798,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     } else {
                         UI::print_warning("Originale non estratto per duplicato: " + fe.name);
                     }
-                } else {
-                    UI::print_extract(fe.name, fe.meta.orig_size, true, true);
                 }
                 result.bytes_out += fe.meta.orig_size;
                 result.dup_count++;
@@ -848,8 +838,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         block_pos = src_pos;
 
         if (!should_extract) continue;
-
-        UI::print_progress(i + 1, toc.size(), fe.name);
 
         std::string final_path = fe.name;
         if (flat_mode) {
@@ -895,14 +883,20 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
         }
 
-        if (test_only && fe.meta.xxhash != 0) {
-            XXH64_hash_t computed = XXH64(file_data.data(), file_data.size(), 0);
-            bool hash_ok = (computed == fe.meta.xxhash);
-            UI::print_extract(fe.name, fe.meta.orig_size, true, hash_ok);
-            if (!hash_ok) {
-                result.ok = false;
-                result.message = "Hash non corrispondente per: " + fe.name;
+        if (test_only) {
+            // Modalita' test: verifica hash e mostra su barra singola
+            int test_ok = 1;
+            if (fe.meta.xxhash != 0) {
+                XXH64_hash_t computed = XXH64(file_data.data(), file_data.size(), 0);
+                test_ok = (computed == fe.meta.xxhash) ? 1 : 0;
+                if (!test_ok) {
+                    result.ok = false;
+                    result.message = "Hash non corrispondente per: " + fe.name;
+                }
             }
+            UI::print_progress(i + 1, toc.size(), fe.name, test_ok);
+        } else {
+            UI::print_progress(i + 1, toc.size(), fe.name);
         }
 
         result.bytes_out += fe.meta.orig_size;

@@ -86,7 +86,8 @@ void show_banner() {
 }
 
 // ─── INTERVENTO #17: PROGRESS BAR CON ETA ─────────────────────────────────────
-void print_progress(size_t current, size_t total, const std::string& current_file) {
+void print_progress(size_t current, size_t total, const std::string& current_file,
+                    int test_ok) {
     float percent = (total > 0) ? (static_cast<float>(current) / total * 100.0f) : 100.0f;
     int width = 25;
     int pos = (total > 0) ? (static_cast<int>(width * current / total)) : width;
@@ -112,16 +113,32 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
         }
     }
 
+    // Costruisci la barra di progresso
     printf("\r%s [%s", Color::CYAN, Color::BOLD);
     for (int i = 0; i < width; ++i) {
         if (i < pos) printf("=");
         else if (i == pos) printf(">");
         else printf(" ");
     }
-    printf("%s%s] %.1f%% %sProcessing: %s%-20s%s",
-           Color::RESET, Color::CYAN,
-           percent,
-           Color::DIM, Color::RESET, short_name.c_str(), eta_buf);
+    printf("%s%s] %.1f%%", Color::RESET, Color::CYAN, percent);
+
+    // Contatore file (es. "42/137")
+    printf(" %s%zu/%zu%s", Color::DIM, current, total, Color::RESET);
+
+    // Modalita' test: mostra [OK]/[FAIL] inline col nome file
+    if (test_ok >= 0) {
+        const char* status_color = test_ok ? Color::GREEN : Color::RED;
+        const char* status_text  = test_ok ? "OK" : "FAIL";
+        printf(" %s[%s]%s %s%-30s%s",
+               status_color, status_text, Color::RESET,
+               Color::RESET, short_name.c_str(), Color::RESET);
+    } else {
+        // Modalita' compressione/estrazione: nome file normale
+        printf(" %sProcessing: %s%-20s%s",
+               Color::DIM, Color::RESET, short_name.c_str(), Color::RESET);
+    }
+
+    printf("%s", eta_buf);
     fflush(stdout);
 }
 
