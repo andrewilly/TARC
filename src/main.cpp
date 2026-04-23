@@ -1,8 +1,8 @@
 #include "ui.h"
 #include "license.h"
 #include "engine.h"
-#include "io.h"
-#include <iostream>
+#include <string>
+#include <vector>
 
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
@@ -15,27 +15,20 @@ int main(int argc, char* argv[]) {
     }
 
     std::string cmd = argv[1];
-    std::string arch = IO::ensure_ext(argv[2]);
-    TarcResult res;
+    std::string arch = argv[2];
 
-    if (cmd == "-c" || cmd == "-a") {
-        std::vector<std::string> targets;
-        for (int i = 3; i < argc; ++i) targets.push_back(argv[i]);
-        res = Engine::compress(arch, targets, (cmd == "-a"), 3);
-        UI::print_summary(res, "Compressione");
-    } 
-    else if (cmd == "-x") {
-        res = Engine::extract(arch, {});
-        UI::print_summary(res, "Estrazione");
-    }
-    else if (cmd == "-l") {
-        res = Engine::list(arch);
-        UI::print_summary(res, "Contenuto Archivio");
-    }
-    else {
-        UI::print_error("Comando non riconosciuto.");
-        return 1;
+    if (cmd == "-c") {
+        std::vector<std::string> files;
+        for (int i = 3; i < argc; ++i) files.push_back(argv[i]);
+        auto res = Engine::compress(arch, files, false, 3);
+        if (!res.ok) UI::print_error(res.message);
+    } else if (cmd == "-l") {
+        Engine::list(arch);
+    } else if (cmd == "-x") {
+        Engine::extract(arch);
+    } else {
+        UI::print_error("Comando sconosciuto.");
     }
 
-    return res.ok ? 0 : 1;
+    return 0;
 }
