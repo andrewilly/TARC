@@ -3,6 +3,7 @@
 #include "ui.h"
 #include "types.h"
 #include <cstring>
+#include <climits>
 #include <map>
 #include <filesystem>
 #include <fstream>
@@ -129,10 +130,14 @@ const std::set<std::string>& incompressible_extensions() {
     static const std::set<std::string> skip = {
         ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
         ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
         ".heif", ".avif", ".jxl",
         ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
         ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
+        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
+        ".epub", ".xps",
         ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
         ".msi", ".crx",
         ".ktx", ".ktx2", ".basis", ".dds", ".crn"
     };
@@ -145,14 +150,14 @@ const std::set<std::string>& incompressible_extensions() {
 
 struct ChunkResult {
     std::vector<char> compressed_data;
-    uint32_t raw_size;
+    uint64_t raw_size;       // FIX BUG #4: era uint32_t, troncava chunk > 4 GB
     Codec codec;
     bool success;
 };
 
 ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
     ChunkResult res;
-    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.raw_size = raw_data.size();  // FIX BUG #4: nessun troncamento
     res.codec = chosen_codec;
     res.success = false;
 
@@ -191,7 +196,16 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     }
 
     if (chosen_codec == Codec::LZ4) {
-        int max_out = LZ4_compressBound(static_cast<int>(raw_data.size()));
+        // FIX BUG: LZ4_compressBound usa int, overflow per dati > 2 GB
+        if (raw_data.size() > static_cast<size_t>(INT_MAX)) {
+            // Dati troppo grandi per LZ4, fallback a STORE
+            res.compressed_data = std::move(raw_data);
+            res.codec = Codec::STORE;
+            res.success = true;
+            return res;
+        }
+        int src_size = static_cast<int>(raw_data.size());
+        int max_out = LZ4_compressBound(src_size);
         if (max_out <= 0) {
             res.compressed_data = std::move(raw_data);
             res.codec = Codec::STORE;
@@ -201,7 +215,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         res.compressed_data.resize(static_cast<size_t>(max_out));
         int result = LZ4_compress_default(
             raw_data.data(), res.compressed_data.data(),
-            static_cast<int>(raw_data.size()), max_out);
+            src_size, max_out);
         if (result > 0) {
             res.compressed_data.resize(static_cast<size_t>(result));
             if (res.compressed_data.size() >= raw_data.size()) {
@@ -248,8 +262,11 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         res.compressed_data.resize(max_out);
         size_t out_pos = 0;
         uint32_t preset = (level < 0) ? 9 : static_cast<uint32_t>(level);
+        // FIX BUG #2: LZMA_PRESET_EXTREME solo per livelli alti (-cbest = 8+)
+        // Con EXTREME sempre attivo, la compressione era 5-10x piu lenta!
+        if (preset >= 8) preset |= LZMA_PRESET_EXTREME;
         lzma_ret ret = lzma_easy_buffer_encode(
-            preset | LZMA_PRESET_EXTREME, LZMA_CHECK_CRC64, NULL,
+            preset, LZMA_CHECK_CRC64, NULL,
             reinterpret_cast<const uint8_t*>(raw_data.data()), raw_data.size(),
             reinterpret_cast<uint8_t*>(res.compressed_data.data()), &out_pos, max_out);
         if (ret == LZMA_OK) {
@@ -279,7 +296,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 // ═══════════════════════════════════════════════════════════════════════════════
 
 bool decompress_chunk(const std::vector<char>& comp_data, uint32_t codec,
-                      std::vector<char>& out_data, uint32_t raw_size) {
+                      std::vector<char>& out_data, size_t raw_size) {
     out_data.resize(raw_size);
 
     if (codec == static_cast<uint32_t>(Codec::STORE)) {
@@ -529,7 +546,13 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     auto write_chunk_result = [&](ChunkResult& res) -> bool {
         if (!res.success) return false;
-        ::ChunkHeader ch = { static_cast<uint32_t>(res.codec), res.raw_size,
+        // FIX BUG #4: raw_size ora e' uint64_t, ChunkHeader resta uint32_t
+        // Sicurezza: chunk non devono superare i 4 GB (imposto dal CHUNK_THRESHOLD)
+        if (res.raw_size > UINT32_MAX || res.compressed_data.size() > UINT32_MAX) {
+            UI::print_error("Chunk troppo grande (> 4 GB). Ridurre CHUNK_THRESHOLD.");
+            return false;
+        }
+        ::ChunkHeader ch = { static_cast<uint32_t>(res.codec), static_cast<uint32_t>(res.raw_size),
                               static_cast<uint32_t>(res.compressed_data.size()), 0 };
         ch.checksum = XXH64(res.compressed_data.data(), res.compressed_data.size(), 0);
         if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
@@ -543,6 +566,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     auto write_pending_async = [&]() -> bool {
         if (!worker_active) return true;
+        // FIX BUG #1: Mostra feedback durante attesa compressione async
+        // Senza questo, la barra resta ferma e sembra un freeze
+        UI::print_info("Compressione chunk in corso...");
         ChunkResult res = future_chunk.get();
         worker_active = false;
         return write_chunk_result(res);
@@ -629,15 +655,44 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
 
-            if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
+            // FIX BUG #6: Flush ANCHE se solid_buf e' vuoto e il file e' grande
+            // Prima un file > 256 MB finiva tutto in un chunk gigante
+            if (solid_buf.size() + fsize > CHUNK_THRESHOLD) {
                 if (!flush_solid_buf(last_codec)) {
                     IO::safe_remove(temp_path);
                     return {false, "Errore compressione chunk."};
                 }
+                // Se il file singolo e' > CHUNK_THRESHOLD, dividiamolo in sotto-chunk
+                // per evitare chunk enormi che truncano raw_size e sono lentissimi
+                size_t offset = 0;
+                last_codec = static_cast<Codec>(fe.meta.codec);
+                while (offset + CHUNK_THRESHOLD < data.size()) {
+                    std::vector<char> sub_chunk(data.begin() + offset,
+                                                 data.begin() + offset + CHUNK_THRESHOLD);
+                    if (!flush_solid_buf(last_codec)) {
+                        IO::safe_remove(temp_path);
+                        return {false, "Errore compressione sub-chunk."};
+                    }
+                    solid_buf = std::move(sub_chunk);
+                    if (!flush_solid_buf(last_codec)) {
+                        IO::safe_remove(temp_path);
+                        return {false, "Errore compressione sub-chunk."};
+                    }
+                    offset += CHUNK_THRESHOLD;
+                }
+                // Parte rimanente del file
+                if (offset < data.size()) {
+                    solid_buf.insert(solid_buf.end(),
+                                     data.begin() + offset, data.end());
+                }
+            } else {
+                last_codec = static_cast<Codec>(fe.meta.codec);
+                solid_buf.insert(solid_buf.end(), data.begin(), data.end());
             }
 
-            last_codec = static_cast<Codec>(fe.meta.codec);
-            solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+            // FIX BUG #5: Rilascia memoria di data subito (era duplicata in solid_buf)
+            data.clear();
+            data.shrink_to_fit();
             result.bytes_in += fsize;
         }
         final_toc.push_back(fe);
@@ -668,7 +723,9 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         return {false, "Errore scrittura TOC."};
     }
 
-    f.~FilePtr();
+    // FIX BUG #3: era f.~FilePtr() che causava double-free (fclose due volte)
+    // Il modo corretto per chiudere un RAII wrapper e' reset(), non il distruttore
+    f = FilePtr(nullptr);
 
     if (using_temp && !temp_path.empty()) {
         if (!IO::atomic_rename(temp_path, archive_path)) {
@@ -1129,8 +1186,9 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
         return {false, "Errore scrittura TOC."};
     }
 
-    f_dst.~FilePtr();
-    f_src.~FilePtr();
+    // FIX BUG #3: distruttori espliciti causavano double-free
+    f_dst = FilePtr(nullptr);
+    f_src = FilePtr(nullptr);
 
     if (!IO::atomic_rename(temp_path, arch_path)) {
         UI::print_warning("Rename atomica fallita. File temporaneo: " + temp_path);
