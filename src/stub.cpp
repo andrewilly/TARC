@@ -11,30 +11,57 @@
 #define TARC_MAGIC_STR "TRC2"
 
 // === VARIABILI GLOBALI DI SUPPORTO ===
-// Servono per passare i dati fuori dal blocco __try senza usare variabili locali
 bool g_ok = false;
 std::string g_message = "";
 bool g_crashed = false;
 
 // === FUNZIONI SCUDO (WRAPPER) ===
-// Eseguono il codice che restituisce oggetti C++ complessi (TarcResult) fuori dal blocco __try
-void run_extract(const std::string& p, size_t o, bool test) {
+// Queste funzioni non contengono __try, quindi possiamo usare std::string liberamente qui
+void run_extract(const char* p_cstr, size_t o, bool test) {
+    std::string p(p_cstr); // Creazione sicura della stringa
     TarcResult r = Engine::extract(p, {}, test, o);
     g_ok = r.ok;
     g_message = r.message;
 }
 
-void run_list(const std::string& p, size_t o) {
+void run_list(const char* p_cstr, size_t o) {
+    std::string p(p_cstr); // Creazione sicura della stringa
     TarcResult r = Engine::list(p, o);
     g_ok = r.ok;
     g_message = r.message;
+}
+
+// === FUNZIONE ISOLATA PER IL CRASH CATCHER ===
+// NON dichiara NESSUN oggetto C++ (nessuna std::string locale). 
+// Prende solo tipi primitivi e puntatori per superare il blocco C2712 di MSVC.
+void do_safe_action(const char* p_cstr, size_t o, int action) {
+    g_ok = false;
+    g_message.clear();
+    g_crashed = false;
+
+    __try {
+        if (action == 1) {
+            UI::print_info("Estrazione in corso...");
+            run_extract(p_cstr, o, false);
+        } else if (action == 2) {
+            UI::print_info("Contenuto dell'archivio:");
+            run_list(p_cstr, o);
+        } else if (action == 3) {
+            UI::print_info("Verifica integrita' in corso...");
+            run_extract(p_cstr, o, true);
+        }
+    } 
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        UI::print_error("ACCESS VIOLATION: Crash di memoria durante la decompressione!");
+        g_crashed = true;
+    }
 }
 // =====================================
 
 void show_stub_header() {
     std::cout << Color::CYAN << "==========================================\n";
     std::cout << "          TARC SELF-EXTRACTOR             \n";
-    std::cout << "       Powered by Strike Engine v2.04     \n";
+    std::cout << "       Powered by Strike Engine v2.0      \n";
     std::cout << "==========================================\n" << Color::RESET;
 }
 
@@ -94,33 +121,17 @@ int main(int argc, char* argv[]) {
     if (input.empty()) return 0;
     char choice = input[0];
 
-    int exec_action = 0; // 0=Niente, 1=Estrai, 2=Lista, 3=Test
+    int exec_action = 0; 
 
     if (choice == '1') exec_action = 1;
     else if (choice == '2') exec_action = 2;
     else if (choice == '3') exec_action = 3;
     else if (choice == '4') return 0;
 
-    // === BLOCCO TRY DI WINDOWS (ORA LEGALE PER MSVC) ===
-    __try {
-        if (exec_action == 1) {
-            UI::print_info("Estrazione in corso...");
-            run_extract(self_path, offset, false);
-        } else if (exec_action == 2) {
-            UI::print_info("Contenuto dell'archivio:");
-            run_list(self_path, offset);
-        } else if (exec_action == 3) {
-            UI::print_info("Verifica integrita' in corso...");
-            run_extract(self_path, offset, true);
-        }
-    } 
-    __except(EXCEPTION_EXECUTE_HANDLER) {
-        UI::print_error("ACCESS VIOLATION: Crash durante la decompressione!");
-        g_crashed = true;
-    }
-    // ====================================================
+    // Chiamata alla funzione isolata. Convertiamo la stringa in puntatore C per sicurezza
+    do_safe_action(self_path.c_str(), offset, exec_action);
 
-    // Stampa i risultati finali FUORI dal blocco __try
+    // Stampa i risultati tornando nel main sicuro
     if (!g_crashed) {
         TarcResult final_res = {g_ok, g_message};
         if (exec_action == 1) UI::print_summary(final_res, "Estrazione SFX");
