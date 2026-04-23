@@ -1,9 +1,0 @@
-{
-  "name": "tarc",
-  "version": "2.0.0",
-  "dependencies": [
-    "liblzma",
-    "xxhash"
-  ],
-  "builtin-baseline": "501db0f17ef6df184fcdbfbe0f87cde2493b6f63"
-}
