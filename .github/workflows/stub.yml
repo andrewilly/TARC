@@ -8,7 +8,7 @@ on:
       - 'src/io.cpp'
       - 'src/ui.cpp'
       - 'src/license.cpp'
-      - 'build_stub/CMakeLists.txt'
+      - 'CMakeListsStub.txt'
       - '.github/workflows/stub.yml'
   workflow_dispatch:
 
@@ -19,6 +19,12 @@ jobs:
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+
+    - name: Prepare Build Directory
+      shell: pwsh
+      run: |
+        mkdir build_stub
+        copy CMakeListsStub.txt build_stub/CMakeLists.txt
 
     - name: Configure CMake (FetchContent)
       shell: pwsh
