@@ -29,6 +29,13 @@ add_definitions(
 find_package(Threads REQUIRED)
 include(FetchContent)
 
+# Mostra progresso FetchContent nel log CI
+set(FETCHCONTENT_QUIET OFF)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FETCH CONTENT — Dipendenze compilate da sorgente
+# ═══════════════════════════════════════════════════════════════════════════════
+
 # ── zstd ─────────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     zstd
@@ -91,11 +98,42 @@ add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
 target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# INCLUDE DIRECTORIES GLOBALI
-# Usiamo include_directories() invece di target_include_directories()
-# perche' nel progetto separato build_stub e' piu' robusto con MSVC.
-# Le librerie linkate propagano gia' i loro include, ma li aggiungiamo
-# anche esplicitamente come fallback.
+# VERIFICA FETCH CONTENT — Diagnostica per CI
+# Se una dipendenza non e' stata scaricata, fallisce subito con
+# un messaggio chiaro invece di errori criptici in compilazione.
+# ═══════════════════════════════════════════════════════════════════════════════
+message(STATUS "── FetchContent Diagnostic ──────────────────────────")
+message(STATUS "  zstd_SOURCE_DIR  = ${zstd_SOURCE_DIR}")
+message(STATUS "  lz4_SOURCE_DIR   = ${lz4_SOURCE_DIR}")
+message(STATUS "  liblzma_SOURCE_DIR = ${liblzma_SOURCE_DIR}")
+message(STATUS "  brotli_SOURCE_DIR = ${brotli_SOURCE_DIR}")
+message(STATUS "  xxhash_SOURCE_DIR = ${xxhash_SOURCE_DIR}")
+
+# Verifica che gli header principali esistano
+if(NOT EXISTS "${zstd_SOURCE_DIR}/lib/zstd.h")
+    message(FATAL_ERROR "zstd.h non trovato in ${zstd_SOURCE_DIR}/lib/ — FetchContent fallita?")
+endif()
+if(NOT EXISTS "${lz4_SOURCE_DIR}/lib/lz4.h")
+    message(FATAL_ERROR "lz4.h non trovato in ${lz4_SOURCE_DIR}/lib/ — FetchContent fallita?")
+endif()
+if(NOT EXISTS "${liblzma_SOURCE_DIR}/src/liblzma/api/lzma.h")
+    message(FATAL_ERROR "lzma.h non trovato in ${liblzma_SOURCE_DIR}/src/liblzma/api/ — FetchContent fallita?")
+endif()
+if(NOT EXISTS "${brotli_SOURCE_DIR}/c/include/brotli/encode.h")
+    message(FATAL_ERROR "brotli/encode.h non trovato in ${brotli_SOURCE_DIR}/c/include/ — FetchContent fallita?")
+endif()
+if(NOT EXISTS "${xxhash_SOURCE_DIR}/xxhash.h")
+    message(FATAL_ERROR "xxhash.h non trovato in ${xxhash_SOURCE_DIR}/ — FetchContent fallita?")
+endif()
+message(STATUS "  Tutte le dipendenze verificate con successo!")
+message(STATUS "────────────────────────────────────────────────────")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INCLUDE DIRECTORIES
+# ═══════════════════════════════════════════════════════════════════════════════
+# Usiamo include_directories() globale perche' con MSVC e i target
+# FetchContent e' piu' robusto. Le librerie linkate propagano gia'
+# i loro include, ma li aggiungiamo anche esplicitamente come fallback.
 # ═══════════════════════════════════════════════════════════════════════════════
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -124,6 +162,15 @@ set(SFX_STUB_SOURCES
 
 add_executable(tarc_sfx_stub ${SFX_STUB_SOURCES})
 
+# Imposta esplicitamente il sottosistema CONSOLE per MSVC
+# (assicura che cerchi main() e non WinMain)
+if(MSVC)
+    set_target_properties(tarc_sfx_stub PROPERTIES
+        WIN32_EXECUTABLE FALSE
+        LINK_FLAGS "/SUBSYSTEM:CONSOLE"
+    )
+endif()
+
 target_link_libraries(tarc_sfx_stub PRIVATE
     libzstd_static
     lz4_static
@@ -138,6 +185,8 @@ target_link_libraries(tarc_sfx_stub PRIVATE
 
 if(MSVC)
     target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8)
+    # Sopprime warning C4100 per parametri non referenziati (argc/argv in stub)
+    target_compile_options(tarc_sfx_stub PRIVATE /wd4100)
 endif()
 
 message(STATUS "")
@@ -146,7 +195,11 @@ message(STATUS "  |   TARC SFX STUB v${PROJECT_VERSION} - BUILD CONFIG   |")
 message(STATUS "  +==========================================+")
 message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  |  Target     : tarc_sfx_stub.exe")
+message(STATUS "  |  zstd inc   : ${zstd_SOURCE_DIR}/lib")
 message(STATUS "  |  lz4 inc    : ${lz4_SOURCE_DIR}/lib")
+message(STATUS "  |  lzma inc   : ${liblzma_SOURCE_DIR}/src/liblzma/api")
+message(STATUS "  |  brotli inc : ${brotli_SOURCE_DIR}/c/include")
+message(STATUS "  |  xxhash inc : ${xxhash_SOURCE_DIR}")
 message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
 message(STATUS "  +==========================================+")
 message(STATUS "")
