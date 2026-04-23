@@ -3,42 +3,52 @@
 #include <vector>
 #include <windows.h>
 #include <fstream>
+#include <cstdint> // Per uint64_t
 #include "engine.h"
 #include "ui.h"
 
-// Usiamo la definizione trovata in types.h
 #define TARC_MAGIC_STR "TRC2"
 
 void show_stub_header() {
     std::cout << Color::CYAN << "==========================================\n";
     std::cout << "          TARC SELF-EXTRACTOR             \n";
-    std::cout << "       Powered by Strike Engine v2.0      \n";
+    std::cout << "       Powered by Strike Engine v2.04     \n";
     std::cout << "==========================================\n" << Color::RESET;
 }
 
-// Cerca l'offset dell'archivio partendo dal fondo del file
 size_t find_archive_offset(const std::string& exe_path) {
     std::ifstream f(exe_path, std::ios::binary | std::ios::ate);
     if (!f) return 0;
 
-    size_t file_size = static_cast<size_t>(f.tellg());
-    if (file_size < 4) return 0;
+    std::streamsize file_size = f.tellg();
+    
+    // Un file SFX valido deve essere grande almeno quanto lo stub vuoto + 8 byte del footer
+    if (file_size < 8) return 0;
 
-    // Carichiamo il file in memoria per una scansione rapida
-    std::vector<char> buffer(file_size);
-    f.seekg(0, std::ios::beg);
-    f.read(buffer.data(), file_size);
+    // Leggiamo gli ultimi 8 byte che contengono l'offset esatto dell'archivio
+    uint64_t archive_offset = 0;
+    f.seekg(-8, std::ios::end);
+    f.read(reinterpret_cast<char*>(&archive_offset), 8);
 
-    // Cerchiamo la firma "TRC2" partendo dal fondo verso l'inizio.
-    // Saltiamo i primi 100KB per evitare di trovare stringhe nel codice dello stub.
-    for (size_t i = file_size - 4; i > 1024 * 100; --i) {
-        if (buffer[i] == 'T' && buffer[i+1] == 'R' && buffer[i+2] == 'C' && buffer[i+3] == '2') {
-            return i;
+    // Validazione di base:
+    // 1. L'offset deve essere maggiore di 0
+    // 2. L'offset deve essere MINORE della dimensione totale del file meno gli 8 byte del footer
+    if (archive_offset > 0 && archive_offset < (static_cast<uint64_t>(file_size) - 8)) {
+        
+        // OPZIONALE MA CONSIGLIATO: Andiamo a verificare che in quel punto ci sia davvero "TRC2"
+        char magic[4] = {0};
+        f.seekg(archive_offset, std::ios::beg);
+        f.read(magic, 4);
+        
+        if (memcmp(magic, TARC_MAGIC_STR, 4) == 0) {
+            return static_cast<size_t>(archive_offset); // TROVATO CON SICUREZZA AL 100%
         }
     }
+
     return 0;
 }
 
+// ... Il resto del tuo main() rimane IDENTICO ...
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
     show_stub_header();

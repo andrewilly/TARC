@@ -129,14 +129,10 @@ const std::set<std::string>& incompressible_extensions() {
     static const std::set<std::string> skip = {
         ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
         ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
         ".heif", ".avif", ".jxl",
         ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
         ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
-        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
-        ".epub", ".xps",
         ".woff", ".woff2", ".ttf", ".otf", ".eot",
-        ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
         ".msi", ".crx",
         ".ktx", ".ktx2", ".basis", ".dds", ".crn"
     };
@@ -395,22 +391,33 @@ namespace Engine {
 
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
     std::string stub_path = "tarc_sfx_stub.exe";
-    if (!fs::exists(fs::u8path(stub_path))) return {false, "Stub SFX non trovato."};
+    if (!fs::exists(stub_path)) return {false, "Stub SFX (tarc_sfx_stub.exe) non trovato nella cartella."};
 
-#ifdef _WIN32
-    std::ifstream stub_in(fs::u8path(stub_path), std::ios::binary);
-    std::ifstream data_in(fs::u8path(archive_path), std::ios::binary);
-    std::ofstream sfx_out(fs::u8path(sfx_name), std::ios::binary);
-#else
     std::ifstream stub_in(stub_path, std::ios::binary);
     std::ifstream data_in(archive_path, std::ios::binary);
     std::ofstream sfx_out(sfx_name, std::ios::binary);
-#endif
 
     if (!stub_in || !data_in || !sfx_out) return {false, "Errore fatale durante la fusione SFX."};
 
+    // 1. Copiamo lo stub dentro il file SFX
     sfx_out << stub_in.rdbuf();
+
+    // === NOVITÀ: CALCOLO DELL'OFFSET ===
+    // Dopo aver copiato lo stub, chiediamo al flusso di output in che posizione si trova.
+    // Questa posizione corrisponde esattamente ai byte occupati dallo stub,
+    // ovvero l'offset a cui sta per iniziare l'archivio TRC2.
+    std::streampos stub_size = sfx_out.tellp();
+    uint64_t archive_offset = static_cast<uint64_t>(stub_size);
+    // ====================================
+
+    // 2. Copiamo l'archivio TRC2 accodandolo allo stub
     sfx_out << data_in.rdbuf();
+
+    // === NOVITÀ: SCRITTURA DEL FOOTER A 8 BYTE ===
+    // Siamo alla fine del file. Scriviamo l'offset calcolato prima.
+    // Questo sarà il "faro" per lo stub.exe per trovare i dati senza cercare.
+    sfx_out.write(reinterpret_cast<const char*>(&archive_offset), sizeof(archive_offset));
+    // ==============================================
 
     return {true, "Archivio autoestraente generato."};
 }
