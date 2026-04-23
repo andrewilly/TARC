@@ -122,6 +122,7 @@ void show_stub_header() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 int main(int argc, char* argv[]) {
+    (void)argc; (void)argv;  // Sopprime warning C4100 (parametro non referenziato)
     UI::enable_vtp();
     show_stub_header();
 
