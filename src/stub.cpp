@@ -5,11 +5,12 @@
 #include <fstream>
 #include <cstdint>   
 #include <cstring>   
-#include <exception> // Aggiunto per std::exception
 #include "engine.h"
 #include "ui.h"
 
-// Usiamo la definizione trovata in types.h
+// Disabilita un warning di MSVC dovuto all'uso di __try con oggetti C++ (come std::string)
+#pragma warning(disable: 4530)
+
 #define TARC_MAGIC_STR "TRC2"
 
 void show_stub_header() {
@@ -19,13 +20,11 @@ void show_stub_header() {
     std::cout << "==========================================\n" << Color::RESET;
 }
 
-// Nuovo metodo: Legge l'offset esatto dagli ultimi 8 byte del file (Footer)
 size_t find_archive_offset(const std::string& exe_path) {
     std::ifstream f(exe_path, std::ios::binary | std::ios::ate);
     if (!f) return 0;
 
     std::streamsize file_size = f.tellg();
-    
     if (file_size < 8) return 0;
 
     uint64_t archive_offset = 0;
@@ -33,7 +32,6 @@ size_t find_archive_offset(const std::string& exe_path) {
     f.read(reinterpret_cast<char*>(&archive_offset), 8);
 
     if (archive_offset > 0 && archive_offset < (static_cast<uint64_t>(file_size) - 8)) {
-        
         char magic[4] = {0};
         f.seekg(archive_offset, std::ios::beg);
         f.read(magic, 4);
@@ -42,7 +40,6 @@ size_t find_archive_offset(const std::string& exe_path) {
             return static_cast<size_t>(archive_offset);
         }
     }
-
     return 0;
 }
 
@@ -50,7 +47,6 @@ int main(int argc, char* argv[]) {
     UI::enable_vtp();
     show_stub_header();
 
-    // 1. Recupera il percorso dell'eseguibile corrente
     char path[MAX_PATH];
     if (GetModuleFileNameA(NULL, path, MAX_PATH) == 0) {
         UI::print_error("Errore: Impossibile determinare il percorso del file.");
@@ -60,7 +56,6 @@ int main(int argc, char* argv[]) {
     }
     std::string self_path = path;
 
-    // 2. Trova l'offset dell'archivio appeso tramite il Footer
     size_t offset = find_archive_offset(self_path);
 
     if (offset == 0) {
@@ -70,7 +65,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // 3. Menu Operativo
     std::cout << "\n" << Color::YELLOW << " OPERAZIONI DISPONIBILI:" << Color::RESET << "\n";
     std::cout << " [1] Estrai tutto (cartella corrente)\n";
     std::cout << " [2] Elenca files\n";
@@ -83,11 +77,12 @@ int main(int argc, char* argv[]) {
     if (input.empty()) return 0;
     char choice = input[0];
 
-    TarcResult res;
+    TarcResult res = {false, ""};
     bool has_crashed = false;
 
-    // === BLOCCO TRY-CATCH ANTI-CRASH ===
-    try {
+    // === GABBIA ANTI-CRASH DI WINDOWS ===
+    // Intercetta gli Access Violation prima che Windows chiuda il programma
+    __try {
         switch (choice) {
             case '1':
                 UI::print_info("Estrazione in corso...");
@@ -110,24 +105,17 @@ int main(int argc, char* argv[]) {
                 break;
         }
 
-        // Gestione errori logici (senza crash)
-        if (!res.ok && choice != '4' && choice != '2') {
-            UI::print_error("L'operazione ha riscontrato un errore:");
+        if (!res.ok && choice != '4') {
+            UI::print_error("Operazione fallita:");
             UI::print_error("Dettaglio: " + res.message);
         }
     } 
-    catch (const std::exception& e) {
-        // Intercetta errori di memoria (es. bad_alloc) o eccezioni C++
-        UI::print_error("CRASH IMPREVISTO durante l'operazione!");
-        UI::print_error(std::string("Tipo errore: ") + e.what());
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        UI::print_error("ACCESS VIOLATION: Il programma e' crashato durante la decompressione!");
+        UI::print_error("Probabile causa: Dati corrotti o strutturale Header incompatibile.");
         has_crashed = true;
     }
-    catch (...) {
-        // Intercetta tutti gli altri crash gravi (es. Access Violation)
-        UI::print_error("CRASH GRAVE: Access Violation o errore di sistema sconosciuto.");
-        has_crashed = true;
-    }
-    // ==================================
+    // =====================================
 
     std::cout << "\nProcedura terminata. Premere INVIO per uscire...";
     std::cin.get();
