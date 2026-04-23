@@ -126,17 +126,27 @@ bool is_excluded(const std::string& path, const std::vector<std::string>& exclud
 }
 
 const std::set<std::string>& incompressible_extensions() {
-    static const std::set<std::string> skip = {
+//    static const std::set<std::string> skip = {
+//        ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
+//        ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
+//        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
+//        ".heif", ".avif", ".jxl",
+//        ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
+//        ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
+//        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
+//        ".epub", ".xps",
+ //       ".woff", ".woff2", ".ttf", ".otf", ".eot",
+ //       ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
+ //       ".msi", ".crx",
+ //       ".ktx", ".ktx2", ".basis", ".dds", ".crn"
+    };
+        static const std::set<std::string> skip = {
         ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
         ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".heic",
         ".heif", ".avif", ".jxl",
         ".mp3", ".mp4", ".ogg", ".flac", ".aac", ".wma", ".wmv",
         ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
-        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
-        ".epub", ".xps",
         ".woff", ".woff2", ".ttf", ".otf", ".eot",
-        ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
         ".msi", ".crx",
         ".ktx", ".ktx2", ".basis", ".dds", ".crn"
     };
