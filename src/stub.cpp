@@ -8,15 +8,33 @@
 #include "engine.h"
 #include "ui.h"
 
-// Disabilita un warning di MSVC dovuto all'uso di __try con oggetti C++ (come std::string)
-#pragma warning(disable: 4530)
-
 #define TARC_MAGIC_STR "TRC2"
+
+// === VARIABILI GLOBALI DI SUPPORTO ===
+// Servono per passare i dati fuori dal blocco __try senza usare variabili locali
+bool g_ok = false;
+std::string g_message = "";
+bool g_crashed = false;
+
+// === FUNZIONI SCUDO (WRAPPER) ===
+// Eseguono il codice che restituisce oggetti C++ complessi (TarcResult) fuori dal blocco __try
+void run_extract(const std::string& p, size_t o, bool test) {
+    TarcResult r = Engine::extract(p, {}, test, o);
+    g_ok = r.ok;
+    g_message = r.message;
+}
+
+void run_list(const std::string& p, size_t o) {
+    TarcResult r = Engine::list(p, o);
+    g_ok = r.ok;
+    g_message = r.message;
+}
+// =====================================
 
 void show_stub_header() {
     std::cout << Color::CYAN << "==========================================\n";
     std::cout << "          TARC SELF-EXTRACTOR             \n";
-    std::cout << "       Powered by Strike Engine v2.0      \n";
+    std::cout << "       Powered by Strike Engine v2.04     \n";
     std::cout << "==========================================\n" << Color::RESET;
 }
 
@@ -49,7 +67,6 @@ int main(int argc, char* argv[]) {
 
     char path[MAX_PATH];
     if (GetModuleFileNameA(NULL, path, MAX_PATH) == 0) {
-        UI::print_error("Errore: Impossibile determinare il percorso del file.");
         std::cout << "Premere INVIO per uscire...";
         std::cin.get();
         return 1;
@@ -77,48 +94,46 @@ int main(int argc, char* argv[]) {
     if (input.empty()) return 0;
     char choice = input[0];
 
-    TarcResult res = {false, ""};
-    bool has_crashed = false;
+    int exec_action = 0; // 0=Niente, 1=Estrai, 2=Lista, 3=Test
 
-    // === GABBIA ANTI-CRASH DI WINDOWS ===
-    // Intercetta gli Access Violation prima che Windows chiuda il programma
+    if (choice == '1') exec_action = 1;
+    else if (choice == '2') exec_action = 2;
+    else if (choice == '3') exec_action = 3;
+    else if (choice == '4') return 0;
+
+    // === BLOCCO TRY DI WINDOWS (ORA LEGALE PER MSVC) ===
     __try {
-        switch (choice) {
-            case '1':
-                UI::print_info("Estrazione in corso...");
-                res = Engine::extract(self_path, {}, false, offset);
-                UI::print_summary(res, "Estrazione SFX");
-                break;
-            case '2':
-                UI::print_info("Contenuto dell'archivio:");
-                res = Engine::list(self_path, offset);
-                break;
-            case '3':
-                UI::print_info("Verifica integrita' in corso...");
-                res = Engine::extract(self_path, {}, true, offset);
-                UI::print_summary(res, "Test SFX");
-                break;
-            case '4':
-                return 0;
-            default:
-                UI::print_warning("Scelta non valida.");
-                break;
-        }
-
-        if (!res.ok && choice != '4') {
-            UI::print_error("Operazione fallita:");
-            UI::print_error("Dettaglio: " + res.message);
+        if (exec_action == 1) {
+            UI::print_info("Estrazione in corso...");
+            run_extract(self_path, offset, false);
+        } else if (exec_action == 2) {
+            UI::print_info("Contenuto dell'archivio:");
+            run_list(self_path, offset);
+        } else if (exec_action == 3) {
+            UI::print_info("Verifica integrita' in corso...");
+            run_extract(self_path, offset, true);
         }
     } 
     __except(EXCEPTION_EXECUTE_HANDLER) {
-        UI::print_error("ACCESS VIOLATION: Il programma e' crashato durante la decompressione!");
-        UI::print_error("Probabile causa: Dati corrotti o strutturale Header incompatibile.");
-        has_crashed = true;
+        UI::print_error("ACCESS VIOLATION: Crash durante la decompressione!");
+        g_crashed = true;
     }
-    // =====================================
+    // ====================================================
+
+    // Stampa i risultati finali FUORI dal blocco __try
+    if (!g_crashed) {
+        TarcResult final_res = {g_ok, g_message};
+        if (exec_action == 1) UI::print_summary(final_res, "Estrazione SFX");
+        if (exec_action == 2) UI::print_summary(final_res, "Lista SFX");
+        if (exec_action == 3) UI::print_summary(final_res, "Test SFX");
+
+        if (!g_ok) {
+            UI::print_error("Dettaglio: " + g_message);
+        }
+    }
 
     std::cout << "\nProcedura terminata. Premere INVIO per uscire...";
     std::cin.get();
 
-    return has_crashed ? 1 : (res.ok ? 0 : 1);
+    return g_crashed ? 1 : (g_ok ? 0 : 1);
 }
