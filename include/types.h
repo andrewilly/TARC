@@ -28,21 +28,22 @@ enum class Codec : uint8_t {
 
 inline const char* codec_name(Codec c) {
     switch (c) {
-        case Codec::ZSTD:  return "ZSTD";
-        case Codec::LZMA:  return "LZMA";
-        case Codec::STORE: return "STOR";
-        case Codec::LZ4:   return "LZ4 ";
-        case Codec::BR:    return "BROT";
-        default:           return "????";
+        case Codec::ZSTD:  return "ZSTD ";
+        case Codec::LZMA:  return "LZMA ";
+        case Codec::STORE: return "STOR ";
+        case Codec::LZ4:   return "LZ4  ";
+        case Codec::BR:    return "BROT ";
+        default:           return "UNKN ";
     }
 }
 
 #pragma pack(push, 1)
 struct Header {
-    char     magic[4];
-    uint32_t version;
-    uint64_t toc_offset;
-    uint32_t file_count;
+    char     magic[4];      // "TRC2"
+    uint32_t version;       // 204
+    uint64_t toc_offset;    // Posizione dell'indice file
+    uint32_t file_count;    // Numero di file
+    uint32_t flags;         // Riservato
 };
 
 struct Entry {
@@ -61,15 +62,12 @@ struct ChunkHeader {
     uint32_t codec;
     uint32_t raw_size;
     uint32_t comp_size;
-    uint64_t checksum;   // XXH64 del dato compresso (0 = non verificato, retrocompatibile)
+    uint64_t checksum;   // XXH64 del dato compresso
 };
 
-// ─── SFX TRAILER — Appeso alla fine del file SFX ─────────────────────────────
-// Contiene l'offset esatto dove inizia l'archivio TRC2, cosi' lo stub
-// non deve scansionare tutto il file per trovare il magic "TRC2".
 struct SFXTrailer {
-    uint64_t archive_offset;   // Offset inizio archivio (dopo lo stub)
-    char     magic[4];         // "TSFX" — firma del trailer
+    uint64_t archive_offset;
+    char     magic[4];
 };
 #pragma pack(pop)
 
@@ -78,27 +76,18 @@ struct FileEntry {
     std::string name;
 };
 
-// ─── TARCRISULT ARRICCHITO ────────────────────────────────────────────────────
 struct TarcResult {
     bool        ok          = true;
     std::string message;
 
-    // Statistiche base
     uint64_t    bytes_in    = 0;
     uint64_t    bytes_out   = 0;
+    uint64_t    files_proc  = 0;
+    uint64_t    elapsed_ms  = 0;
+    uint64_t    archive_size = 0;
 
-    // Conteggi
-    uint32_t    file_count  = 0;
-    uint32_t    dup_count   = 0;
-    uint32_t    skip_count  = 0;
-
-    // Statistiche per-codec
     std::map<Codec, uint64_t> codec_bytes;
     std::map<Codec, uint32_t> codec_chunks;
 
-    // Tempo impiegato (millisecondi)
-    uint64_t    elapsed_ms  = 0;
-
-    // Dimensione archivio su disco
-    uint64_t    archive_size = 0;
+    std::vector<FileEntry> toc_snapshot; 
 };
