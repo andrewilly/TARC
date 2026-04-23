@@ -4,7 +4,11 @@ on:
   push:
     paths:
       - 'src/stub.cpp'
-      - 'CMakeListsStub.txt'
+      - 'src/engine.cpp'
+      - 'src/io.cpp'
+      - 'src/ui.cpp'
+      - 'src/license.cpp'
+      - 'build_stub/CMakeLists.txt'
       - '.github/workflows/stub.yml'
   workflow_dispatch:
 
@@ -16,39 +20,22 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Install Dependencies (vcpkg)
+    - name: Configure CMake (FetchContent)
       shell: pwsh
       run: |
-        # Installiamo le versioni STATICHE per evitare la dipendenza dalle DLL
-        vcpkg install liblzma:x64-windows-static zstd:x64-windows-static xxhash:x64-windows-static
-        
-    - name: Prepare Build Environment
-      shell: pwsh
-      run: |
-        mkdir build_stub
-        # Copiamo il nostro CMakeLists personalizzato nella cartella di build
-        copy CMakeListsStub.txt build_stub/CMakeLists.txt
-        
-    - name: Configure CMake
-      shell: pwsh
-      run: |
-        cd build_stub
-        cmake -S . -B . `
+        cmake -S build_stub -B _build_stub `
           -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static `
           -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
 
     - name: Build SFX Stub
       shell: pwsh
       run: |
-        cd build_stub
-        cmake --build . --config Release
+        cmake --build _build_stub --config Release
 
     - name: Verify Executable
       shell: pwsh
       run: |
-        if (Test-Path "build_stub/Release/tarc_sfx_stub.exe") {
+        if (Test-Path "_build_stub/Release/tarc_sfx_stub.exe") {
           Write-Host "Stub compilato con successo!" -ForegroundColor Green
         } else {
           Write-Host "Errore: tarc_sfx_stub.exe non trovato." -ForegroundColor Red
@@ -59,4 +46,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: TARC-SFX-Stub-Win
-        path: build_stub/Release/tarc_sfx_stub.exe
+        path: _build_stub/Release/tarc_sfx_stub.exe
