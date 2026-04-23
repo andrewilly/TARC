@@ -1,12 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(tarc_sfx_stub VERSION 2.04 LANGUAGES CXX C)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TARC SFX STUB — Build indipendente
-# Questo CMakeLists.txt compila SOLO lo stub SFX.
-# Le FetchContent sono IDENTICHE al CMakeLists.txt principale.
-# ═══════════════════════════════════════════════════════════════════════════════
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
@@ -18,10 +12,6 @@ endif()
 
 find_package(Threads REQUIRED)
 include(FetchContent)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FETCH CONTENT — Identico al CMakeLists.txt principale
-# ═══════════════════════════════════════════════════════════════════════════════
 
 # ── zstd ─────────────────────────────────────────────────────────────────────
 FetchContent_Declare(
@@ -85,7 +75,7 @@ add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
 target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TARGET SFX STUB — Identico al CMakeLists.txt principale
+# TARGET SFX STUB
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(SFX_STUB_SOURCES
@@ -124,14 +114,12 @@ target_compile_definitions(tarc_sfx_stub PRIVATE
 
 if(MSVC)
     target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8 /wd4100)
-    # Sottosistema CONSOLE: usa main(), non WinMain
     set_target_properties(tarc_sfx_stub PROPERTIES
         WIN32_EXECUTABLE FALSE
         LINK_FLAGS "/SUBSYSTEM:CONSOLE"
     )
 endif()
 
-# Copia lo stub nella root della build directory
 add_custom_command(TARGET tarc_sfx_stub POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:tarc_sfx_stub>
@@ -145,7 +133,6 @@ message(STATUS "  |   TARC SFX STUB v${PROJECT_VERSION} - BUILD CONFIG   |")
 message(STATUS "  +==========================================+")
 message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  |  Target     : tarc_sfx_stub.exe")
-message(STATUS "  |  lz4 inc    : ${lz4_SOURCE_DIR}/lib")
 message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
 message(STATUS "  +==========================================+")
 message(STATUS "")
