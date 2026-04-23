@@ -165,7 +165,7 @@ if(WIN32)
         src/license.cpp
     )
 
-    add_executable(tarc_sfx_stub WIN32 ${SFX_STUB_SOURCES})
+    add_executable(tarc_sfx_stub ${SFX_STUB_SOURCES})
 
     target_include_directories(tarc_sfx_stub PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

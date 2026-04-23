@@ -10,6 +10,9 @@
 #include <sstream>
 
 #ifdef _WIN32
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
     #include <windows.h>
 #endif
 
@@ -191,7 +194,7 @@ bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 
     for (auto& fe : toc) {
         fe.meta.name_len = static_cast<uint16_t>(
-            std::min(static_cast<size_t>(fe.name.length()), static_cast<size_t>(MAX_NAME_LEN)));
+            (std::min)(static_cast<size_t>(fe.name.length()), static_cast<size_t>(MAX_NAME_LEN)));
         if (fwrite(&fe.meta, sizeof(Entry), 1, f) != 1) return false;
         if (fwrite(fe.name.c_str(), 1, fe.meta.name_len, f) != fe.meta.name_len) return false;
     }

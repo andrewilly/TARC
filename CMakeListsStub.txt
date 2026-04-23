@@ -13,6 +13,19 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFINIZIONI GLOBALI — Necessarie prima di qualsiasi FetchContent
+# perche' i source includono <windows.h> che definisce min/max se
+# NOMINMAX non e' definito. Con add_definitions() sono garantite
+# sulla riga di comando del compilatore per TUTTI i target.
+# ═══════════════════════════════════════════════════════════════════════════════
+add_definitions(
+    -D_CRT_SECURE_NO_WARNINGS
+    -DWIN32_LEAN_AND_MEAN
+    -DNOMINMAX
+    -D_USE_MATH_DEFINES
+)
+
 find_package(Threads REQUIRED)
 include(FetchContent)
 
@@ -78,7 +91,27 @@ add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
 target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# INCLUDE DIRECTORIES GLOBALI
+# Usiamo include_directories() invece di target_include_directories()
+# perche' nel progetto separato build_stub e' piu' robusto con MSVC.
+# Le librerie linkate propagano gia' i loro include, ma li aggiungiamo
+# anche esplicitamente come fallback.
+# ═══════════════════════════════════════════════════════════════════════════════
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${zstd_SOURCE_DIR}/lib
+    ${lz4_SOURCE_DIR}/lib
+    ${liblzma_SOURCE_DIR}/src/liblzma/api
+    ${brotli_SOURCE_DIR}/c/include
+    ${xxhash_SOURCE_DIR}
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SFX STUB TARGET
+# ═══════════════════════════════════════════════════════════════════════════════
+# IMPORTANTE: NON usare WIN32 in add_executable! Lo stub usa main(),
+# non WinMain. Il flag WIN32 fa cercare a MSVC l'entry point WinMain
+# causando LNK2019.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(SFX_STUB_SOURCES
@@ -89,16 +122,7 @@ set(SFX_STUB_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/license.cpp
 )
 
-add_executable(tarc_sfx_stub WIN32 ${SFX_STUB_SOURCES})
-
-target_include_directories(tarc_sfx_stub PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include
-    ${zstd_SOURCE_DIR}/lib
-    ${lz4_SOURCE_DIR}/lib
-    ${liblzma_SOURCE_DIR}/src/liblzma/api
-    ${brotli_SOURCE_DIR}/c/include
-    ${xxhash_SOURCE_DIR}
-)
+add_executable(tarc_sfx_stub ${SFX_STUB_SOURCES})
 
 target_link_libraries(tarc_sfx_stub PRIVATE
     libzstd_static
@@ -116,15 +140,13 @@ if(MSVC)
     target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8)
 endif()
 
-target_compile_definitions(tarc_sfx_stub PRIVATE
-    _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
-
 message(STATUS "")
 message(STATUS "  +==========================================+")
 message(STATUS "  |   TARC SFX STUB v${PROJECT_VERSION} - BUILD CONFIG   |")
 message(STATUS "  +==========================================+")
 message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  |  Target     : tarc_sfx_stub.exe")
+message(STATUS "  |  lz4 inc    : ${lz4_SOURCE_DIR}/lib")
 message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
 message(STATUS "  +==========================================+")
 message(STATUS "")
