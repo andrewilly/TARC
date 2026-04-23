@@ -16,7 +16,8 @@ namespace Color {
     inline const char* DIM    = "\x1b[2m";
 }
 
-// ─── UI FUNCTIONS ─────────────────────────────────────────────────────────────
+// ─── VERBOSE FLAG (Intervento #16) ─────────────────────────────────────────────
+// Globale: impostato da main.cpp in base al flag -v
 namespace UI {
 
     // Abilita Virtual Terminal Processing su Windows
@@ -34,6 +35,15 @@ namespace UI {
     // Formatta ratio di compressione
     std::string compress_ratio(uint64_t orig, uint64_t comp);
 
+    // ─── INTERVENTO #17: PROGRESS BAR CON ETA ──────────────────────────────────
+    // Barra di progresso con stima tempo rimanente
+    // test_ok: -1 = non testando, 0 = FAIL, 1 = OK (mostra [OK]/[FAIL] inline)
+    void print_progress(size_t current, size_t total, const std::string& current_file,
+                        int test_ok = -1);
+
+    // Resetta il timer interno per il calcolo ETA (chiamare prima di ogni operazione)
+    void progress_timer_reset();
+
     // Stampa riga aggiunta/compressa
     void print_add(const std::string& name, uint64_t size, Codec codec, float ratio);
 
@@ -46,12 +56,13 @@ namespace UI {
     // Stampa riga lista archivio
     void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec);
 
-    // Stampa riepilogo finale operazione
+    // ─── INTERVENTO #18: SUMMARY ARRICCHITO ────────────────────────────────────
+    // Stampa riepilogo finale con statistiche per-codec, tempo, duplicati
     void print_summary(const TarcResult& result, const std::string& operation);
 
     // --- Messaggistica di Stato ---
-    
-    // Stampa messaggio informativo (Richiesto da main.cpp per SFX)
+
+    // Stampa messaggio informativo
     void print_info(const std::string& msg);
 
     // Stampa errore
@@ -60,7 +71,11 @@ namespace UI {
     // Stampa warning
     void print_warning(const std::string& msg);
 
-    // Barra di progresso
-    void print_progress(size_t current, size_t total, const std::string& current_file);
+    // ─── INTERVENTO #16: VERBOSE LOGGING ───────────────────────────────────────
+    // Messaggio verbose: stampato solo quando -v e' attivo
+    void print_verbose(const std::string& msg);
+
+    // Flag verbose globale
+    extern bool g_verbose;
 
 } // namespace UI

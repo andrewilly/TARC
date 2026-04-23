@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(tarc VERSION 1.05 LANGUAGES CXX C)
+project(tarc VERSION 2.04 LANGUAGES CXX C)
 
 # STANDARD
 set(CMAKE_CXX_STANDARD 17)
@@ -79,7 +79,10 @@ FetchContent_MakeAvailable(xxhash)
 add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
 target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 
-# SORGENTI
+# ═══════════════════════════════════════════════════════════════════════════════
+# TARGET PRINCIPALE: tarc
+# ═══════════════════════════════════════════════════════════════════════════════
+
 set(TARC_SOURCES
     src/main.cpp
     src/ui.cpp
@@ -99,7 +102,7 @@ target_include_directories(tarc PRIVATE
     ${xxhash_SOURCE_DIR}
 )
 
-# LINK (Aggiunto Threads::Threads)
+# LINK
 target_link_libraries(tarc PRIVATE
     libzstd_static
     lz4_static
@@ -123,7 +126,7 @@ endif()
 
 # DEFINIZIONI SPECIFICHE PER PIATTAFORMA
 if(WIN32)
-    target_compile_definitions(tarc PRIVATE 
+    target_compile_definitions(tarc PRIVATE
         _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
     target_link_libraries(tarc PRIVATE bcrypt user32)
 endif()
@@ -143,13 +146,86 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
     target_link_options(tarc PRIVATE -s)
 endif()
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TARGET SFX STUB: tarc_sfx_stub (Windows-only)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Lo stub SFX e' un eseguibile Windows che si concatena all'archivio .strk.
+# Layout: [STUB EXE][ARCHIVIO .strk][SFXTrailer (12 byte)]
+#
+# NOTA: Questo target e' compilato SOLO su Windows perche' usa GetModuleFileNameW.
+# Su Linux/macOS il target viene saltato automaticamente.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if(WIN32)
+    set(SFX_STUB_SOURCES
+        src/stub.cpp
+        src/engine.cpp
+        src/io.cpp
+        src/ui.cpp
+        src/license.cpp
+    )
+
+    add_executable(tarc_sfx_stub ${SFX_STUB_SOURCES})
+
+    target_include_directories(tarc_sfx_stub PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${zstd_SOURCE_DIR}/lib
+        ${lz4_SOURCE_DIR}/lib
+        ${liblzma_SOURCE_DIR}/src/liblzma/api
+        ${brotli_SOURCE_DIR}/c/include
+        ${xxhash_SOURCE_DIR}
+    )
+
+    target_link_libraries(tarc_sfx_stub PRIVATE
+        libzstd_static
+        lz4_static
+        liblzma
+        brotlienc
+        brotlidec
+        brotlicommon
+        xxhash_lib
+        Threads::Threads
+        bcrypt user32
+    )
+
+    if(MSVC)
+        target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8)
+        # Sopprime warning C4100 per parametri non referenziati (argc/argv in stub)
+        target_compile_options(tarc_sfx_stub PRIVATE /wd4100)
+    endif()
+
+    target_compile_definitions(tarc_sfx_stub PRIVATE
+        _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+
+    # Assicura sottosistema CONSOLE (main, non WinMain)
+    set_target_properties(tarc_sfx_stub PROPERTIES
+        WIN32_EXECUTABLE FALSE
+    )
+    if(MSVC)
+        set_target_properties(tarc_sfx_stub PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
+    endif()
+
+    # Copia lo stub accanto all'eseguibile tarc per comodita'
+    add_custom_command(TARGET tarc_sfx_stub POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:tarc_sfx_stub>
+            ${CMAKE_CURRENT_BINARY_DIR}/tarc_sfx_stub.exe
+        COMMENT "Copying SFX stub to build directory"
+    )
+endif()
+
 # INFO BUILD
 message(STATUS "")
-message(STATUS "  ╔════════════════════════════════════════════╗")
-message(STATUS "  ║         TARC v${PROJECT_VERSION} - BUILD CONFIG       ║")
-message(STATUS "  ╠════════════════════════════════════════════╣")
-message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
-message(STATUS "  ║  Parallel   : Enabled (Multi-threaded)")
-message(STATUS "  ║  Codecs     : ZSTD + LZ4 + LZMA + BROTLI")
-message(STATUS "  ╚════════════════════════════════════════════╝")
+message(STATUS "  +==========================================+")
+message(STATUS "  |       TARC v${PROJECT_VERSION} - BUILD CONFIG        |")
+message(STATUS "  +==========================================+")
+message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  |  Parallel   : Enabled (Multi-threaded)")
+message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
+message(STATUS "  |  Checksum   : XXH64 Chunk Verification")
+message(STATUS "  |  I/O        : 64-bit + Atomic + Unicode")
+message(STATUS "  |  Security   : Path Traversal + XXH64 License")
+message(STATUS "  |  SFX Stub   : ${WIN32}")
+message(STATUS "  |  Features   : -o dir, --exclude, -v, -r, ETA")
+message(STATUS "  +==========================================+")
 message(STATUS "")

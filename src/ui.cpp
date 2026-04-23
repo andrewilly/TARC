@@ -5,12 +5,26 @@
 #include <cstring>
 #include <string>
 #include <iomanip>
+#include <chrono>
 
 #ifdef _WIN32
-#include <windows.h>
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
 #endif
 
 namespace UI {
+
+// ─── INTERVENTO #16: VERBOSE FLAG GLOBALE ─────────────────────────────────────
+bool g_verbose = false;
+
+// ─── INTERVENTO #17: TIMER PER ETA ─────────────────────────────────────────────
+static std::chrono::steady_clock::time_point g_progress_start;
+
+void progress_timer_reset() {
+    g_progress_start = std::chrono::steady_clock::now();
+}
 
 // ─── VTP (Virtual Terminal Processing) ───────────────────────────────────────
 void enable_vtp() {
@@ -27,7 +41,7 @@ void enable_vtp() {
 #endif
 }
 
-// ─── HELP (Stile UPX 5.1.1) ──────────────────────────────────────────────────
+// ─── HELP ─────────────────────────────────────────────────────────────────────
 void show_help() {
     const char* C = Color::CYAN;
     const char* R = Color::RESET;
@@ -36,58 +50,99 @@ void show_help() {
     const char* Y = Color::YELLOW;
     const char* D = Color::DIM;
 
-    printf("Usage: tarc [%s-cxlta%s] [%s-cbest|cfast%s] [%s--sfx%s] %sarchive [file..]%s\n\n", 
-            G, R, G, R, W, R, Y, R);
+    printf("Usage: tarc [%s-cxlta%s] [%s-cbest|cfast%s] [%s--sfx%s] [%s--exclude%s pat] "
+           "[%s-o%s dir] [%s-v%s] %sarchive [file..]%s\n\n",
+            G, R, G, R, W, R, W, R, W, R, G, R, Y, R);
 
     printf("Commands:\n");
     printf("  %s-c / -a%s      Crea o Aggiorna Archivio Solid (Deduplicazione ON)\n", G, R);
     printf("  %s-x [filter]%s   Estrai file (Supporta wildcard es. *.txt)\n", C, R);
-    printf("  %s-l%s           Elenca contenuto (Visualizza dettagli Solid)\n", G, R);
-    printf("  %s-t%s           Test integrità (Verifica XXH64 Hardware)\n", Y, R);
+    printf("  %s-l%s           Elenca contenuto (visualizza dettagli Solid)\n", G, R);
+    printf("  %s-t%s           Test integrita' (Verifica XXH64 + Chunk Checksum)\n", Y, R);
+    printf("  %s-r [filter]%s   Rimuovi file dall'archivio (riscrittura completa)\n", C, R);
 
     printf("\nCompression Levels:\n");
-    printf("  %s-cbest%s       Livello Massimo (LZMA 256MB Chunk)\n", G, R);
-    printf("  %s-cfast%s       Velocità Massima (LZ4 / ZSTD Fast)\n", G, R);
+    printf("  %s-cfast%s       Velocita' Massima (LZ4)\n", G, R);
+    printf("  %s-c%s           Bilanciato (ZSTD piccoli / LZMA grandi)\n", G, R);
+    printf("  %s-cbest%s       Massima Compressione (LZMA Extreme)\n", G, R);
 
     printf("\nOptions:\n");
     printf("  %s--sfx%s        Genera archivio Autoestraente (.exe)\n", W, R);
     printf("  %s--flat%s       Estrazione Flat: ignora percorsi, file nella cartella corrente\n", W, R);
+    printf("  %s-o <dir>%s     Estrai nella directory specificata (crea se non esiste)\n", W, R);
+    printf("  %s--exclude%s    Escludi file corrispondenti al pattern dalla compressione\n", W, R);
+    printf("  %s-v%s           Modalita' verbose: output dettagliato\n", W, R);
 
-    printf("\nFeatures:\n");
-    printf("  Solid Blocks 256MB, Deduplicazione XXH64, Win32 Native IO, Filtri Avanzati\n\n");
+    printf("\nCodecs: ZSTD | LZMA | LZ4 | Brotli | STORE (auto-selezione)\n");
+    printf("Security: Path Traversal Protection, Atomic Writes, Header Validation\n\n");
 
     printf("Type 'tarc --help' for more detailed help.\n");
     printf("%sTARC comes with ABSOLUTELY NO WARRANTY.%s\n\n", D, R);
 }
 
-// ─── BANNER (Stile Professionale - Credits: André Willy Rizzo) ──────────────
+// ─── BANNER ──────────────────────────────────────────────────────────────────
 void show_banner() {
     printf("%s========================================================================\n", Color::CYAN);
-    printf("TARC STRIKE v2.00             Advanced Solid Compression\n");
-    printf("Copyright (C) 2026            André Willy Rizzo\n");
+    printf("TARC STRIKE v2.04             Advanced Solid Compression\n");
+    printf("Copyright (C) 2026            Andre Willy Rizzo\n");
     printf("========================================================================%s\n", Color::RESET);
-    // Nota: La licenza non viene stampata qui per evitare duplicati con il main
 }
 
-// ─── PROGRESS BAR ───────────────────────────────────────────────────────────
-void print_progress(size_t current, size_t total, const std::string& current_file) {
-    // Protezione contro divisione per zero
-    float percent = (total > 0) ? ((float)current / total * 100.0f) : 100.0f;
+// ─── INTERVENTO #17: PROGRESS BAR CON ETA ─────────────────────────────────────
+void print_progress(size_t current, size_t total, const std::string& current_file,
+                    int test_ok) {
+    float percent = (total > 0) ? (static_cast<float>(current) / total * 100.0f) : 100.0f;
     int width = 25;
-    int pos = (total > 0) ? (int)(width * current / total) : width;
+    int pos = (total > 0) ? (static_cast<int>(width * current / total)) : width;
 
     std::string short_name = current_file;
     if (short_name.length() > 20) short_name = "..." + short_name.substr(short_name.length() - 17);
 
-    std::cout << "\r" << Color::CYAN << " [" << Color::BOLD;
-    for (int i = 0; i < width; ++i) {
-        if (i < pos) std::cout << "=";
-        else if (i == pos) std::cout << ">";
-        else std::cout << " ";
+    // Calcola ETA
+    char eta_buf[32] = "";
+    if (current > 1 && total > 0) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - g_progress_start).count();
+        if (elapsed > 0) {
+            float rate = static_cast<float>(current) / static_cast<float>(elapsed);
+            int remaining_sec = static_cast<int>((total - current) / rate);
+            if (remaining_sec >= 3600) {
+                snprintf(eta_buf, sizeof(eta_buf), " ETA %dh%02dm", remaining_sec / 3600, (remaining_sec % 3600) / 60);
+            } else if (remaining_sec >= 60) {
+                snprintf(eta_buf, sizeof(eta_buf), " ETA %dm%02ds", remaining_sec / 60, remaining_sec % 60);
+            } else {
+                snprintf(eta_buf, sizeof(eta_buf), " ETA %ds", remaining_sec);
+            }
+        }
     }
-    std::cout << Color::RESET << Color::CYAN << "] " 
-              << std::fixed << std::setprecision(1) << percent << "% "
-              << Color::DIM << "Processing: " << Color::RESET << std::left << std::setw(20) << short_name << std::flush;
+
+    // Costruisci la barra di progresso
+    printf("\r%s [%s", Color::CYAN, Color::BOLD);
+    for (int i = 0; i < width; ++i) {
+        if (i < pos) printf("=");
+        else if (i == pos) printf(">");
+        else printf(" ");
+    }
+    printf("%s%s] %.1f%%", Color::RESET, Color::CYAN, percent);
+
+    // Contatore file (es. "42/137")
+    printf(" %s%zu/%zu%s", Color::DIM, current, total, Color::RESET);
+
+    // Modalita' test: mostra [OK]/[FAIL] inline col nome file
+    if (test_ok >= 0) {
+        const char* status_color = test_ok ? Color::GREEN : Color::RED;
+        const char* status_text  = test_ok ? "OK" : "FAIL";
+        printf(" %s[%s]%s %s%-30s%s",
+               status_color, status_text, Color::RESET,
+               Color::RESET, short_name.c_str(), Color::RESET);
+    } else {
+        // Modalita' compressione/estrazione: nome file normale
+        printf(" %sProcessing: %s%-20s%s",
+               Color::DIM, Color::RESET, short_name.c_str(), Color::RESET);
+    }
+
+    printf("%s", eta_buf);
+    fflush(stdout);
 }
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
@@ -103,25 +158,24 @@ std::string human_size(uint64_t b) {
 std::string compress_ratio(uint64_t orig, uint64_t comp) {
     if (orig == 0) return "  -  ";
     char buf[16];
-    double r = 100.0 * (1.0 - (double)comp / (double)orig);
-    if (r < 0) r = 0; 
+    double r = 100.0 * (1.0 - static_cast<double>(comp) / static_cast<double>(orig));
+    if (r < 0) r = 0;
     snprintf(buf, sizeof(buf), "%.1f%%", r);
     return std::string(buf);
 }
 
 // ─── PRINT OPERATIONS ────────────────────────────────────────────────────────
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
-    // Nota: ratio >= 1.0 nel codice precedente indicava deduplicazione basata su logica custom
-    bool is_dedup = (ratio >= 1.0f); 
-    
-    printf("\n%s[+]%s [%s%s%s] %-38s %10s  %s→%s %s%s",
+    bool is_dedup = (ratio >= 1.0f);
+
+    printf("\n%s[+]%s [%s%s%s] %-38s %10s  %s->%s %s%s",
             Color::GREEN, Color::RESET,
             Color::YELLOW, codec_name(codec), Color::RESET,
             name.c_str(),
             human_size(size).c_str(),
             Color::DIM, Color::RESET,
             is_dedup ? Color::CYAN : "",
-            is_dedup ? "DEDUPLICATED" : compress_ratio(size, (uint64_t)(size * (1.0f-ratio))).c_str());
+            is_dedup ? "DEDUPLICATED" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio))).c_str());
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
@@ -142,46 +196,105 @@ void print_delete(const std::string& name) {
 }
 
 void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {
-    bool is_duplicate = (comp == 0); 
+    bool is_duplicate = (comp == 0);
 
     printf("  [%s%s%s] %-42s %10s  %s%s%s\n",
             Color::YELLOW, codec_name(codec), Color::RESET,
             name.c_str(),
             human_size(orig).c_str(),
-            Color::DIM, 
-            is_duplicate ? "(DUPLICATE)" : "", 
+            Color::DIM,
+            is_duplicate ? "(DUPLICATE)" : "",
             Color::RESET);
 }
 
+// ─── INTERVENTO #18: SUMMARY ARRICCHITO ────────────────────────────────────────
 void print_summary(const TarcResult& r, const std::string& op) {
-    std::cout << std::endl; 
+    printf("\n");
     if (!r.ok) {
-        printf("\n%s❌ %s fallito: %s%s\n", Color::RED, op.c_str(), r.message.c_str(), Color::RESET);
+        printf("\n%sX %s fallito: %s%s\n", Color::RED, op.c_str(), r.message.c_str(), Color::RESET);
         return;
     }
+
+    // Operazione completata
+    printf("\n%s+ %s completato.%s", Color::GREEN, op.c_str(), Color::RESET);
+
+    // Statistiche byte se disponibili
     if (r.bytes_in > 0 && r.bytes_out > 0) {
-        printf("\n%s✔ %s completato.%s  %s → %s  (%sratio: %s%s)\n",
-                Color::GREEN, op.c_str(), Color::RESET,
+        printf("  %s -> %s  (%sratio: %s%s)",
                 human_size(r.bytes_in).c_str(),
                 human_size(r.bytes_out).c_str(),
                 Color::DIM,
                 compress_ratio(r.bytes_in, r.bytes_out).c_str(),
                 Color::RESET);
-    } else {
-        printf("\n%s✔ %s completato.%s\n", Color::GREEN, op.c_str(), Color::RESET);
+    }
+    printf("\n");
+
+    // Conteggi file
+    if (r.file_count > 0) {
+        printf("  %sFile:%s %u", Color::DIM, Color::RESET, r.file_count);
+        if (r.dup_count > 0)
+            printf("  %sDuplicati:%s %u", Color::CYAN, Color::RESET, r.dup_count);
+        if (r.skip_count > 0)
+            printf("  %sSaltati:%s %u", Color::YELLOW, Color::RESET, r.skip_count);
+        printf("\n");
+    }
+
+    // Statistiche per-codec
+    if (!r.codec_bytes.empty()) {
+        printf("  %sCodecs:%s", Color::DIM, Color::RESET);
+        for (const auto& [codec, bytes] : r.codec_bytes) {
+            auto chunk_it = r.codec_chunks.find(codec);
+            uint32_t chunks = (chunk_it != r.codec_chunks.end()) ? chunk_it->second : 0;
+            printf(" %s%s%s %s(%u chunk%s)",
+                   Color::YELLOW, codec_name(codec), Color::RESET,
+                   human_size(bytes).c_str(),
+                   chunks,
+                   chunks != 1 ? "s" : "");
+        }
+        printf("\n");
+    }
+
+    // Tempo impiegato
+    if (r.elapsed_ms > 0) {
+        printf("  %sTempo:%s ", Color::DIM, Color::RESET);
+        if (r.elapsed_ms >= 60000) {
+            printf("%.1f min", r.elapsed_ms / 60000.0);
+        } else if (r.elapsed_ms >= 1000) {
+            printf("%.2f sec", r.elapsed_ms / 1000.0);
+        } else {
+            printf("%llu ms", (unsigned long long)r.elapsed_ms);
+        }
+
+        // Velocita' se abbiamo bytes e tempo
+        if (r.bytes_in > 0 && r.elapsed_ms > 0) {
+            double mb_per_sec = (r.bytes_in / 1048576.0) / (r.elapsed_ms / 1000.0);
+            printf("  %s(%.1f MB/s)%s", Color::DIM, mb_per_sec, Color::RESET);
+        }
+        printf("\n");
+    }
+
+    // Dimensione archivio
+    if (r.archive_size > 0) {
+        printf("  %sArchivio:%s %s\n", Color::DIM, Color::RESET, human_size(r.archive_size).c_str());
     }
 }
 
 void print_info(const std::string& msg) {
-    printf("%sℹ  INFO: %s%s\n", Color::CYAN, msg.c_str(), Color::RESET);
+    printf("%sINFO: %s%s\n", Color::CYAN, msg.c_str(), Color::RESET);
 }
 
 void print_error(const std::string& msg) {
-    printf("%s❌ ERROR: %s%s\n", Color::RED, msg.c_str(), Color::RESET);
+    printf("%sERROR: %s%s\n", Color::RED, msg.c_str(), Color::RESET);
 }
 
 void print_warning(const std::string& msg) {
-    printf("%s⚠  WARNING: %s%s\n", Color::YELLOW, msg.c_str(), Color::RESET);
+    printf("%sWARNING: %s%s\n", Color::YELLOW, msg.c_str(), Color::RESET);
+}
+
+// ─── INTERVENTO #16: VERBOSE LOGGING ─────────────────────────────────────────
+void print_verbose(const std::string& msg) {
+    if (!g_verbose) return;
+    printf("%sVERBOSE: %s%s\n", Color::DIM, msg.c_str(), Color::RESET);
 }
 
 } // namespace UI
