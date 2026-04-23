@@ -8,6 +8,7 @@
 #define TARC_VERSION   204
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
+#define SFX_TRAILER_MAGIC "TSFX"
 
 // ─── COSTANTI NOMINATE ────────────────────────────────────────────────────────
 // Soglia dimensione chunk solid (256 MB)
@@ -61,6 +62,14 @@ struct ChunkHeader {
     uint32_t raw_size;
     uint32_t comp_size;
     uint64_t checksum;   // XXH64 del dato compresso (0 = non verificato, retrocompatibile)
+};
+
+// ─── SFX TRAILER — Appeso alla fine del file SFX ─────────────────────────────
+// Contiene l'offset esatto dove inizia l'archivio TRC2, cosi' lo stub
+// non deve scansionare tutto il file per trovare il magic "TRC2".
+struct SFXTrailer {
+    uint64_t archive_offset;   // Offset inizio archivio (dopo lo stub)
+    char     magic[4];         // "TSFX" — firma del trailer
 };
 #pragma pack(pop)
 
