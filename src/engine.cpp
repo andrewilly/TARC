@@ -135,11 +135,11 @@ const std::set<std::string>& incompressible_extensions() {
 //        ".avi", ".mkv", ".mov", ".webm", ".opus", ".m4a", ".m4v",
 //        ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
 //        ".epub", ".xps",
- //       ".woff", ".woff2", ".ttf", ".otf", ".eot",
- //       ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
- //       ".msi", ".crx",
- //       ".ktx", ".ktx2", ".basis", ".dds", ".crn"
-    };
+//        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+//        ".exe", ".dll", ".so", ".dylib", ".nupkg", ".jar", ".apk",
+//        ".msi", ".crx",
+//        ".ktx", ".ktx2", ".basis", ".dds", ".crn"
+//   };
         static const std::set<std::string> skip = {
         ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".lz4",
         ".br", ".tar", ".tgz", ".tbz2", ".txz", ".cab", ".arj",
