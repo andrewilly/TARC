@@ -16,10 +16,11 @@ namespace Color {
     inline const char* DIM    = "\x1b[2m";
 }
 
-// ─── UI NAMESPACE ──────────────────────────────────────────────────────────────
+// ─── VERBOSE FLAG (Intervento #16) ─────────────────────────────────────────────
+// Globale: impostato da main.cpp in base al flag -v
 namespace UI {
 
-    // Inizializza Virtual Terminal Processing su Windows,
+    // Abilita Virtual Terminal Processing su Windows,
     // rileva supporto terminale su POSIX (imposta g_color_enabled)
     void enable_vtp();
 
