@@ -251,7 +251,6 @@ static int run_command(const Command& cmd) {
 
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
-    UI::show_banner();
     
     License::check_and_activate();
     
@@ -262,6 +261,8 @@ int main(int argc, char* argv[]) {
         UI::show_help();
         return 0;
     }
+    
+    UI::show_banner();
     
     return run_command(cmd);
 }
