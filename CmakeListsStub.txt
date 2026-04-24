@@ -69,16 +69,16 @@ add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
 target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 
 set(STUB_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/stub.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/engine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/io.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui.cpp
+    ${CMAKE_SOURCE_DIR}/src/stub.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/io.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui.cpp
 )
 
 add_executable(tarc_sfx_stub ${STUB_SOURCES})
 
 target_include_directories(tarc_sfx_stub PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include
     ${zstd_SOURCE_DIR}/lib
     ${lz4_SOURCE_DIR}/lib
     ${liblzma_SOURCE_DIR}/src/liblzma/api
@@ -120,11 +120,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
 endif()
 
 message(STATUS "")
-message(STATUS "  ╔═══════════���════════════════════════════════╗")
-message(STATUS "  ║    TARC SFX STUB - BUILD CONFIG           ║")
-message(STATUS "  ╠════════════════════════════════════════════╣")
-message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
-message(STATUS "  ║  Standard   : C++17")
-message(STATUS "  ║  Version    : 2.00_OpenAi")
-message(STATUS "  ╚════════════════════════════════════════════╝")
+message(STATUS "  +==================================================+")
+message(STATUS "  |    TARC SFX STUB - BUILD CONFIG              |")
+message(STATUS "  +==================================================+")
+message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  |  Standard   : C++17")
+message(STATUS "  |  Version    : 2.00_OpenAi")
+message(STATUS "  +==================================================+")
 message(STATUS "")
