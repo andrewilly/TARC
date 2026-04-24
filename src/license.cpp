@@ -18,10 +18,10 @@
 namespace fs = std::filesystem;
 
 namespace {
-    License::LicenseInfo g_license_info;
+    LicenseInfo g_license_info;
 }
 
-std::optional<License::LicenseInfo> License::load_saved_key() {
+std::optional<LicenseInfo> License::load_saved_key() {
     std::string path = get_license_path();
     if (!fs::exists(path)) return std::nullopt;
     

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 #include <system_error>
+#include <ctime>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -139,10 +140,12 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
 
         if (out.good()) {
             try {
-                fs::file_time_type::duration dur(std::chrono::seconds(timestamp));
-                fs::file_time_type file_time(dur);
+                // Cross-platform: usa from_time_t che è standard
+                auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
+                auto file_time = std::chrono::clock_cast<fs::file_time_type>(sys_time);
                 fs::last_write_time(p, file_time);
             } catch (...) {
+                // Ignora errori timestamp su filesystem che non supportano
             }
         }
         
