@@ -18,10 +18,10 @@
 namespace fs = std::filesystem;
 
 namespace {
-    License::License::LicenseInfo g_license_info;
+    LicenseInfo g_license_info;
 }
 
-std::optional<License::License::LicenseInfo> License::load_saved_key() {
+std::optional<LicenseInfo> License::load_saved_key() {
     std::string path = get_license_path();
     if (!fs::exists(path)) return std::nullopt;
     
@@ -29,7 +29,7 @@ std::optional<License::License::LicenseInfo> License::load_saved_key() {
         std::ifstream ifs(path);
         if (!ifs) return std::nullopt;
         
-        License::License::LicenseInfo info;
+        LicenseInfo info;
         std::string line;
         
         while (std::getline(ifs, line)) {
@@ -64,7 +64,7 @@ bool License::save_key(const std::string& key) {
         std::ofstream ofs(p);
         if (!ofs) return false;
         
-        License::LicenseInfo info;
+        LicenseInfo info;
         info.key = key;
         info.is_valid = is_valid(key);
         
@@ -80,7 +80,7 @@ bool License::save_key(const std::string& key) {
     }
 }
 
-bool License::save_license_info(const License::LicenseInfo& info) {
+bool License::save_license_info(const LicenseInfo& info) {
     try {
         fs::path p(get_license_path());
         fs::create_directories(p.parent_path());
@@ -115,11 +115,11 @@ bool License::delete_license() {
     return true;
 }
 
-void License::set_license_info(const License::LicenseInfo& info) {
+void License::set_license_info(const LicenseInfo& info) {
     g_license_info = info;
 }
 
-License::LicenseInfo License::get_license_info() {
+LicenseInfo License::get_license_info() {
     return g_license_info;
 }
 
