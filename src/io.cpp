@@ -7,6 +7,10 @@
 #include <cstring>
 #include <system_error>
 
+#ifdef _WIN32
+    #include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 std::string IO::ensure_ext(const std::string& path) {
@@ -63,7 +67,7 @@ bool IO::read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     toc.reserve(h.file_count);
     
     for (uint32_t i = 0; i < h.file_count; ++i) {
-        auto entry = read_entry(f);
+        auto entry = IO::read_entry(f);
         if (!entry.has_value()) return false;
         toc.push_back(*entry);
     }
@@ -135,7 +139,8 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
 
         if (out.good()) {
             try {
-                auto file_time = std::chrono::file_clock::time_point(std::chrono::seconds(timestamp));
+                fs::file_time_type::duration dur(std::chrono::seconds(timestamp));
+                fs::file_time_type file_time(dur);
                 fs::last_write_time(p, file_time);
             } catch (...) {
             }

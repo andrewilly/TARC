@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
-#include <chrono>
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -27,5 +26,7 @@ namespace IO {
     bool write_bytes(FILE* f, const void* buf, size_t size);
 
     bool write_entry(FILE* f, const FileEntry& entry);
+
+    Result<FileEntry> read_entry(FILE* f);
 
 }

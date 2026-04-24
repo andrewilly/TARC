@@ -18,80 +18,10 @@
 namespace fs = std::filesystem;
 
 namespace {
-    LicenseInfo g_license_info;
+    License::LicenseInfo g_license_info;
 }
 
-std::string License::hash_key(const std::string& key) {
-    std::hash<std::string> hasher;
-    size_t h = hasher(key);
-    
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%016zx", h);
-    return std::string(buf);
-}
-
-bool License::is_valid_key_format(const std::string& key) {
-    if (key.size() < 12) return false;
-    if (key.substr(0, 5) != "TARC-") return false;
-    
-    for (char c : key) {
-        if (!std::isalnum(c) && c != '-') return false;
-    }
-    return true;
-}
-
-bool License::is_valid(const std::string& key) {
-    if (!is_valid_key_format(key)) return false;
-    
-    int sum = 0;
-    for (char c : key) {
-        sum += static_cast<int>(c);
-    }
-    return (sum % 7) == 0;
-}
-
-std::string License::get_license_path() {
-#ifdef _WIN32
-    const char* appdata = std::getenv("APPDATA");
-    return appdata 
-        ? std::string(appdata) + "\\TARC\\license.ini"
-        : "license.ini";
-#else
-    const char* home = std::getenv("HOME");
-    return home 
-        ? std::string(home) + "/.tarc_license.ini"
-        : ".tarc_license.ini";
-#endif
-}
-
-std::string License::get_config_path() {
-#ifdef _WIN32
-    const char* appdata = std::getenv("APPDATA");
-    return appdata 
-        ? std::string(appdata) + "\\TARC\\config.ini"
-        : "config.ini";
-#else
-    const char* home = std::getenv("HOME");
-    return home 
-        ? std::string(home) + "/.tarc_config.ini"
-        : ".tarc_config.ini";
-#endif
-}
-
-std::string License::generate_trial_key() {
-    static const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
-    
-    std::string key = "TARC-TRIAL-";
-    for (int i = 0; i < 8; ++i) {
-        key += charset[dist(gen)];
-    }
-    return key;
-}
-
-std::optional<LicenseInfo> License::load_saved_key() {
+std::optional<License::LicenseInfo> License::load_saved_key() {
     std::string path = get_license_path();
     if (!fs::exists(path)) return std::nullopt;
     
