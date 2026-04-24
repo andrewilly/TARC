@@ -3,12 +3,14 @@
 
 namespace License {
 
-    // ─── INTERVENTO #24: VALIDAZIONE ROBUSTA ───────────────────────────────────
-    // Nuovo formato chiave: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX
+    // ─── VALIDAZIONE LICENZA ─────────────────────────────────────────────────
+    // Formato chiave: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX
     //   Gruppo 1-2: identificativo utente/prodotto (8 hex ciascuno)
     //   Gruppo 3: checksum XXH64(gruppo1 + "-" + gruppo2 + SALT) troncato a 32 bit
     //
-    // Il vecchio formato (sum % 7) non e' piu' accettato.
+    // Il SALT e' compilato nel binario e DEVE essere modificato una sola volta
+    // prima della prima release pubblica, mai piu' cambiato per mantenere
+    // compatibilita' con le chiavi gia' emesse.
 
     // Valida il formato e il checksum XXH64 della chiave
     bool is_valid(const std::string& key);

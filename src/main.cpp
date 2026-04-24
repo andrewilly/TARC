@@ -8,7 +8,27 @@
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ARGOMENTI DA RIGA DI COMANDO — Struct centralizzata
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum class Command { Compress, Append, Extract, Test, List, Remove, Help };
+
+struct CliArgs {
+    Command cmd = Command::Help;
+    std::string archive;
+    int level = 3;
+    bool sfx = false;
+    bool flat_mode = false;
+    std::string output_dir;
+    std::vector<std::string> targets;          // file da comprimere
+    std::vector<std::string> filters;          // filtri per extract/remove
+    std::vector<std::string> exclude_patterns; // pattern di esclusione
+};
+
+// ─── PARSING LIVELLO COMPRESSIONE ────────────────────────────────────────────
 static int parse_level(const std::string& arg, int def = 3) {
     if (arg == "-cbest") return 9;
     if (arg == "-cfast") return 1;
@@ -26,21 +46,26 @@ static int parse_level(const std::string& arg, int def = 3) {
     return def;
 }
 
-int main(int argc, char* argv[]) {
-    // 1. Inizializzazione Ambiente e Licenza
-    UI::enable_vtp();
-    UI::show_banner();
-    License::check_and_activate();
+// ─── PARSING ARGOMENTI ───────────────────────────────────────────────────────
+static CliArgs parse_args(int argc, char* argv[]) {
+    CliArgs args;
 
     if (argc < 2) {
-        UI::show_help();
-        return 0;
+        args.cmd = Command::Help;
+        return args;
     }
 
-    bool sfx_requested = false;
     std::string arg_cmd = argv[1];
 
-    // 2. Identificazione comando (gestisce -c, -a, -cbest, ecc.)
+    // Identificazione comando
+    if (arg_cmd == "-h" || arg_cmd == "--help") {
+        args.cmd = Command::Help;
+        return args;
+    }
+
+    args.level = parse_level(arg_cmd);
+
+    // Determina il comando base
     std::string cmd;
     if (arg_cmd == "-cbest" || arg_cmd == "-cfast") {
         cmd = "-c";
@@ -48,61 +73,94 @@ int main(int argc, char* argv[]) {
         cmd = arg_cmd.substr(0, 2);
     }
 
-    int level = parse_level(arg_cmd);
+    if (cmd == "-c")       args.cmd = Command::Compress;
+    else if (cmd == "-a")  args.cmd = Command::Append;
+    else if (cmd == "-x")  args.cmd = Command::Extract;
+    else if (cmd == "-t")  args.cmd = Command::Test;
+    else if (cmd == "-l")  args.cmd = Command::List;
+    else if (cmd == "-r")  args.cmd = Command::Remove;
+    else {
+        args.cmd = Command::Help;
+        return args;
+    }
 
-    if (cmd == "-h" || arg_cmd == "--help") {
+    if (argc < 3) return args;
+
+    args.archive = IO::ensure_ext(argv[2]);
+
+    // Parsing opzioni e argomenti rimanenti (unificato per tutti i comandi)
+    for (int i = 3; i < argc; ++i) {
+        std::string val = argv[i];
+
+        if (val == "--sfx") {
+            args.sfx = true;
+        } else if (val == "-v") {
+            UI::g_verbose = true;
+        } else if (val == "--flat") {
+            args.flat_mode = true;
+        } else if (val == "--exclude" && i + 1 < argc) {
+            ++i;
+            args.exclude_patterns.push_back(argv[i]);
+            UI::print_verbose("Exclude pattern: " + std::string(argv[i]));
+        } else if (val == "-o" && i + 1 < argc) {
+            ++i;
+            args.output_dir = argv[i];
+        } else {
+            // Argomento posizionale: target (compress) o filtro (extract/remove)
+            args.targets.push_back(val);
+            args.filters.push_back(val);
+        }
+    }
+
+    if (UI::g_verbose) {
+        UI::print_verbose("Modalita' verbose attiva.");
+    }
+
+    return args;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int main(int argc, char* argv[]) {
+    // 1. Inizializzazione Ambiente e Licenza
+    UI::enable_vtp();
+    UI::show_banner();
+    License::check_and_activate();
+
+    // 2. Parsing argomenti
+    CliArgs args = parse_args(argc, argv);
+
+    if (args.cmd == Command::Help) {
         UI::show_help();
         return 0;
     }
 
-    if (argc < 3) {
+    if (args.archive.empty()) {
         UI::print_error("Specifica il nome dell'archivio.");
         return 1;
     }
 
-    std::string arch = IO::ensure_ext(argv[2]);
-
     // ═══════════════════════════════════════════════════════════════════════════
-    // LOGICA COMPRESSIONE (-c) E APPEND (-a)
-    // Intervento #15: --exclude patterns
-    // Intervento #16: -v verbose
+    // COMPRESSIONE (-c) E APPEND (-a)
     // ═══════════════════════════════════════════════════════════════════════════
-    if (cmd == "-c" || cmd == "-a") {
-        bool append = (cmd == "-a");
-        std::vector<std::string> targets;
-        std::vector<std::string> exclude_patterns;
+    if (args.cmd == Command::Compress || args.cmd == Command::Append) {
+        bool append = (args.cmd == Command::Append);
 
-        for (int i = 3; i < argc; ++i) {
-            std::string val = argv[i];
-            if (val == "--sfx") {
-                sfx_requested = true;
-            } else if (val == "-v") {
-                UI::g_verbose = true;
-                UI::print_verbose("Modalita' verbose attiva.");
-            } else if (val == "--exclude" && i + 1 < argc) {
-                // Il pattern seguente e' l'argomento di --exclude
-                ++i;
-                exclude_patterns.push_back(argv[i]);
-                UI::print_verbose("Exclude pattern: " + std::string(argv[i]));
-            } else {
-                targets.push_back(val);
-            }
-        }
-
-        if (targets.empty()) {
+        if (args.targets.empty()) {
             UI::print_error("Nessun file o cartella specificati.");
             return 1;
         }
 
-        // Avvio motore di compressione
         UI::progress_timer_reset();
-        auto res = Engine::compress(arch, targets, append, level, exclude_patterns);
+        auto res = Engine::compress(args.archive, args.targets, append, args.level, args.exclude_patterns);
         UI::print_summary(res, append ? "Aggiunta" : "Creazione");
 
-        // Se l'operazione e' riuscita e l'utente ha chiesto SFX
-        if (res.ok && sfx_requested) {
-            std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
-            auto sfx_res = Engine::create_sfx(arch, sfx_exe);
+        // Generazione SFX se richiesto e operazione riuscita
+        if (res.ok && args.sfx) {
+            std::string sfx_exe = args.archive.substr(0, args.archive.find_last_of('.')) + ".exe";
+            auto sfx_res = Engine::create_sfx(args.archive, sfx_exe);
             if (sfx_res.ok) {
                 UI::print_info("Autoestraente generato correttamente: " + sfx_exe);
             } else {
@@ -113,93 +171,51 @@ int main(int argc, char* argv[]) {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // LOGICA ESTRAZIONE (-x)
-    // Intervento #14: -o output directory
-    // Intervento #16: -v verbose
+    // ESTRAZIONE (-x)
     // ═══════════════════════════════════════════════════════════════════════════
-    if (cmd == "-x") {
-        std::vector<std::string> filters;
-        bool flat_mode = false;
-        std::string output_dir;
-
-        // Parsing argomenti opzionali
-        for (int i = 3; i < argc; ++i) {
-            std::string val = argv[i];
-            if (val == "--flat") {
-                flat_mode = true;
-            } else if (val == "-v") {
-                UI::g_verbose = true;
-                UI::print_verbose("Modalita' verbose attiva.");
-            } else if (val == "-o" && i + 1 < argc) {
-                // La directory seguente e' l'argomento di -o
-                ++i;
-                output_dir = argv[i];
-            } else {
-                filters.push_back(val);
-            }
-        }
-
-        // Feedback modalita'
-        if (flat_mode) UI::print_info("Modalita' Flat attiva: percorsi ignorati.");
-        if (!output_dir.empty()) UI::print_info("Directory di output: " + output_dir);
-        if (!filters.empty()) UI::print_info("Filtri attivi: " + std::to_string(filters.size()));
+    if (args.cmd == Command::Extract) {
+        if (args.flat_mode) UI::print_info("Modalita' Flat attiva: percorsi ignorati.");
+        if (!args.output_dir.empty()) UI::print_info("Directory di output: " + args.output_dir);
+        if (!args.filters.empty()) UI::print_info("Filtri attivi: " + std::to_string(args.filters.size()));
 
         UI::progress_timer_reset();
-        auto res = Engine::extract(arch, filters, false, 0, flat_mode, output_dir);
+        auto res = Engine::extract(args.archive, args.filters, false, 0, args.flat_mode, args.output_dir);
         UI::print_summary(res, "Estrazione");
         return res.ok ? 0 : 1;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // LOGICA TEST (-t)
+    // TEST (-t)
     // ═══════════════════════════════════════════════════════════════════════════
-    if (cmd == "-t") {
-        for (int i = 3; i < argc; ++i) {
-            if (std::string(argv[i]) == "-v") {
-                UI::g_verbose = true;
-                UI::print_verbose("Modalita' verbose attiva.");
-            }
-        }
-
+    if (args.cmd == Command::Test) {
         UI::progress_timer_reset();
-        auto res = Engine::extract(arch, {}, true);
+        auto res = Engine::extract(args.archive, {}, true);
         UI::print_summary(res, "Test integrita'");
         return res.ok ? 0 : 1;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // LOGICA LISTA (-l)
+    // LISTA (-l)
     // ═══════════════════════════════════════════════════════════════════════════
-    if (cmd == "-l") {
-        auto res = Engine::list(arch);
+    if (args.cmd == Command::List) {
+        auto res = Engine::list(args.archive);
         if (!res.ok) UI::print_error("Errore lettura archivio: " + res.message);
         else UI::print_summary(res, "Lista");
         return res.ok ? 0 : 1;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // LOGICA RIMOZIONE (-r) — Intervento #21
+    // RIMOZIONE (-r)
     // ═══════════════════════════════════════════════════════════════════════════
-    if (cmd == "-r") {
-        std::vector<std::string> patterns;
-        for (int i = 3; i < argc; ++i) {
-            std::string val = argv[i];
-            if (val == "-v") {
-                UI::g_verbose = true;
-                UI::print_verbose("Modalita' verbose attiva.");
-            } else {
-                patterns.push_back(val);
-            }
-        }
-
-        if (patterns.empty()) {
+    if (args.cmd == Command::Remove) {
+        if (args.filters.empty()) {
             UI::print_error("Specifica almeno un pattern per la rimozione.");
             return 1;
         }
 
         UI::print_info("Rimozione file dall'archivio (riscrittura completa)...");
         UI::progress_timer_reset();
-        auto res = Engine::remove_files(arch, patterns);
+        auto res = Engine::remove_files(args.archive, args.filters);
         UI::print_summary(res, "Rimozione");
         return res.ok ? 0 : 1;
     }

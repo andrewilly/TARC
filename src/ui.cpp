@@ -6,6 +6,11 @@
 #include <string>
 #include <iomanip>
 #include <chrono>
+#ifndef _WIN32
+    #include <unistd.h>  // isatty(), fileno()
+#else
+    #include <io.h>      // _isatty(), _fileno()
+#endif
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -18,6 +23,7 @@ namespace UI {
 
 // ─── INTERVENTO #16: VERBOSE FLAG GLOBALE ─────────────────────────────────────
 bool g_verbose = false;
+bool g_color_enabled = true;
 
 // ─── INTERVENTO #17: TIMER PER ETA ─────────────────────────────────────────────
 static std::chrono::steady_clock::time_point g_progress_start;
@@ -38,17 +44,29 @@ void enable_vtp() {
         }
     }
     SetConsoleOutputCP(65001); // UTF-8
+    g_color_enabled = true;
+#else
+    // Rileva se stdout e' un terminale reale
+    g_color_enabled = isatty(fileno(stdout)) != 0;
+    const char* term = getenv("TERM");
+    if (term && strcmp(term, "dumb") == 0) g_color_enabled = false;
 #endif
+}
+
+// ─── HELPER: colore condizionale ─────────────────────────────────────────────
+// Ritorna il codice ANSI se i colori sono abilitati, altrimenti stringa vuota
+static inline const char* c(const char* code) {
+    return g_color_enabled ? code : "";
 }
 
 // ─── HELP ─────────────────────────────────────────────────────────────────────
 void show_help() {
-    const char* C = Color::CYAN;
-    const char* R = Color::RESET;
-    const char* W = Color::WHITE;
-    const char* G = Color::GREEN;
-    const char* Y = Color::YELLOW;
-    const char* D = Color::DIM;
+    const char* C = c(Color::CYAN);
+    const char* R = c(Color::RESET);
+    const char* W = c(Color::WHITE);
+    const char* G = c(Color::GREEN);
+    const char* Y = c(Color::YELLOW);
+    const char* D = c(Color::DIM);
 
     printf("Usage: tarc [%s-cxlta%s] [%s-cbest|cfast%s] [%s--sfx%s] [%s--exclude%s pat] "
            "[%s-o%s dir] [%s-v%s] %sarchive [file..]%s\n\n",
@@ -82,10 +100,10 @@ void show_help() {
 
 // ─── BANNER ──────────────────────────────────────────────────────────────────
 void show_banner() {
-    printf("%s========================================================================\n", Color::CYAN);
+    printf("%s========================================================================\n", c(Color::CYAN));
     printf("TARC STRIKE v2.04             Advanced Solid Compression\n");
     printf("Copyright (C) 2026            Andre Willy Rizzo\n");
-    printf("========================================================================%s\n", Color::RESET);
+    printf("========================================================================%s\n", c(Color::RESET));
 }
 
 // ─── INTERVENTO #17: PROGRESS BAR CON ETA ─────────────────────────────────────
@@ -117,28 +135,28 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     }
 
     // Costruisci la barra di progresso
-    printf("\r%s [%s", Color::CYAN, Color::BOLD);
+    printf("\r%s [%s", c(Color::CYAN), c(Color::BOLD));
     for (int i = 0; i < width; ++i) {
         if (i < pos) printf("=");
         else if (i == pos) printf(">");
         else printf(" ");
     }
-    printf("%s%s] %.1f%%", Color::RESET, Color::CYAN, percent);
+    printf("%s%s] %.1f%%", c(Color::RESET), c(Color::CYAN), percent);
 
     // Contatore file (es. "42/137")
-    printf(" %s%zu/%zu%s", Color::DIM, current, total, Color::RESET);
+    printf(" %s%zu/%zu%s", c(Color::DIM), current, total, c(Color::RESET));
 
     // Modalita' test: mostra [OK]/[FAIL] inline col nome file
     if (test_ok >= 0) {
-        const char* status_color = test_ok ? Color::GREEN : Color::RED;
+        const char* status_color = test_ok ? c(Color::GREEN) : c(Color::RED);
         const char* status_text  = test_ok ? "OK" : "FAIL";
         printf(" %s[%s]%s %s%-30s%s",
-               status_color, status_text, Color::RESET,
-               Color::RESET, short_name.c_str(), Color::RESET);
+               status_color, status_text, c(Color::RESET),
+               c(Color::RESET), short_name.c_str(), c(Color::RESET));
     } else {
         // Modalita' compressione/estrazione: nome file normale
         printf(" %sProcessing: %s%-20s%s",
-               Color::DIM, Color::RESET, short_name.c_str(), Color::RESET);
+               c(Color::DIM), c(Color::RESET), short_name.c_str(), c(Color::RESET));
     }
 
     printf("%s", eta_buf);
@@ -169,84 +187,84 @@ void print_add(const std::string& name, uint64_t size, Codec codec, float ratio)
     bool is_dedup = (ratio >= 1.0f);
 
     printf("\n%s[+]%s [%s%s%s] %-38s %10s  %s->%s %s%s",
-            Color::GREEN, Color::RESET,
-            Color::YELLOW, codec_name(codec), Color::RESET,
+            c(Color::GREEN), c(Color::RESET),
+            c(Color::YELLOW), codec_name(codec), c(Color::RESET),
             name.c_str(),
             human_size(size).c_str(),
-            Color::DIM, Color::RESET,
-            is_dedup ? Color::CYAN : "",
+            c(Color::DIM), c(Color::RESET),
+            is_dedup ? c(Color::CYAN) : "",
             is_dedup ? "DEDUPLICATED" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio))).c_str());
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
     if (!ok) {
-        printf("%s[CORROTTO]%s %s\n", Color::RED, Color::RESET, name.c_str());
+        printf("%s[CORROTTO]%s %s\n", c(Color::RED), c(Color::RESET), name.c_str());
         return;
     }
     printf("%s[%s]%s %-42s %10s\n",
-            Color::CYAN,
+            c(Color::CYAN),
             test ? "OK" : " x",
-            Color::RESET,
+            c(Color::RESET),
             name.c_str(),
             human_size(size).c_str());
 }
 
 void print_delete(const std::string& name) {
-    printf("%s[-]%s Rimosso: %s\n", Color::RED, Color::RESET, name.c_str());
+    printf("%s[-]%s Rimosso: %s\n", c(Color::RED), c(Color::RESET), name.c_str());
 }
 
 void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {
     bool is_duplicate = (comp == 0);
 
     printf("  [%s%s%s] %-42s %10s  %s%s%s\n",
-            Color::YELLOW, codec_name(codec), Color::RESET,
+            c(Color::YELLOW), codec_name(codec), c(Color::RESET),
             name.c_str(),
             human_size(orig).c_str(),
-            Color::DIM,
+            c(Color::DIM),
             is_duplicate ? "(DUPLICATE)" : "",
-            Color::RESET);
+            c(Color::RESET));
 }
 
 // ─── INTERVENTO #18: SUMMARY ARRICCHITO ────────────────────────────────────────
 void print_summary(const TarcResult& r, const std::string& op) {
     printf("\n");
     if (!r.ok) {
-        printf("\n%sX %s fallito: %s%s\n", Color::RED, op.c_str(), r.message.c_str(), Color::RESET);
+        printf("\n%sX %s fallito: %s%s\n", c(Color::RED), op.c_str(), r.message.c_str(), c(Color::RESET));
         return;
     }
 
     // Operazione completata
-    printf("\n%s+ %s completato.%s", Color::GREEN, op.c_str(), Color::RESET);
+    printf("\n%s+ %s completato.%s", c(Color::GREEN), op.c_str(), c(Color::RESET));
 
     // Statistiche byte se disponibili
     if (r.bytes_in > 0 && r.bytes_out > 0) {
         printf("  %s -> %s  (%sratio: %s%s)",
                 human_size(r.bytes_in).c_str(),
                 human_size(r.bytes_out).c_str(),
-                Color::DIM,
+                c(Color::DIM),
                 compress_ratio(r.bytes_in, r.bytes_out).c_str(),
-                Color::RESET);
+                c(Color::RESET));
     }
     printf("\n");
 
     // Conteggi file
     if (r.file_count > 0) {
-        printf("  %sFile:%s %u", Color::DIM, Color::RESET, r.file_count);
+        printf("  %sFile:%s %u", c(Color::DIM), c(Color::RESET), r.file_count);
         if (r.dup_count > 0)
-            printf("  %sDuplicati:%s %u", Color::CYAN, Color::RESET, r.dup_count);
+            printf("  %sDuplicati:%s %u", c(Color::CYAN), c(Color::RESET), r.dup_count);
         if (r.skip_count > 0)
-            printf("  %sSaltati:%s %u", Color::YELLOW, Color::RESET, r.skip_count);
+            printf("  %sSaltati:%s %u", c(Color::YELLOW), c(Color::RESET), r.skip_count);
         printf("\n");
     }
 
     // Statistiche per-codec
     if (!r.codec_bytes.empty()) {
-        printf("  %sCodecs:%s", Color::DIM, Color::RESET);
+        printf("  %sCodecs:%s", c(Color::DIM), c(Color::RESET));
         for (const auto& [codec, bytes] : r.codec_bytes) {
             auto chunk_it = r.codec_chunks.find(codec);
             uint32_t chunks = (chunk_it != r.codec_chunks.end()) ? chunk_it->second : 0;
             printf(" %s%s%s %s(%u chunk%s)",
-                   Color::YELLOW, codec_name(codec), Color::RESET,
+                   c(Color::YELLOW), codec_name(codec), c(Color::RESET),
                    human_size(bytes).c_str(),
                    chunks,
                    chunks != 1 ? "s" : "");
@@ -256,7 +274,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
 
     // Tempo impiegato
     if (r.elapsed_ms > 0) {
-        printf("  %sTempo:%s ", Color::DIM, Color::RESET);
+        printf("  %sTempo:%s ", c(Color::DIM), c(Color::RESET));
         if (r.elapsed_ms >= 60000) {
             printf("%.1f min", r.elapsed_ms / 60000.0);
         } else if (r.elapsed_ms >= 1000) {
@@ -268,33 +286,33 @@ void print_summary(const TarcResult& r, const std::string& op) {
         // Velocita' se abbiamo bytes e tempo
         if (r.bytes_in > 0 && r.elapsed_ms > 0) {
             double mb_per_sec = (r.bytes_in / 1048576.0) / (r.elapsed_ms / 1000.0);
-            printf("  %s(%.1f MB/s)%s", Color::DIM, mb_per_sec, Color::RESET);
+            printf("  %s(%.1f MB/s)%s", c(Color::DIM), mb_per_sec, c(Color::RESET));
         }
         printf("\n");
     }
 
     // Dimensione archivio
     if (r.archive_size > 0) {
-        printf("  %sArchivio:%s %s\n", Color::DIM, Color::RESET, human_size(r.archive_size).c_str());
+        printf("  %sArchivio:%s %s\n", c(Color::DIM), c(Color::RESET), human_size(r.archive_size).c_str());
     }
 }
 
 void print_info(const std::string& msg) {
-    printf("%sINFO: %s%s\n", Color::CYAN, msg.c_str(), Color::RESET);
+    printf("%sINFO: %s%s\n", c(Color::CYAN), msg.c_str(), c(Color::RESET));
 }
 
 void print_error(const std::string& msg) {
-    printf("%sERROR: %s%s\n", Color::RED, msg.c_str(), Color::RESET);
+    printf("%sERROR: %s%s\n", c(Color::RED), msg.c_str(), c(Color::RESET));
 }
 
 void print_warning(const std::string& msg) {
-    printf("%sWARNING: %s%s\n", Color::YELLOW, msg.c_str(), Color::RESET);
+    printf("%sWARNING: %s%s\n", c(Color::YELLOW), msg.c_str(), c(Color::RESET));
 }
 
 // ─── INTERVENTO #16: VERBOSE LOGGING ─────────────────────────────────────────
 void print_verbose(const std::string& msg) {
     if (!g_verbose) return;
-    printf("%sVERBOSE: %s%s\n", Color::DIM, msg.c_str(), Color::RESET);
+    printf("%sVERBOSE: %s%s\n", c(Color::DIM), msg.c_str(), c(Color::RESET));
 }
 
 } // namespace UI

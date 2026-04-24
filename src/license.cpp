@@ -20,22 +20,19 @@ namespace fs = std::filesystem;
 namespace License {
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// INTERVENTO #24: VALIDAZIONE LICENZA ROBUSTA
+// VALIDAZIONE LICENZA
 //
-// Nuovo formato chiave: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX
+// Formato chiave: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX
 //   Gruppo 1 (8 hex): Identificativo utente/prodotto
 //   Gruppo 2 (8 hex): Feature flags / scadenza / estensione
 //   Gruppo 3 (8 hex): Checksum = XXH64(gruppo1 + "-" + gruppo2 + SALT) & 0xFFFFFFFF
 //
-// Il SALT e' compilato nel binario. Senza conoscerlo, e' impraticabile
-// generare chiavi valide per brute-force (2^32 tentativi necessari anche
-// conoscendo il formato, e il rate-limiting rende l'attacco infeasibile).
-//
-// Il vecchio formato (sum % 7) non e' piu' supportato.
+// IMPORTANTE: Il SALT seguente va modificato UNA SOLA VOLTA prima della prima
+// release pubblica, e MAI PIU' cambiato. Ogni modifica rende invalidate tutte
+// le chiavi precedentemente emesse. In un ambiente enterprise, derivare il
+// salt da una chiave master tramite KDF.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Salt segreto — MODIFICA QUESTO VALORE prima della build di produzione!
-// Deve essere identico nel generatore di licenze.
 static const char* const LICENSE_SALT = "TARC2-S4LT-2026-STRIKE-VLD";
 
 // ─── HELPER: Verifica se un carattere e' hex ──────────────────────────────────
@@ -48,6 +45,21 @@ static uint32_t compute_license_checksum(const std::string& group1, const std::s
     std::string payload = group1 + "-" + group2 + LICENSE_SALT;
     XXH64_hash_t hash = XXH64(payload.c_str(), payload.size(), 0);
     return static_cast<uint32_t>(hash & 0xFFFFFFFF);
+}
+
+// ─── HELPER: Confronto a tempo costante migliorato ────────────────────────────
+// Accumula le differenze bit-a-bit invece di usare XOR + confronto diretto,
+// per resistere meglio ad attacchi timing su architetture con short-circuit.
+static bool constant_time_compare(uint32_t a, uint32_t b) {
+    uint32_t diff = a ^ b;
+    // Accumula tutti i bit di differenza: se diff e' 0, tutti i bit sono 0
+    // e il risultato sara' 0. Altrimenti sara' != 0.
+    diff |= diff >> 16;
+    diff |= diff >> 8;
+    diff |= diff >> 4;
+    diff |= diff >> 2;
+    diff |= diff >> 1;
+    return (diff ^ 1) & 1;
 }
 
 // ─── VALIDAZIONE ─────────────────────────────────────────────────────────────
@@ -72,35 +84,30 @@ bool is_valid(const std::string& key) {
     for (char c : group3) if (!is_hex_char(c)) return false;
 
     // Normalizza a lowercase per il calcolo
-    std::string g1 = group1, g2 = group2;
     auto to_lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+    std::string g1 = group1, g2 = group2, g3 = group3;
     std::transform(g1.begin(), g1.end(), g1.begin(), to_lower);
     std::transform(g2.begin(), g2.end(), g2.begin(), to_lower);
+    std::transform(g3.begin(), g3.end(), g3.begin(), to_lower);
 
     // Calcola checksum atteso
     uint32_t expected = compute_license_checksum(g1, g2);
 
     // Converte group3 da hex a uint32
     uint32_t provided = 0;
-    std::string g3 = group3;
-    std::transform(g3.begin(), g3.end(), g3.begin(), to_lower);
     try {
         provided = static_cast<uint32_t>(std::stoul(g3, nullptr, 16));
     } catch (...) {
         return false;
     }
 
-    // Confronto a tempo costante (previene timing attack)
-    volatile uint32_t diff = expected ^ provided;
-    return diff == 0;
+    // Confronto a tempo costante
+    return constant_time_compare(expected, provided);
 }
 
 // ─── PERCORSO FILE (Unicode-safe) ────────────────────────────────────────────
 std::string get_license_path() {
 #ifdef _WIN32
-    // INTERVENTO #19: Usa _wgetenv per supporto Unicode
-    // fs::path converte automaticamente wide string a UTF-8 via u8string()
-    // senza bisogno di WideCharToMultiByte (evita dipendenza da <windows.h>)
     const wchar_t* appdata = _wgetenv(L"APPDATA");
     if (appdata) {
         fs::path p = fs::path(appdata) / L"TARC" / L"license.ini";
@@ -121,7 +128,6 @@ std::string load_saved_key() {
     std::string key;
 
 #ifdef _WIN32
-    // Usa fs::u8path per aprire il file con percorso Unicode
     std::ifstream ifs(fs::u8path(path));
 #else
     std::ifstream ifs(path);
@@ -155,9 +161,7 @@ bool save_key(const std::string& key) {
 
 // ─── CHECK & ACTIVATE (con brute-force protection) ───────────────────────────
 void check_and_activate() {
-    // ── Brute-force protection ──────────────────────────────────────────────
-    // Contatore tentativi falliti in questa sessione.
-    // Il delay raddoppia ad ogni tentativo, fino a un massimo di 60 secondi.
+    // Brute-force protection: delay raddoppia ad ogni tentativo, fino a 60 sec
     static int failed_attempts = 0;
 
     auto apply_brute_force_delay = [&]() {
@@ -175,19 +179,28 @@ void check_and_activate() {
 
     if (is_valid(key)) {
         printf("%s[LICENSE]%s Attiva  (%s%s%s)\n",
-               Color::CYAN, Color::RESET,
-               Color::GREEN, key.c_str(), Color::RESET);
-        failed_attempts = 0;  // Resetta il contatore
+               UI::g_color_enabled ? Color::CYAN : "",
+               UI::g_color_enabled ? Color::RESET : "",
+               UI::g_color_enabled ? Color::GREEN : "",
+               key.c_str(),
+               UI::g_color_enabled ? Color::RESET : "");
+        failed_attempts = 0;
         return;
     }
 
     // ── Chiave non trovata o non valida: chiedi all'utente ──────────────────
+    const char* C = UI::g_color_enabled ? Color::CYAN : "";
+    const char* R = UI::g_color_enabled ? Color::RESET : "";
+    const char* B = UI::g_color_enabled ? Color::BOLD : "";
+    const char* G = UI::g_color_enabled ? Color::GREEN : "";
+    const char* R2 = UI::g_color_enabled ? Color::RED : "";
+
     printf("\n%s%s+================================+\n"
            "|    TARC LICENSE MANAGER v2     |\n"
            "+================================+%s\n",
-           Color::BOLD, Color::CYAN, Color::RESET);
+           B, C, R);
 
-    printf(" %sLicenza non trovata o non valida.%s\n", Color::RED, Color::RESET);
+    printf(" %sLicenza non trovata o non valida.%s\n", R2, R);
     printf(" Formato: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX\n");
     printf(" Inserisci chiave: ");
 
@@ -199,8 +212,8 @@ void check_and_activate() {
     if (!is_valid(key)) {
         apply_brute_force_delay();
 
-        // Seconda possibilita'
-        printf(" %sChiave non valida.%s Riprova: ", Color::RED, Color::RESET);
+        // Seconda opportunita'
+        printf(" %sChiave non valida.%s Riprova: ", R2, R);
         if (!(std::cin >> key) || !is_valid(key)) {
             apply_brute_force_delay();
             UI::print_error("Chiave non valida. Operazione annullata.");
@@ -213,7 +226,7 @@ void check_and_activate() {
     }
 
     failed_attempts = 0;
-    printf("%s+ Attivazione riuscita!%s\n\n", Color::GREEN, Color::RESET);
+    printf("%s+ Attivazione riuscita!%s\n\n", G, R);
 }
 
 } // namespace License

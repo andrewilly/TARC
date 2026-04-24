@@ -12,17 +12,15 @@ namespace CodecSelector {
 
 namespace Engine {
 
-    // Funzioni Core Release 2.03
-
     // ─── COMPRESS ──────────────────────────────────────────────────────────────
-    // Intervento #15: exclude_patterns per escludere file dalla compressione
+    // exclude_patterns per escludere file dalla compressione
     TarcResult compress(const std::string& arch_path,
                         const std::vector<std::string>& files,
                         bool append, int level,
                         const std::vector<std::string>& exclude_patterns = {});
 
     // ─── EXTRACT ───────────────────────────────────────────────────────────────
-    // Intervento #14: output_dir per estrazione in directory specificata
+    // output_dir per estrazione in directory specificata
     TarcResult extract(const std::string& arch_path,
                        const std::vector<std::string>& patterns = {},
                        bool test_only = false,
@@ -33,7 +31,6 @@ namespace Engine {
     TarcResult list(const std::string& arch_path, size_t offset = 0);
 
     // ─── REMOVE ────────────────────────────────────────────────────────────────
-    // Intervento #21: implementazione effettiva di remove_files()
     // Riscrive l'archivio senza i file corrispondenti ai pattern specificati
     TarcResult remove_files(const std::string& arch_path,
                             const std::vector<std::string>& patterns);

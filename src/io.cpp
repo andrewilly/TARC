@@ -8,6 +8,9 @@
 #include <random>
 #include <algorithm>
 #include <sstream>
+#ifndef _WIN32
+    #include <unistd.h>  // getpid()
+#endif
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -114,8 +117,15 @@ std::string make_temp_path(const std::string& target_path) {
     std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
     uint32_t r = dist(gen);
 
-    char hex[9];
-    snprintf(hex, sizeof(hex), "%08x", r);
+    // Include PID per ridurre rischio collisione tra processi
+#ifdef _WIN32
+    auto pid = static_cast<uint32_t>(GetCurrentProcessId());
+#else
+    auto pid = static_cast<uint32_t>(getpid());
+#endif
+
+    char hex[17];
+    snprintf(hex, sizeof(hex), "%08x%08x", pid, r);
 
     return target_path + ".tmp" + hex;
 }
@@ -266,6 +276,76 @@ int64_t tell64(FILE* f) {
     return _ftelli64(f);
 #else
     return static_cast<int64_t>(ftello(f));
+#endif
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VALIDAZIONE DIRECTORY OUTPUT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool validate_output_dir(const std::string& dir) {
+    if (dir.empty()) return true;
+
+    // Normalizza separatori
+    std::string normalized = dir;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+
+    // Rifiuta componenti ".."
+    std::istringstream iss(normalized);
+    std::string part;
+    while (std::getline(iss, part, '/')) {
+        if (part == "..") return false;
+    }
+
+    // Rifiuta caratteri di controllo
+    for (char c : dir) {
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return false;
+    }
+
+    return true;
+}
+
+// ─── CONVERSIONE TIMESTAMP PORTABILE ─────────────────────────────────────────
+// C++17 non garantisce che file_time_type::clock abbia la stessa epoca di
+// system_clock. Queste funzioni calcolano l'offset relativo in modo portabile.
+
+uint64_t file_time_to_unix(fs::file_time_type ftime) {
+    const auto sys_now  = std::chrono::system_clock::now();
+    const auto file_now = fs::file_time_type::clock::now();
+    auto offset = ftime - file_now;
+    auto sys_time = sys_now + std::chrono::duration_cast<std::chrono::system_clock::duration>(offset);
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(sys_time.time_since_epoch()).count());
+}
+
+fs::file_time_type unix_to_file_time(uint64_t timestamp) {
+    const auto sys_now  = std::chrono::system_clock::now();
+    const auto file_now = fs::file_time_type::clock::now();
+    auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
+    auto offset = sys_time - sys_now;
+    return file_now + std::chrono::duration_cast<fs::file_time_type::duration>(offset);
+}
+
+// ─── DIRECTORY ESEGUIBILE ────────────────────────────────────────────────────
+
+std::string get_exe_directory() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return fs::path(buf).parent_path().u8string();
+    }
+    return ".";
+#else
+    // Prova /proc/self/exe (Linux), poi /proc/curproc/file (FreeBSD), poi fallback
+    for (const char* proc_path : {"/proc/self/exe", "/proc/curproc/file"}) {
+        std::error_code ec;
+        if (fs::exists(proc_path, ec)) {
+            auto exe = fs::read_symlink(proc_path, ec);
+            if (!ec) return exe.parent_path().string();
+        }
+    }
+    return ".";
 #endif
 }
 
