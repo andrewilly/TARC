@@ -22,6 +22,8 @@
 #include "lzma.h"
 extern "C" {
     #include "xxhash.h"
+    #include "zstd.h"
+    #include "lz4.h"
 }
 
 namespace fs = std::filesystem;
@@ -46,7 +48,7 @@ void Engine::reset_stats() {
 }
 
 namespace CodecSelector {
-    static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip" };
+    static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip", ".strk" };
     static bool initialized = false;
 
     void init() {
@@ -61,22 +63,53 @@ namespace CodecSelector {
         return skip.find(e) == skip.end();
     }
     
+    // Ottimizzazione: scegli il codec migliore per ogni tipo di file
+    // 7zip usa LZMA2 con contesto per massima compressione
     Codec select(const std::string& path, size_t size) {
-        if (!is_compressible(fs::path(path).extension().string())) return Codec::STORE;
-        
         std::string ext = fs::path(path).extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         
-        if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".json" || 
-            ext == ".xml" || ext == ".html" || ext == ".css" || ext == ".js" || ext == ".sql") {
+        // File gia' compressi - non comprimere
+        if (!is_compressible(ext)) return Codec::STORE;
+        
+        // File di testo/code - LZMA eccelle
+        if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".hpp" ||
+            ext == ".c" || ext == ".py" || ext == ".js" || ext == ".ts" ||
+            ext == ".json" || ext == ".xml" || ext == ".html" || ext == ".css" ||
+            ext == ".sql" || ext == ".md" || ext == ".yaml" || ext == ".yml" ||
+            ext == ".log" || ext == ".csv" || ext == ".ini" || ext == ".cfg") {
             return Codec::LZMA;
         }
         
-        if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde") {
+        // Database Access - ZSTD ottimo per dati ripetitivi
+        if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde" ||
+            ext == ".db" || ext == ".sqlite" || ext == ".sqlite3") {
             return Codec::ZSTD;
         }
         
-        return (size < 512 * 1024) ? Codec::ZSTD : Codec::LZMA;
+        // Immagini/media - Brotli per alta compressione
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
+            ext == ".bmp" || ext == ".ico" || ext == ".webp") {
+            return Codec::BR;
+        }
+        
+        // Documenti Office
+        if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt") {
+            return Codec::ZSTD;
+        }
+        
+        // PDF - spesso gia compressi ma LZMA puo' aiutare
+        if (ext == ".pdf") {
+            return Codec::BR;
+        }
+        
+        // File piccoli - LZ4 per velocita'
+        if (size < 64 * 1024) {
+            return Codec::LZ4;
+        }
+        
+        // Default: LZMA per massima compressione (come 7zip)
+        return Codec::LZMA;
     }
 }
 
@@ -116,26 +149,47 @@ struct ChunkResult {
     std::string error_message;
 };
 
-ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
+// Compressione LZMA ottimizzata - simile a 7zip LZMA2
+ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
-    res.codec = chosen_codec;
+    res.codec = Codec::LZMA;
     res.success = false;
     
-    if (chosen_codec == Codec::STORE) {
-        res.compressed_data = std::move(raw_data);
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
         res.success = true;
         return res;
     }
     
-    if (chosen_codec == Codec::LZMA) {
+    // Configurazione LZMA simile a 7zip (livello 9 = ultra)
+    lzma_options_lzma options;
+    lzma_lzma_preset(&options, static_cast<uint32_t>(std::min(level, 9)));
+    
+    // Override con parametri ottimali per massima compressione
+    options.dict_size = std::min(static_cast<size_t>(128 * 1024 * 1024), raw_data.size() + (raw_data.size() / 8));
+    options.lc = 4;  // Literal context bits (max per testi)
+    options.lp = 0;  // Literal position bits
+    options.pb = 2;  // Position bits
+    options.mode = LZMA_MODE_NORMAL;
+    options.nice_len = 273;
+    options.search_depth = 48;
+    options.fast_bytes = 32;
+    
+    lzma_stream stream = LZMA_STREAM_INIT;
+    
+    lzma_ret ret = lzma_alone_encode(&stream, &options,
+        reinterpret_cast<const uint8_t*>(raw_data.data()), raw_data.size());
+    
+    if (ret != LZMA_OK) {
+        // Fallback: prova con easy_buffer_encode
+        stream = LZMA_STREAM_INIT;
         size_t max_out = lzma_stream_buffer_bound(raw_data.size());
         res.compressed_data.resize(max_out);
         size_t out_pos = 0;
-        uint32_t preset = static_cast<uint32_t>((level < 0) ? 9 : std::min(level, 9));
         
-        lzma_ret ret = lzma_easy_buffer_encode(
-            preset | LZMA_PRESET_EXTREME,
+        ret = lzma_easy_buffer_encode(
+            static_cast<uint32_t>(level) | LZMA_PRESET_EXTREME,
             LZMA_CHECK_CRC64,
             nullptr,
             reinterpret_cast<const uint8_t*>(raw_data.data()),
@@ -144,24 +198,243 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
             &out_pos,
             max_out
         );
-            
-        if (ret == LZMA_OK) { 
-            res.compressed_data.resize(out_pos); 
-            res.success = true; 
-        } else {
-            res.error_message = "LZMA encode error: " + std::to_string(ret);
-            res.compressed_data = std::move(raw_data);
-            res.codec = Codec::STORE;
+        
+        if (ret == LZMA_OK) {
+            res.compressed_data.resize(out_pos);
             res.success = true;
         }
+        return res;
+    }
+    
+    // Encode chunks
+    std::vector<uint8_t> output;
+    output.reserve(raw_data.size());
+    
+    while (stream.avail_in > 0 || stream.avail_out > 0) {
+        uint8_t out_buf[8192];
+        stream.avail_out = sizeof(out_buf);
+        stream.next_out = out_buf;
+        
+        ret = lzma_code(&stream, LZMA_RUN);
+        size_t produced = sizeof(out_buf) - stream.avail_out;
+        output.insert(output.end(), out_buf, out_buf + produced);
+        
+        if (ret != LZMA_OK) break;
+    }
+    
+    // Finish
+    stream.avail_in = 0;
+    do {
+        uint8_t out_buf[8192];
+        stream.avail_out = sizeof(out_buf);
+        stream.next_out = out_buf;
+        ret = lzma_code(&stream, LZMA_FINISH);
+        size_t produced = sizeof(out_buf) - stream.avail_out;
+        if (produced > 0) {
+            output.insert(output.end(), out_buf, out_buf + produced);
+        }
+    } while (ret == LZMA_OK);
+    
+    lzma_end(&stream);
+    
+    if (ret == LZMA_STREAM_END || output.size() < raw_data.size()) {
+        res.compressed_data.assign(reinterpret_cast<char*>(output.data()), output.size());
+        res.success = true;
     } else {
-        // STORE or default fallback
-        res.compressed_data = std::move(raw_data);
+        // Non ha compresso, store
+        res.compressed_data = raw_data;
         res.codec = Codec::STORE;
         res.success = true;
     }
     
     return res;
+}
+
+// Compressione ZSTD ad alto livello
+ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = Codec::ZSTD;
+    res.success = false;
+    
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+    
+    // ZSTD_compress: usa livello massimo (19) per compressione estrema
+    int zstd_level = std::min(level * 2, 19);  // Scala: 1->2, 3->6, 9->18
+    
+    size_t max_out = ZSTD_compressBound(raw_data.size());
+    res.compressed_data.resize(max_out);
+    
+    size_t compressed = ZSTD_compress(
+        res.compressed_data.data(),
+        max_out,
+        raw_data.data(),
+        raw_data.size(),
+        zstd_level
+    );
+    
+    if (ZSTD_isError(compressed)) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+    
+    res.compressed_data.resize(compressed);
+    res.success = true;
+    return res;
+}
+
+// Compressione LZ4 ad alto livello
+ChunkResult compress_lz4(const std::vector<char>& raw_data, int level) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = Codec::LZ4;
+    res.success = false;
+    
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+    
+    // LZ4_compress_default: veloce ma buona compressione
+    int lz4_level = (level >= 6) ? 2 : 1;  // HC per livelli alti
+    
+    int max_out = LZ4_compressBound(static_cast<int>(raw_data.size()));
+    std::string compressed(LZ4_compressBound(max_out), '\0');
+    
+    int compressed_size;
+    if (level >= 6) {
+        compressed_size = LZ4_compress_HC(
+            raw_data.data(),
+            compressed.data(),
+            static_cast<int>(raw_data.size()),
+            max_out,
+            LZ4_CLEVEL_MAX
+        );
+    } else {
+        compressed_size = LZ4_compress_default(
+            raw_data.data(),
+            compressed.data(),
+            static_cast<int>(raw_data.size()),
+            max_out
+        );
+    }
+    
+    if (compressed_size > 0 && compressed_size < static_cast<int>(raw_data.size())) {
+        res.compressed_data.assign(compressed.data(), compressed_size);
+        res.success = true;
+    } else {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+    }
+    
+    return res;
+}
+
+// Compressione Brotli
+ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = Codec::BR;
+    res.success = false;
+    
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+    
+    // Brotli compression - level 11 = max
+    int brotli_level = std::min(level + 2, 11);
+    
+    size_t max_out = raw_data.size();
+    res.compressed_data.resize(max_out);
+    
+    size_t compressed = BrotliCompressBuffer(
+        brotli_level,
+        BROTLI_DEFAULT_WINDOW,
+        BROTLI_DEFAULT_MODE,
+        raw_data.size(),
+        reinterpret_cast<const uint8_t*>(raw_data.data()),
+        max_out,
+        reinterpret_cast<uint8_t*>(res.compressed_data.data())
+    );
+    
+    if (compressed > 0 && compressed < raw_data.size()) {
+        res.compressed_data.resize(compressed);
+        res.success = true;
+    } else {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+    }
+    
+    return res;
+}
+
+// Worker principale - sceglie il codec migliore
+ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = chosen_codec;
+    res.success = false;
+    
+    // Skip piccoli file - non vale la pena comprimere
+    if (raw_data.size() < 4096) {
+        res.compressed_data = std::move(raw_data);
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+    
+    // Se STORE, non comprimere
+    if (chosen_codec == Codec::STORE) {
+        res.compressed_data = std::move(raw_data);
+        res.success = true;
+        return res;
+    }
+    
+    // Prova il codec scelto
+    ChunkResult chosen;
+    switch (chosen_codec) {
+        case Codec::LZMA:
+            chosen = compress_lzma_optimal(raw_data, level);
+            break;
+        case Codec::ZSTD:
+            chosen = compress_zstd(raw_data, level);
+            break;
+        case Codec::LZ4:
+            chosen = compress_lz4(raw_data, level);
+            break;
+        case Codec::BR:
+            chosen = compress_brotli(raw_data, level);
+            break;
+        default:
+            chosen.compressed_data = raw_data;
+            chosen.codec = Codec::STORE;
+            chosen.success = true;
+            break;
+    }
+    
+    // Se il codec scelto non ha compresso bene, prova alternatives
+    if (chosen.codec != Codec::STORE && chosen.compressed_data.size() >= raw_data.size() * 0.95) {
+        // Prova ZSTD come fallback per LZMA
+        if (chosen_codec == Codec::LZMA) {
+            auto zstd_res = compress_zstd(raw_data, level);
+            if (zstd_res.compressed_data.size() < chosen.compressed_data.size()) {
+                return zstd_res;
+            }
+        }
+    }
+    
+    return chosen;
 }
 
 bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& decompressed, Codec codec) {
@@ -171,7 +444,7 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
     }
     
     if (codec == Codec::LZMA) {
-        decompressed.resize(256 * 1024 * 1024); // Max 256MB for LZMA chunk
+        decompressed.resize(256 * 1024 * 1024);
         size_t src_pos = 0, dst_pos = 0;
         uint64_t limit = UINT64_MAX;
         
@@ -190,7 +463,37 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
         return false;
     }
     
-    // Fallback for unknown codec - try LZMA decode
+    if (codec == Codec::ZSTD) {
+        size_t d_size = ZSTD_decompressBound(compressed.data(), compressed.size());
+        decompressed.resize(d_size);
+        size_t actual = ZSTD_decompress(
+            decompressed.data(),
+            d_size,
+            compressed.data(),
+            compressed.size()
+        );
+        if (!ZSTD_isError(actual)) {
+            decompressed.resize(actual);
+            return true;
+        }
+        return false;
+    }
+    
+    if (codec == Codec::LZ4) {
+        int decomp_size = LZ4_decompress_safe(
+            compressed.data(),
+            decompressed.data(),
+            static_cast<int>(compressed.size()),
+            static_cast<int>(decompressed.size())
+        );
+        if (decomp_size > 0) {
+            decompressed.resize(decomp_size);
+            return true;
+        }
+        return false;
+    }
+    
+    // Fallback per unknown codec - try LZMA decode
     decompressed.resize(256 * 1024 * 1024);
     size_t src_pos = 0, dst_pos = 0;
     uint64_t limit = UINT64_MAX;
@@ -291,12 +594,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         fwrite(&h, sizeof(h), 1, f);
     }
 
-    constexpr size_t CHUNK_THRESHOLD = 256 * 1024 * 1024;
+    // Solid block piu' grande per maggiore compressione (512MB)
+    constexpr size_t CHUNK_THRESHOLD = 512 * 1024 * 1024;
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
+    Codec last_codec = Codec::LZMA;
 
     auto write_worker = [&](std::future<ChunkResult>& fut) -> bool {
         if (check_cancelled()) return false;
@@ -430,6 +735,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
             
+            // Flush solid block quando pieno o codec cambia
             if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 if (worker_active && !write_worker(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
@@ -442,7 +748,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     compress_worker, 
                     std::move(solid_buf), 
                     level, 
-                    static_cast<Codec>(fe.meta.codec)
+                    last_codec
                 );
                 worker_active = true;
                 solid_buf.clear();
@@ -450,6 +756,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             }
             
             solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+            last_codec = static_cast<Codec>(fe.meta.codec);
             g_stats.bytes_read += fsize;
         }
         
@@ -465,7 +772,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     }
     
     if (!solid_buf.empty()) {
-        ChunkResult last = compress_worker(std::move(solid_buf), level, Codec::LZMA);
+        ChunkResult last = compress_worker(std::move(solid_buf), level, last_codec);
         ChunkHeader ch = {
             static_cast<uint32_t>(last.codec),
             last.raw_size,
@@ -569,6 +876,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
         
         auto& fe = toc[i];
+        report_progress(i + 1, toc.size(), fe.name);
         
         bool should_extract = patterns.empty();
         if (!should_extract) {
@@ -598,21 +906,9 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 current_block.resize(ch.raw_size);
                 
                 lzma_ret ret = LZMA_OK;
-                if (ch.codec == static_cast<uint32_t>(Codec::LZMA)) {
-                    size_t src_p = 0, dst_p = 0;
-                    uint64_t limit = UINT64_MAX;
-                    ret = lzma_stream_buffer_decode(
-                        &limit, 0, nullptr,
-                        reinterpret_cast<const uint8_t*>(comp.data()),
-                        &src_p, ch.comp_size,
-                        reinterpret_cast<uint8_t*>(current_block.data()),
-                        &dst_p, ch.raw_size
-                    );
-                } else {
-                    std::memcpy(current_block.data(), comp.data(), ch.raw_size);
-                }
-
-                if (ch.codec == static_cast<uint32_t>(Codec::LZMA) && ret != LZMA_OK && ret != LZMA_STREAM_END) {
+                Codec codec = static_cast<Codec>(ch.codec);
+                
+                if (!decompress_chunk(comp, current_block, codec)) {
                     fclose(f);
                     res.error = TarcError::DecompressionFailed;
                     res.message = "Chunk decompression failed.";
@@ -639,32 +935,16 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
             
             current_block.resize(ch.raw_size);
-            lzma_ret ret = LZMA_OK;
             
-            if (ch.codec == static_cast<uint32_t>(Codec::LZMA)) {
-                size_t src_p = 0, dst_p = 0;
-                uint64_t limit = UINT64_MAX;
-                ret = lzma_stream_buffer_decode(
-                    &limit, 0, nullptr,
-                    reinterpret_cast<const uint8_t*>(comp.data()),
-                    &src_p, ch.comp_size,
-                    reinterpret_cast<uint8_t*>(current_block.data()),
-                    &dst_p, ch.raw_size
-                );
-                
-                if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
-                    fclose(f);
-                    res.error = TarcError::DecompressionFailed;
-                    res.message = "LZMA decompression failed.";
-                    return res;
-                }
-            } else {
-                std::memcpy(current_block.data(), comp.data(), ch.raw_size);
+            Codec codec = static_cast<Codec>(ch.codec);
+            if (!decompress_chunk(comp, current_block, codec)) {
+                fclose(f);
+                res.error = TarcError::DecompressionFailed;
+                res.message = "Decompression failed.";
+                return res;
             }
             block_pos = 0;
         }
-        
-        report_progress(i + 1, toc.size(), fe.name);
         
         std::string final_path = fe.name;
         if (flat_mode) {

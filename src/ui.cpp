@@ -169,8 +169,8 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     int pos = static_cast<int>(width * current / total);
     
     std::string short_name = current_file;
-    if (short_name.length() > 30) {
-        short_name = "..." + short_name.substr(short_name.length() - 27);
+    if (short_name.length() > 35) {
+        short_name = "..." + short_name.substr(short_name.length() - 32);
     }
     
     std::lock_guard<std::mutex> lock(cout_mutex);
@@ -182,7 +182,14 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     }
     std::cout << Color::RESET << Color::CYAN << "] " 
               << std::fixed << std::setprecision(1) << percent << "% "
-              << Color::DIM << short_name << std::flush;
+              << Color::DIM << short_name;
+    
+    // Clear remaining characters from previous longer names
+    int padding = 40 - static_cast<int>(short_name.length());
+    if (padding > 0) {
+        std::cout << std::string(padding, ' ');
+    }
+    std::cout << std::flush;
 }
 
 void print_progress_end() {
