@@ -4,11 +4,8 @@ on:
   push:
     paths:
       - 'src/stub.cpp'
-      - 'src/engine.cpp'
-      - 'src/io.cpp'
-      - 'src/ui.cpp'
-      - 'src/license.cpp'
       - 'CMakeListsStub.txt'
+      - 'CmakeListsStub.txt'
       - '.github/workflows/stub.yml'
   workflow_dispatch:
 
@@ -20,31 +17,31 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Prepare Build Directory
+    - name: Configure CMake
       shell: pwsh
       run: |
         mkdir build_stub
-        copy CMakeListsStub.txt build_stub/CMakeLists.txt
-
-    - name: Configure CMake (FetchContent)
-      shell: pwsh
-      run: |
-        cmake -S build_stub -B _build_stub `
-          -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
+        # Copiamo il CMakeListsStub.txt come CMakeLists.txt nella cartella di build
+        copy CmakeListsStub.txt build_stub\CMakeLists.txt
+        cd build_stub
+        cmake -S . -B . -DCMAKE_BUILD_TYPE=Release
 
     - name: Build SFX Stub
       shell: pwsh
       run: |
-        cmake --build _build_stub --config Release
+        cd build_stub
+        cmake --build . --config Release --parallel
 
     - name: Verify Executable
       shell: pwsh
       run: |
-        if (Test-Path "_build_stub/Release/tarc_sfx_stub.exe") {
+        if (Test-Path "build_stub\Release\tarc_sfx_stub.exe") {
           Write-Host "Stub compilato con successo!" -ForegroundColor Green
+        } elseif (Test-Path "build_stub\CMakeFiles\tarc_sfx_stub.dir\Release\tarc_sfx_stub.exe") {
+          Write-Host "Stub compilato con successo (percorso alternativo)!" -ForegroundColor Green
         } else {
           Write-Host "Errore: tarc_sfx_stub.exe non trovato." -ForegroundColor Red
+          Get-ChildItem -Path "build_stub" -Recurse -Filter "*.exe" | ForEach-Object { Write-Host $_.FullName }
           exit 1
         }
 
@@ -52,4 +49,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: TARC-SFX-Stub-Win
-        path: _build_stub/Release/tarc_sfx_stub.exe
+        path: |
+          build_stub/Release/tarc_sfx_stub.exe
+          build_stub/CMakeFiles/tarc_sfx_stub.dir/Release/tarc_sfx_stub.exe
+        if-no-files-found: error
