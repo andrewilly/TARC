@@ -112,7 +112,7 @@ private:
         std::cout << "\n";
         UI::print_info("Extracting files...");
         
-        auto res = Engine::extract(self_path_, {}, false, archive_offset_);
+        auto res = Engine::extract(self_path_, {}, false, archive_offset_, false);
         UI::print_summary(res, "SFX Extract");
         
         if (!res.ok) {
@@ -139,7 +139,7 @@ private:
         std::cout << "\n";
         UI::print_info("Verifying integrity...");
         
-        auto res = Engine::extract(self_path_, {}, true, archive_offset_);
+        auto res = Engine::extract(self_path_, {}, true, archive_offset_, false);
         UI::print_summary(res, "SFX Test");
         
         if (!res.ok || res.bytes_out == 0) {

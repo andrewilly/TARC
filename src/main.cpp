@@ -206,7 +206,7 @@ static int run_command(const Command& cmd) {
             
             std::string arch = IO::ensure_ext(cmd.archive);
             
-            auto res = Engine::extract(arch, {}, true);
+            auto res = Engine::extract(arch, {}, true, 0, false);
             UI::print_summary(res, "Test");
             
             if (!res.ok || res.bytes_out == 0) {
