@@ -26,7 +26,7 @@ namespace License {
     
     bool delete_license();
     
-    void check_and_activate();
+    void check_and_activate(bool show_full_info = true);
     
     std::string generate_trial_key();
     std::string hash_key(const std::string& key);

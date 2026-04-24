@@ -252,13 +252,23 @@ static int run_command(const Command& cmd) {
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
     
-    License::check_and_activate();
-    
+    bool show_license_full = false;
     Command cmd = parse_args(argc, argv);
+    
+    if (cmd.type == Command::License) {
+        show_license_full = true;
+    }
+    
+    License::check_and_activate(show_license_full);
     
     if (cmd.type == Command::Help && argc < 2) {
         UI::show_banner();
         UI::show_help();
+        return 0;
+    }
+    
+    if (cmd.type == Command::License) {
+        UI::show_license();
         return 0;
     }
     

@@ -124,46 +124,48 @@ License::LicenseInfo License::get_license_info() {
     return g_license_info;
 }
 
-void License::check_and_activate() {
+void License::check_and_activate(bool show_full_info) {
     auto saved = load_saved_key();
     
     if (saved && saved->is_valid) {
-        std::cout << Color::CYAN << "[" << Color::GREEN << "LICENSE" << Color::CYAN << "] " << Color::RESET;
-        std::cout << "Active (" << Color::BRIGHT_GREEN << saved->key << Color::RESET << ")\n";
+        std::cout << Color::CYAN << "[LICENSE] " << Color::RESET;
+        std::cout << "Activated" << Color::DIM << " (" << saved->key << ")" << Color::RESET << "\n";
         return;
     }
 
-    std::cout << Color::BOLD << Color::CYAN << "\n╔════════════════════════════════════════╗\n";
-    std::cout << "║     TARC LICENSE MANAGER        ║\n";
-    std::cout << "╚════════════════════════════════════════╝" << Color::RESET << "\n\n";
-    
-    std::cout << Color::YELLOW << "⚠ " << Color::RESET << "License not found or invalid.\n";
-    std::cout << "Enter license key (or press Enter for trial): ";
-    
-    std::string key;
-    if (!std::getline(std::cin, key)) {
-        UI::print_error("No input received. Operation cancelled.");
-        std::exit(1);
-    }
-    
-    if (key.empty()) {
-        key = generate_trial_key();
-        if (save_license_info({key, "Trial User", "", true})) {
-            std::cout << Color::GREEN << "✔ " << Color::RESET << "Trial activated: " << key << "\n";
-            return;
+    if (show_full_info) {
+        std::cout << Color::CYAN << "\n";
+        std::cout << "  TARC LICENSE MANAGER\n";
+        std::cout << "  --------------------\n\n";
+        
+        std::cout << Color::YELLOW << "  License not found or invalid.\n";
+        std::cout << "  Enter license key (or press Enter for trial): ";
+        
+        std::string key;
+        if (!std::getline(std::cin, key)) {
+            UI::print_error("No input received. Operation cancelled.");
+            std::exit(1);
         }
+        
+        if (key.empty()) {
+            key = generate_trial_key();
+            if (save_license_info({key, "Trial User", "", true})) {
+                std::cout << Color::GREEN << "  Trial activated: " << key << Color::RESET << "\n\n";
+                return;
+            }
+        }
+        
+        if (!is_valid(key)) {
+            UI::print_error("Invalid key format.");
+            std::exit(1);
+        }
+        
+        if (!save_key(key)) {
+            UI::print_warning("Could not save license to disk.");
+        }
+        
+        std::cout << Color::GREEN << "  Activation successful!" << Color::RESET << "\n\n";
     }
-    
-    if (!is_valid(key)) {
-        UI::print_error("Invalid key format.");
-        std::exit(1);
-    }
-    
-    if (!save_key(key)) {
-        UI::print_warning("Could not save license to disk.");
-    }
-    
-    std::cout << Color::GREEN << "✔ " << Color::RESET << "Activation successful!\n\n";
 }
 
 bool License::is_valid(const std::string& key) {
