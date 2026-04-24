@@ -49,8 +49,8 @@ private:
     
     void show_header() const {
         std::cout << Color::CYAN << "╔═══════════════════════════════════════════╗\n";
-        std::cout << "║     TARC SELF-EXTRACTOR  v2.00_OpenAi    ║\n";
-        std::cout << "║     Powered by Strike Engine           ║\n";
+        std::cout << "║     TARC SELF-EXTRACTOR  v2.00_OpenAi     ║\n";
+        std::cout << "║     Powered by Strike Engine              ║\n";
         std::cout << "╚═══════════════════════════════════════════╝" << Color::RESET << "\n\n";
         
         std::cout << Color::DIM << "Archive: " << Color::RESET << self_path_ << "\n";
