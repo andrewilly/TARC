@@ -8,7 +8,9 @@
 #include <random>
 #include <algorithm>
 #include <sstream>
-#include <unistd.h>  // getpid(), isatty()
+#ifndef _WIN32
+    #include <unistd.h>  // getpid()
+#endif
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -22,18 +24,22 @@ namespace fs = std::filesystem;
 namespace IO {
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UNICODE-AWARE FOPEN
+// INTERVENTO #19: UNICODE-AWARE FOPEN
 // Su Windows, converte il percorso UTF-8 in wide string e usa _wfopen().
 // Su POSIX, UTF-8 e' nativo, quindi fopen() diretto.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 FILE* u8fopen(const std::string& utf8_path, const char* mode) {
 #ifdef _WIN32
+    // Converti percorso UTF-8 → wide string tramite fs::u8path
     auto p = fs::u8path(utf8_path);
+
+    // Converti mode (sempre ASCII) in wide string
     std::wstring wmode;
     for (const char* c = mode; *c; ++c) {
         wmode += static_cast<wchar_t>(*c);
     }
+
     return _wfopen(p.c_str(), wmode.c_str());
 #else
     return fopen(utf8_path.c_str(), mode);
@@ -41,7 +47,7 @@ FILE* u8fopen(const std::string& utf8_path, const char* mode) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SICUREZZA PERCORSI — Sanitizzazione e validazione
+// SICUREZZA PERCORSI — Intervento #11
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string sanitize_path(const std::string& path) {
@@ -73,7 +79,6 @@ std::string sanitize_path(const std::string& path) {
             if (parts.empty()) return "";
             parts.pop_back();
         } else {
-            // Rifiuta caratteri di controllo e null byte
             for (char c : part) {
                 if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return "";
             }
@@ -92,46 +97,18 @@ std::string sanitize_path(const std::string& path) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VALIDAZIONE HEADER — Protezione da archivi malevoli
+// VALIDAZIONE HEADER — Intervento #13
 // ═══════════════════════════════════════════════════════════════════════════════
 
 bool validate_header(const Header& h) {
     if (memcmp(h.magic, TARC_MAGIC, 4) != 0) return false;
     if (h.version < 200 || h.version > TARC_VERSION) return false;
     if (h.toc_offset > 0 && h.toc_offset < sizeof(Header)) return false;
-    // Protezione OOM: limita il numero di file nell'archivio
-    if (h.file_count > MAX_FILE_COUNT) return false;
     return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VALIDAZIONE DIRECTORY OUTPUT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-bool validate_output_dir(const std::string& dir) {
-    if (dir.empty()) return true;
-
-    // Normalizza separatori
-    std::string normalized = dir;
-    std::replace(normalized.begin(), normalized.end(), '\\', '/');
-
-    // Rifiuta componenti ".."
-    std::istringstream iss(normalized);
-    std::string part;
-    while (std::getline(iss, part, '/')) {
-        if (part == "..") return false;
-    }
-
-    // Rifiuta caratteri di controllo
-    for (char c : dir) {
-        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return false;
-    }
-
-    return true;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SCRITTURE ATOMICHE — File temporanei con rename
+// SCRITTURE ATOMICHE — Intervento #12
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string make_temp_path(const std::string& target_path) {
@@ -141,7 +118,11 @@ std::string make_temp_path(const std::string& target_path) {
     uint32_t r = dist(gen);
 
     // Include PID per ridurre rischio collisione tra processi
+#ifdef _WIN32
+    auto pid = static_cast<uint32_t>(GetCurrentProcessId());
+#else
     auto pid = static_cast<uint32_t>(getpid());
+#endif
 
     char hex[17];
     snprintf(hex, sizeof(hex), "%08x%08x", pid, r);
@@ -151,6 +132,7 @@ std::string make_temp_path(const std::string& target_path) {
 
 bool atomic_rename(const std::string& from, const std::string& to) {
 #ifdef _WIN32
+    // Converte percorsi UTF-8 a wide string per MoveFileExW
     auto wfrom = fs::u8path(from).wstring();
     auto wto   = fs::u8path(to).wstring();
     return MoveFileExW(wfrom.c_str(), wto.c_str(),
@@ -167,7 +149,7 @@ bool safe_remove(const std::string& path) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FUNZIONI I/O
+// FUNZIONI I/O ESISTENTI
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string ensure_ext(const std::string& path) {
@@ -177,7 +159,7 @@ std::string ensure_ext(const std::string& path) {
     return path;
 }
 
-// Espansione percorsi Unicode-aware (cross-platform)
+// INTERVENTO #19: Espansione percorsi Unicode-aware (cross-platform)
 void expand_path(const std::string& pattern, std::vector<std::string>& out) {
     auto p = fs::u8path(pattern);
     std::error_code ec;
@@ -237,18 +219,16 @@ bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 
 bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp) {
     try {
+        // INTERVENTO #19: Usa fs::u8path per supporto Unicode
         fs::path p = fs::u8path(path);
 
         if (p.has_parent_path()) {
             std::error_code ec;
             fs::create_directories(p.parent_path(), ec);
             if (ec) return false;
-
-            // Protezione symlink: verifica che le directory intermedie
-            // non siano link simbolici (previene attacchi tramite symlink)
-            if (fs::is_symlink(p.parent_path(), ec)) return false;
         }
 
+        // Apri il file con percorso Unicode-safe
 #ifdef _WIN32
         std::ofstream out(p, std::ios::binary);
 #else
@@ -261,10 +241,10 @@ bool write_file_to_disk(const std::string& path, const char* data, size_t size, 
         }
         out.close();
 
-        if (out.good() && timestamp > 0) {
-            auto file_time = unix_to_file_time(timestamp);
-            std::error_code ec;
-            fs::last_write_time(p, file_time, ec);
+        if (out.good()) {
+             auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
+             std::error_code ec;
+             fs::last_write_time(p, fs::file_time_type(sys_time.time_since_epoch()), ec);
         }
 
         return true;
@@ -281,7 +261,7 @@ bool write_bytes(FILE* f, const void* buf, size_t size) {
     return fwrite(buf, 1, size, f) == size;
 }
 
-// ─── 64-BIT SEEK/TELL ───────────────────────────────────────────────────────
+// --- 64-BIT SEEK/TELL ---
 
 bool seek64(FILE* f, int64_t offset, int origin) {
 #ifdef _WIN32
@@ -296,50 +276,6 @@ int64_t tell64(FILE* f) {
     return _ftelli64(f);
 #else
     return static_cast<int64_t>(ftello(f));
-#endif
-}
-
-// ─── CONVERSIONE TIMESTAMP PORTABILE ─────────────────────────────────────────
-// C++17 non garantisce che file_time_type::clock abbia la stessa epoca di
-// system_clock. Queste funzioni calcolano l'offset relativo in modo portabile.
-
-uint64_t file_time_to_unix(fs::file_time_type ftime) {
-    const auto sys_now  = std::chrono::system_clock::now();
-    const auto file_now = fs::file_time_type::clock::now();
-    auto offset = ftime - file_now;
-    auto sys_time = sys_now + std::chrono::duration_cast<std::chrono::system_clock::duration>(offset);
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(sys_time.time_since_epoch()).count());
-}
-
-fs::file_time_type unix_to_file_time(uint64_t timestamp) {
-    const auto sys_now  = std::chrono::system_clock::now();
-    const auto file_now = fs::file_time_type::clock::now();
-    auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
-    auto offset = sys_time - sys_now;
-    return file_now + std::chrono::duration_cast<fs::file_time_type::duration>(offset);
-}
-
-// ─── DIRECTORY ESEGUIBILE ────────────────────────────────────────────────────
-
-std::string get_exe_directory() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
-        return fs::path(buf).parent_path().u8string();
-    }
-    return ".";
-#else
-    // Prova /proc/self/exe (Linux), poi /proc/curproc/file (FreeBSD), poi fallback
-    for (const char* proc_path : {"/proc/self/exe", "/proc/curproc/file"}) {
-        std::error_code ec;
-        if (fs::exists(proc_path, ec)) {
-            auto exe = fs::read_symlink(proc_path, ec);
-            if (!ec) return exe.parent_path().string();
-        }
-    }
-    return ".";
 #endif
 }
 

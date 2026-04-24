@@ -6,7 +6,11 @@
 #include <string>
 #include <iomanip>
 #include <chrono>
-#include <unistd.h>  // isatty()
+#ifndef _WIN32
+    #include <unistd.h>  // isatty(), fileno()
+#else
+    #include <io.h>      // _isatty(), _fileno()
+#endif
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -17,21 +21,15 @@
 
 namespace UI {
 
-// ─── FLAG GLOBALI ───────────────────────────────────────────────────────────
-bool g_verbose       = false;
+// ─── INTERVENTO #16: VERBOSE FLAG GLOBALE ─────────────────────────────────────
+bool g_verbose = false;
 bool g_color_enabled = true;
 
-// ─── TIMER PER ETA ──────────────────────────────────────────────────────────
+// ─── INTERVENTO #17: TIMER PER ETA ─────────────────────────────────────────────
 static std::chrono::steady_clock::time_point g_progress_start;
 
 void progress_timer_reset() {
     g_progress_start = std::chrono::steady_clock::now();
-}
-
-// ─── HELPER: colore condizionale ─────────────────────────────────────────────
-// Ritorna il codice ANSI se i colori sono abilitati, altrimenti stringa vuota
-static inline const char* c(const char* code) {
-    return g_color_enabled ? code : "";
 }
 
 // ─── VTP (Virtual Terminal Processing) ───────────────────────────────────────
@@ -53,6 +51,12 @@ void enable_vtp() {
     const char* term = getenv("TERM");
     if (term && strcmp(term, "dumb") == 0) g_color_enabled = false;
 #endif
+}
+
+// ─── HELPER: colore condizionale ─────────────────────────────────────────────
+// Ritorna il codice ANSI se i colori sono abilitati, altrimenti stringa vuota
+static inline const char* c(const char* code) {
+    return g_color_enabled ? code : "";
 }
 
 // ─── HELP ─────────────────────────────────────────────────────────────────────
@@ -102,7 +106,7 @@ void show_banner() {
     printf("========================================================================%s\n", c(Color::RESET));
 }
 
-// ─── PROGRESS BAR CON ETA ────────────────────────────────────────────────────
+// ─── INTERVENTO #17: PROGRESS BAR CON ETA ─────────────────────────────────────
 void print_progress(size_t current, size_t total, const std::string& current_file,
                     int test_ok) {
     float percent = (total > 0) ? (static_cast<float>(current) / total * 100.0f) : 100.0f;
@@ -139,7 +143,7 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     }
     printf("%s%s] %.1f%%", c(Color::RESET), c(Color::CYAN), percent);
 
-    // Contatore file
+    // Contatore file (es. "42/137")
     printf(" %s%zu/%zu%s", c(Color::DIM), current, total, c(Color::RESET));
 
     // Modalita' test: mostra [OK]/[FAIL] inline col nome file
@@ -150,6 +154,7 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
                status_color, status_text, c(Color::RESET),
                c(Color::RESET), short_name.c_str(), c(Color::RESET));
     } else {
+        // Modalita' compressione/estrazione: nome file normale
         printf(" %sProcessing: %s%-20s%s",
                c(Color::DIM), c(Color::RESET), short_name.c_str(), c(Color::RESET));
     }
@@ -220,7 +225,7 @@ void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Cod
             c(Color::RESET));
 }
 
-// ─── SUMMARY ARRICCHITO ─────────────────────────────────────────────────────
+// ─── INTERVENTO #18: SUMMARY ARRICCHITO ────────────────────────────────────────
 void print_summary(const TarcResult& r, const std::string& op) {
     printf("\n");
     if (!r.ok) {
@@ -228,8 +233,10 @@ void print_summary(const TarcResult& r, const std::string& op) {
         return;
     }
 
+    // Operazione completata
     printf("\n%s+ %s completato.%s", c(Color::GREEN), op.c_str(), c(Color::RESET));
 
+    // Statistiche byte se disponibili
     if (r.bytes_in > 0 && r.bytes_out > 0) {
         printf("  %s -> %s  (%sratio: %s%s)",
                 human_size(r.bytes_in).c_str(),
@@ -240,6 +247,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
     }
     printf("\n");
 
+    // Conteggi file
     if (r.file_count > 0) {
         printf("  %sFile:%s %u", c(Color::DIM), c(Color::RESET), r.file_count);
         if (r.dup_count > 0)
@@ -249,6 +257,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
         printf("\n");
     }
 
+    // Statistiche per-codec
     if (!r.codec_bytes.empty()) {
         printf("  %sCodecs:%s", c(Color::DIM), c(Color::RESET));
         for (const auto& [codec, bytes] : r.codec_bytes) {
@@ -263,6 +272,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
         printf("\n");
     }
 
+    // Tempo impiegato
     if (r.elapsed_ms > 0) {
         printf("  %sTempo:%s ", c(Color::DIM), c(Color::RESET));
         if (r.elapsed_ms >= 60000) {
@@ -273,6 +283,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
             printf("%llu ms", (unsigned long long)r.elapsed_ms);
         }
 
+        // Velocita' se abbiamo bytes e tempo
         if (r.bytes_in > 0 && r.elapsed_ms > 0) {
             double mb_per_sec = (r.bytes_in / 1048576.0) / (r.elapsed_ms / 1000.0);
             printf("  %s(%.1f MB/s)%s", c(Color::DIM), mb_per_sec, c(Color::RESET));
@@ -280,6 +291,7 @@ void print_summary(const TarcResult& r, const std::string& op) {
         printf("\n");
     }
 
+    // Dimensione archivio
     if (r.archive_size > 0) {
         printf("  %sArchivio:%s %s\n", c(Color::DIM), c(Color::RESET), human_size(r.archive_size).c_str());
     }
@@ -297,6 +309,7 @@ void print_warning(const std::string& msg) {
     printf("%sWARNING: %s%s\n", c(Color::YELLOW), msg.c_str(), c(Color::RESET));
 }
 
+// ─── INTERVENTO #16: VERBOSE LOGGING ─────────────────────────────────────────
 void print_verbose(const std::string& msg) {
     if (!g_verbose) return;
     printf("%sVERBOSE: %s%s\n", c(Color::DIM), msg.c_str(), c(Color::RESET));
