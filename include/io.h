@@ -28,10 +28,4 @@ namespace IO {
 
     bool write_entry(FILE* f, const FileEntry& entry);
 
-    Result<FileEntry> read_entry(FILE* f);
-
-    std::chrono::system_clock::time_point file_time_from_timestamp(uint64_t ts);
-
-    uint64_t timestamp_from_file_time(const std::chrono::system_clock::time_point& ft);
-
 }

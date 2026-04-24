@@ -134,11 +134,10 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
         out.close();
 
         if (out.good()) {
-            auto sys_time = file_time_from_timestamp(timestamp);
             try {
-                fs::last_write_time(p, sys_time);
+                auto file_time = std::chrono::file_clock::time_point(std::chrono::seconds(timestamp));
+                fs::last_write_time(p, file_time);
             } catch (...) {
-                // Ignore timestamp errors on filesystems that don't support it
             }
         }
         
@@ -148,13 +147,7 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
     }
 }
 
-std::chrono::system_clock::time_point IO::file_time_from_timestamp(uint64_t ts) {
-    return std::chrono::system_clock::time_point(std::chrono::seconds(ts));
-}
-
-uint64_t IO::timestamp_from_file_time(const std::chrono::system_clock::time_point& ft) {
-    return std::chrono::duration_cast<std::chrono::seconds>(ft.time_since_epoch()).count();
-}
+// Timestamp conversion functions (if needed elsewhere)
 
 bool IO::read_bytes(FILE* f, void* buf, size_t size) {
     return fread(buf, 1, size, f) == size;
