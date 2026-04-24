@@ -1,42 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
-project(tarc_sfx_stub VERSION 2.04 LANGUAGES CXX C)
-
-# Questo CMakeLists.txt compila SOLO lo stub SFX (Windows-only).
-# Per la build completa di tarc, usare il CMakeLists.txt nella root del progetto.
+project(tarc_sfx_stub VERSION 2.00 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DEFINIZIONI GLOBALI — Necessarie prima di qualsiasi FetchContent
-# perche' i source includono <windows.h> che definisce min/max se
-# NOMINMAX non e' definito. Con add_definitions() sono garantite
-# sulla riga di comando del compilatore per TUTTI i target.
-# ═══════════════════════════════════════════════════════════════════════════════
-add_definitions(
-    -D_CRT_SECURE_NO_WARNINGS
-    -DWIN32_LEAN_AND_MEAN
-    -DNOMINMAX
-    -D_USE_MATH_DEFINES
-)
-
 find_package(Threads REQUIRED)
+
 include(FetchContent)
 
-# Mostra progresso FetchContent nel log CI
-set(FETCHCONTENT_QUIET OFF)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FETCH CONTENT — Dipendenze compilate da sorgente
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ── zstd ─────────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     zstd
     GIT_REPOSITORY https://github.com/facebook/zstd.git
@@ -49,7 +24,6 @@ set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(zstd)
 
-# ── lz4 ──────────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     lz4
     GIT_REPOSITORY https://github.com/lz4/lz4.git
@@ -60,7 +34,6 @@ set(LZ4_BUILD_CLI    OFF CACHE BOOL "" FORCE)
 set(LZ4_BUILD_LEGACY OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(lz4)
 
-# ── xz/lzma ──────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     liblzma
     GIT_REPOSITORY https://github.com/tukaani-project/xz.git
@@ -77,7 +50,6 @@ set(HAVE_LIBINTL_H       OFF CACHE BOOL "" FORCE)
 set(HAVE_LIBINTL         OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(liblzma)
 
-# ── brotli ───────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     brotli
     GIT_REPOSITORY https://github.com/google/brotli.git
@@ -87,7 +59,6 @@ set(BROTLI_BUNDLED_MODE ON CACHE BOOL "" FORCE)
 set(BROTLI_DISABLE_TESTS ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(brotli)
 
-# ── xxhash ───────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     xxhash
     GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
@@ -97,79 +68,23 @@ FetchContent_MakeAvailable(xxhash)
 add_library(xxhash_lib STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
 target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# VERIFICA FETCH CONTENT — Diagnostica per CI
-# Se una dipendenza non e' stata scaricata, fallisce subito con
-# un messaggio chiaro invece di errori criptici in compilazione.
-# ═══════════════════════════════════════════════════════════════════════════════
-message(STATUS "── FetchContent Diagnostic ──────────────────────────")
-message(STATUS "  zstd_SOURCE_DIR  = ${zstd_SOURCE_DIR}")
-message(STATUS "  lz4_SOURCE_DIR   = ${lz4_SOURCE_DIR}")
-message(STATUS "  liblzma_SOURCE_DIR = ${liblzma_SOURCE_DIR}")
-message(STATUS "  brotli_SOURCE_DIR = ${brotli_SOURCE_DIR}")
-message(STATUS "  xxhash_SOURCE_DIR = ${xxhash_SOURCE_DIR}")
+set(STUB_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stub.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/engine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui.cpp
+)
 
-# Verifica che gli header principali esistano
-if(NOT EXISTS "${zstd_SOURCE_DIR}/lib/zstd.h")
-    message(FATAL_ERROR "zstd.h non trovato in ${zstd_SOURCE_DIR}/lib/ — FetchContent fallita?")
-endif()
-if(NOT EXISTS "${lz4_SOURCE_DIR}/lib/lz4.h")
-    message(FATAL_ERROR "lz4.h non trovato in ${lz4_SOURCE_DIR}/lib/ — FetchContent fallita?")
-endif()
-if(NOT EXISTS "${liblzma_SOURCE_DIR}/src/liblzma/api/lzma.h")
-    message(FATAL_ERROR "lzma.h non trovato in ${liblzma_SOURCE_DIR}/src/liblzma/api/ — FetchContent fallita?")
-endif()
-if(NOT EXISTS "${brotli_SOURCE_DIR}/c/include/brotli/encode.h")
-    message(FATAL_ERROR "brotli/encode.h non trovato in ${brotli_SOURCE_DIR}/c/include/ — FetchContent fallita?")
-endif()
-if(NOT EXISTS "${xxhash_SOURCE_DIR}/xxhash.h")
-    message(FATAL_ERROR "xxhash.h non trovato in ${xxhash_SOURCE_DIR}/ — FetchContent fallita?")
-endif()
-message(STATUS "  Tutte le dipendenze verificate con successo!")
-message(STATUS "────────────────────────────────────────────────────")
+add_executable(tarc_sfx_stub ${STUB_SOURCES})
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# INCLUDE DIRECTORIES
-# ═══════════════════════════════════════════════════════════════════════════════
-# Usiamo include_directories() globale perche' con MSVC e i target
-# FetchContent e' piu' robusto. Le librerie linkate propagano gia'
-# i loro include, ma li aggiungiamo anche esplicitamente come fallback.
-# ═══════════════════════════════════════════════════════════════════════════════
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+target_include_directories(tarc_sfx_stub PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${zstd_SOURCE_DIR}/lib
     ${lz4_SOURCE_DIR}/lib
     ${liblzma_SOURCE_DIR}/src/liblzma/api
     ${brotli_SOURCE_DIR}/c/include
     ${xxhash_SOURCE_DIR}
 )
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SFX STUB TARGET
-# ═══════════════════════════════════════════════════════════════════════════════
-# IMPORTANTE: NON usare WIN32 in add_executable! Lo stub usa main(),
-# non WinMain. Il flag WIN32 fa cercare a MSVC l'entry point WinMain
-# causando LNK2019.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-set(SFX_STUB_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/stub.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/engine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/io.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/license.cpp
-)
-
-add_executable(tarc_sfx_stub ${SFX_STUB_SOURCES})
-
-# Imposta esplicitamente il sottosistema CONSOLE per MSVC
-# (assicura che cerchi main() e non WinMain)
-if(MSVC)
-    set_target_properties(tarc_sfx_stub PROPERTIES
-        WIN32_EXECUTABLE FALSE
-        LINK_FLAGS "/SUBSYSTEM:CONSOLE"
-    )
-endif()
 
 target_link_libraries(tarc_sfx_stub PRIVATE
     libzstd_static
@@ -180,26 +95,36 @@ target_link_libraries(tarc_sfx_stub PRIVATE
     brotlicommon
     xxhash_lib
     Threads::Threads
-    bcrypt user32
 )
 
 if(MSVC)
-    target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8)
-    # Sopprime warning C4100 per parametri non referenziati (argc/argv in stub)
-    target_compile_options(tarc_sfx_stub PRIVATE /wd4100)
+    target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
+    target_compile_definitions(tarc_sfx_stub PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+    target_compile_options(tarc_sfx_stub PRIVATE -O3 -Wall -Wextra -Wpedantic -Wno-unused-parameter
+        $<$<CXX_COMPILER_ID:GNU>:-march=native>
+        $<$<CXX_COMPILER_ID:Clang>:-march=native>
+    )
+endif()
+
+if(WIN32)
+    target_link_libraries(tarc_sfx_stub PRIVATE bcrypt user32)
+endif()
+
+if(APPLE)
+    target_compile_options(tarc_sfx_stub PRIVATE -Wno-unused-variable -Wno-unused-parameter)
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
+    target_link_options(tarc_sfx_stub PRIVATE -s)
 endif()
 
 message(STATUS "")
-message(STATUS "  +==========================================+")
-message(STATUS "  |   TARC SFX STUB v${PROJECT_VERSION} - BUILD CONFIG   |")
-message(STATUS "  +==========================================+")
-message(STATUS "  |  Build type : ${CMAKE_BUILD_TYPE}")
-message(STATUS "  |  Target     : tarc_sfx_stub.exe")
-message(STATUS "  |  zstd inc   : ${zstd_SOURCE_DIR}/lib")
-message(STATUS "  |  lz4 inc    : ${lz4_SOURCE_DIR}/lib")
-message(STATUS "  |  lzma inc   : ${liblzma_SOURCE_DIR}/src/liblzma/api")
-message(STATUS "  |  brotli inc : ${brotli_SOURCE_DIR}/c/include")
-message(STATUS "  |  xxhash inc : ${xxhash_SOURCE_DIR}")
-message(STATUS "  |  Codecs     : ZSTD + LZMA + LZ4 + BROTLI")
-message(STATUS "  +==========================================+")
+message(STATUS "  ╔═══════════   ════════════════════════════════╗")
+message(STATUS "  ║    TARC SFX STUB - BUILD CONFIG           ║")
+message(STATUS "  ╠════════════════════════════════════════════╣")
+message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  ║  Standard   : C++17")
+message(STATUS "  ║  Version    : 2.00_OpenAi")
+message(STATUS "  ╚════════════════════════════════════════════╝")
 message(STATUS "")
