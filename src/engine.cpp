@@ -139,7 +139,7 @@ struct ChunkResult {
     std::string error_message;
 };
 
-// Compressione LZMA ottimizzata con easy_buffer_encode
+// Compressione LZMA ottimizzata con parametri 7zip-like
 ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
@@ -157,24 +157,114 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     res.compressed_data.resize(max_out);
     size_t out_pos = 0;
     
-    // Livello: 1-9, usa LZMA_PRESET_EXTREME per massima compressione
-    uint32_t preset = static_cast<uint32_t>(std::min(level, 9)) | LZMA_PRESET_EXTREME;
+    // Parametri LZMA ottimizzati come 7zip
+    lzma_options_lzma options{};
+    options.lc = 3;  // Literal context (3 è ottimo per la maggior parte dei dati)
+    options.lp = 0;  // Literal position
+    options.pb = 2;  // Position bits (2 è default 7zip)
     
-    lzma_ret ret = lzma_easy_buffer_encode(
-        preset,
-        LZMA_CHECK_CRC64,
-        nullptr,
-        reinterpret_cast<const uint8_t*>(raw_data.data()),
-        raw_data.size(),
-        reinterpret_cast<uint8_t*>(res.compressed_data.data()),
-        &out_pos,
-        max_out
-    );
+    // Dictionary size: 64MB per livello 9, scala per altri livelli
+    size_t dict_size = 1 << 23; // 8MB base
+    if (level >= 9) {
+        dict_size = 1 << 26; // 64MB per ultra compression
+    } else if (level >= 6) {
+        dict_size = 1 << 25; // 32MB
+    } else if (level >= 3) {
+        dict_size = 1 << 24; // 16MB
+    }
+    options.dict_size = std::min(dict_size, raw_data.size() + (raw_data.size() / 4));
     
-    if (ret == LZMA_OK) {
-        res.compressed_data.resize(out_pos);
+    // Nice length: più grande = meglio per file solid
+    options.nice_len = 273;
+    
+    // Depth di ricerca: più profondo = migliore compressione
+    options.search_depth = 96;
+    
+    // Fast bytes: più basso = migliore ma più lento
+    options.fast_bytes = 64;
+    
+    // Mode: normal per bilanciamento, optimal per massima compressione
+    options.mode = (level >= 7) ? LZMA_MODE_OPTIMAL : LZMA_MODE_NORMAL;
+    
+    // Encoder diretto con opzioni personalizzate
+    lzma_stream stream = LZMA_STREAM_INIT;
+    
+    lzma_filter filters[] = {
+        { LZMA_FILTER_LZMA2, &options },
+        { LZMA_VLI_UNKNOWN, nullptr }
+    };
+    
+    lzma_ret ret = lzma_simple_encoder(&stream, filters, LZMA_CHECK_CRC64);
+    
+    if (ret != LZMA_OK) {
+        // Fallback: usa easy_buffer_encode con preset massimo
+        stream = LZMA_STREAM_INIT;
+        uint32_t preset = static_cast<uint32_t>(std::min(level, 9)) | LZMA_PRESET_EXTREME;
+        ret = lzma_easy_buffer_encode(
+            preset,
+            LZMA_CHECK_CRC64,
+            nullptr,
+            reinterpret_cast<const uint8_t*>(raw_data.data()),
+            raw_data.size(),
+            reinterpret_cast<uint8_t*>(res.compressed_data.data()),
+            &out_pos,
+            max_out
+        );
+        
+        if (ret == LZMA_OK) {
+            res.compressed_data.resize(out_pos);
+            res.success = true;
+        } else {
+            res.compressed_data = raw_data;
+            res.codec = Codec::STORE;
+            res.success = true;
+        }
+        return res;
+    }
+    
+    // Encode chunk
+    std::vector<uint8_t> output;
+    output.reserve(raw_data.size() / 2);
+    
+    stream.next_in = reinterpret_cast<const uint8_t*>(raw_data.data());
+    stream.avail_in = raw_data.size();
+    
+    uint8_t out_buf[65536];
+    
+    while (true) {
+        stream.next_out = out_buf;
+        stream.avail_out = sizeof(out_buf);
+        
+        ret = lzma_code(&stream, LZMA_RUN);
+        
+        size_t produced = sizeof(out_buf) - stream.avail_out;
+        if (produced > 0) {
+            output.insert(output.end(), out_buf, out_buf + produced);
+        }
+        
+        if (ret != LZMA_OK) break;
+    }
+    
+    // Finish
+    stream.avail_in = 0;
+    while (true) {
+        stream.next_out = out_buf;
+        stream.avail_out = sizeof(out_buf);
+        ret = lzma_code(&stream, LZMA_FINISH);
+        size_t produced = sizeof(out_buf) - stream.avail_out;
+        if (produced > 0) {
+            output.insert(output.end(), out_buf, out_buf + produced);
+        }
+        if (ret != LZMA_OK) break;
+    }
+    
+    lzma_end(&stream);
+    
+    if (output.size() < raw_data.size()) {
+        res.compressed_data.assign(output.begin(), output.end());
         res.success = true;
     } else {
+        // Non ha compresso, usa raw
         res.compressed_data = raw_data;
         res.codec = Codec::STORE;
         res.success = true;
@@ -291,6 +381,28 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         return res;
     }
 
+    // Ordina file per estensione (migliora compressione solid)
+    std::map<std::string, std::vector<std::string>> files_by_ext;
+    for (const auto& f : expanded_files) {
+        std::string ext = fs::path(f).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        files_by_ext[ext].push_back(f);
+    }
+    
+    // Ricostruisci lista ordinata: estensioni con piu file prima
+    std::vector<std::string> sorted_files;
+    std::vector<std::pair<size_t, std::string>> ext_counts;
+    for (const auto& [ext, files] : files_by_ext) {
+        ext_counts.emplace_back(files.size(), ext);
+    }
+    std::sort(ext_counts.begin(), ext_counts.end(), std::greater<>());
+    for (const auto& [count, ext] : ext_counts) {
+        for (const auto& f : files_by_ext[ext]) {
+            sorted_files.push_back(f);
+        }
+    }
+    expanded_files = sorted_files;
+
     std::vector<FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
     Header h{};
@@ -326,8 +438,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         fwrite(&h, sizeof(h), 1, f);
     }
 
-    // Solid block 512MB per massima compressione
-    constexpr size_t CHUNK_THRESHOLD = 512 * 1024 * 1024;
+    // Solid block: 1GB per massima compressione solid
+    constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     
