@@ -12,6 +12,7 @@
 
 #ifdef _WIN32
     #include <windows.h>
+    #include <wincrypt.h>
     #include <bcrypt.h>
 #endif
 
