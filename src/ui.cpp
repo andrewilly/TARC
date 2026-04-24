@@ -53,13 +53,12 @@ void disable_vtp() {
 }
 
 void show_banner() {
-    std::cout << Color::CYAN << "╔════════════════════════════════════════════════════════════════════╗\n";
-    std::cout << "║                                                        ║\n";
-    std::cout << Color::BRIGHT_CYAN << "║            TARC STRIKE v2.00_OpenAi                   ║" << Color::CYAN << "  ║\n";
-    std::cout << "║            Advanced Solid Compression                 ║\n";
-    std::cout << "║            © 2026 André Willy Rizzo               ║\n";
-    std::cout << "║                                                        ║\n";
-    std::cout << "╚════════════════════════════════════════════════════════════╝" << Color::RESET << "\n\n";
+    std::cout << Color::CYAN
+              << "================================================================\n"
+              << "                    TARC STRIKE v2.00_OpenAi                   \n"
+              << "                    Advanced Solid Compression                \n"
+              << "                    (c) 2026 Andre Willy Rizzo                \n"
+              << "================================================================\n" << Color::RESET << "\n";
 }
 
 void show_help() {
