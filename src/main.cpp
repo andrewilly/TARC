@@ -14,6 +14,32 @@
 
 namespace fs = std::filesystem;
 
+class ProgressReporter : public ProgressCallback {
+public:
+    size_t current = 0;
+    size_t total = 0;
+    std::string current_file;
+    bool cancelled = false;
+
+    void on_progress(size_t c, size_t t, const std::string& file) override {
+        current = c;
+        total = t;
+        current_file = file;
+        UI::print_progress(current, total, current_file);
+    }
+
+    void on_warning(const std::string& msg) override {
+        std::cout << "\n";
+        UI::print_warning(msg);
+    }
+
+    bool is_cancelled() const override {
+        return cancelled;
+    }
+};
+
+namespace fs = std::filesystem;
+
 struct Command {
     enum Type {
         None,
@@ -165,9 +191,11 @@ static int run_command(const Command& cmd) {
             
             std::string arch = IO::ensure_ext(cmd.archive);
             
-            UI::print_info("Processing " + std::to_string(cmd.files.size()) + " items...");
+            ProgressReporter reporter;
+            Engine::set_progress_callback(&reporter);
             
             auto res = Engine::compress(arch, cmd.files, cmd.append, cmd.level);
+            UI::print_progress_end();
             UI::print_summary(res, cmd.append ? "Add" : "Create");
             
             if (res.ok && cmd.sfx) {
@@ -192,7 +220,11 @@ static int run_command(const Command& cmd) {
             
             std::string arch = IO::ensure_ext(cmd.archive);
             
+            ProgressReporter reporter;
+            Engine::set_progress_callback(&reporter);
+            
             auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat);
+            UI::print_progress_end();
             UI::print_summary(res, "Extract");
             result = res.ok ? 0 : 1;
             break;
@@ -206,7 +238,11 @@ static int run_command(const Command& cmd) {
             
             std::string arch = IO::ensure_ext(cmd.archive);
             
+            ProgressReporter reporter;
+            Engine::set_progress_callback(&reporter);
+            
             auto res = Engine::extract(arch, {}, true, 0, false);
+            UI::print_progress_end();
             UI::print_summary(res, "Test");
             
             if (!res.ok || res.bytes_out == 0) {
