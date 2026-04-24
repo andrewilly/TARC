@@ -424,7 +424,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     }
 
     if (append) {
-        fseek(f, static_cast<long>(h.toc_offset), SEEK_SET);
+        if (final_toc.empty()) {
+            fwrite(&h, sizeof(h), 1, f);
+        } else {
+            fseek(f, 0, SEEK_END);
+        }
     } else {
         fwrite(&h, sizeof(h), 1, f);
     }
@@ -739,7 +743,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 current_block.resize(ch.raw_size);
                 
                 Codec codec = static_cast<Codec>(ch.codec);
-                if (!decompress_chunk(comp, current_block, codec)) {
+                if (!decompress_chunk(comp, current_block, codec) || current_block.size() != ch.raw_size) {
                     fclose(f);
                     res.error = TarcError::DecompressionFailed;
                     res.message = "Chunk decompression failed.";
@@ -768,7 +772,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             current_block.resize(ch.raw_size);
             
             Codec codec = static_cast<Codec>(ch.codec);
-            if (!decompress_chunk(comp, current_block, codec)) {
+            if (!decompress_chunk(comp, current_block, codec) || current_block.size() != ch.raw_size) {
                 fclose(f);
                 res.error = TarcError::DecompressionFailed;
                 res.message = "Decompression failed.";
