@@ -16,11 +16,11 @@ namespace Color {
     inline const char* DIM    = "\x1b[2m";
 }
 
-// ─── VERBOSE FLAG (Intervento #16) ─────────────────────────────────────────────
-// Globale: impostato da main.cpp in base al flag -v
+// ─── UI NAMESPACE ──────────────────────────────────────────────────────────────
 namespace UI {
 
-    // Abilita Virtual Terminal Processing su Windows
+    // Inizializza Virtual Terminal Processing su Windows,
+    // rileva supporto terminale su POSIX (imposta g_color_enabled)
     void enable_vtp();
 
     // Stampa help dettagliato
@@ -35,7 +35,7 @@ namespace UI {
     // Formatta ratio di compressione
     std::string compress_ratio(uint64_t orig, uint64_t comp);
 
-    // ─── INTERVENTO #17: PROGRESS BAR CON ETA ──────────────────────────────────
+    // ─── PROGRESS BAR CON ETA ────────────────────────────────────────────────
     // Barra di progresso con stima tempo rimanente
     // test_ok: -1 = non testando, 0 = FAIL, 1 = OK (mostra [OK]/[FAIL] inline)
     void print_progress(size_t current, size_t total, const std::string& current_file,
@@ -56,7 +56,7 @@ namespace UI {
     // Stampa riga lista archivio
     void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec);
 
-    // ─── INTERVENTO #18: SUMMARY ARRICCHITO ────────────────────────────────────
+    // ─── SUMMARY ARRICCHITO ──────────────────────────────────────────────────
     // Stampa riepilogo finale con statistiche per-codec, tempo, duplicati
     void print_summary(const TarcResult& result, const std::string& operation);
 
@@ -71,11 +71,13 @@ namespace UI {
     // Stampa warning
     void print_warning(const std::string& msg);
 
-    // ─── INTERVENTO #16: VERBOSE LOGGING ───────────────────────────────────────
     // Messaggio verbose: stampato solo quando -v e' attivo
     void print_verbose(const std::string& msg);
 
     // Flag verbose globale
     extern bool g_verbose;
+
+    // Flag colori: true se il terminale supporta codici ANSI
+    extern bool g_color_enabled;
 
 } // namespace UI

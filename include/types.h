@@ -4,26 +4,31 @@
 #include <vector>
 #include <map>
 
-#define TARC_MAGIC     "TRC2"
-#define TARC_VERSION   204
-#define CHUNK_SIZE     (8 * 1024 * 1024)
-#define TARC_EXT       ".strk"
-#define SFX_TRAILER_MAGIC "TSFX"
+// ─── COSTANTI FORMATO ARCHIVIO ──────────────────────────────────────────────
+constexpr const char* TARC_MAGIC        = "TRC2";
+constexpr uint32_t    TARC_VERSION      = 204;
+constexpr size_t      CHUNK_SIZE        = 8ULL * 1024 * 1024;
+constexpr const char* TARC_EXT          = ".strk";
+constexpr const char* SFX_TRAILER_MAGIC = "TSFX";
 
-// ─── COSTANTI NOMINATE ────────────────────────────────────────────────────────
+// ─── COSTANTI DI SICUREZZA ──────────────────────────────────────────────────
 // Soglia dimensione chunk solid (256 MB)
 constexpr size_t CHUNK_THRESHOLD       = 256ULL * 1024 * 1024;
 // Soglia per codec switch: sotto questa dimensione ZSTD, sopra LZMA (512 KB)
 constexpr size_t CODEC_SWITCH_SIZE     = 512ULL * 1024;
 // Dimensione massima nome file nel TOC
 constexpr uint16_t MAX_NAME_LEN        = 4096;
+// Numero massimo di file nell'archivio (protezione OOM da header malevolo)
+constexpr uint32_t MAX_FILE_COUNT      = 1'000'000;
+// Dimensione massima dati compressi in un singolo chunk (protezione OOM)
+constexpr uint32_t MAX_CHUNK_COMP_SIZE = 512ULL * 1024 * 1024;
 
 enum class Codec : uint8_t {
-    ZSTD = 0,
-    LZMA = 1,
+    ZSTD  = 0,
+    LZMA  = 1,
     STORE = 2,
-    LZ4  = 3,
-    BR   = 4
+    LZ4   = 3,
+    BR    = 4
 };
 
 inline const char* codec_name(Codec c) {
@@ -46,30 +51,30 @@ struct Header {
 };
 
 struct Entry {
-    uint64_t offset;
-    uint64_t orig_size;
-    uint64_t comp_size;
-    uint64_t xxhash;
-    uint64_t timestamp;
-    uint32_t duplicate_of_idx;
-    uint16_t name_len;
-    uint8_t  codec;
-    uint8_t  is_duplicate;
+    uint64_t offset           = 0;
+    uint64_t orig_size        = 0;
+    uint64_t comp_size        = 0;
+    uint64_t xxhash           = 0;
+    uint64_t timestamp        = 0;
+    uint32_t duplicate_of_idx = 0;
+    uint16_t name_len         = 0;
+    uint8_t  codec            = 0;
+    uint8_t  is_duplicate     = 0;
 };
 
 struct ChunkHeader {
-    uint32_t codec;
-    uint32_t raw_size;
-    uint32_t comp_size;
-    uint64_t checksum;   // XXH64 del dato compresso (0 = non verificato, retrocompatibile)
+    uint32_t codec    = 0;
+    uint32_t raw_size = 0;
+    uint32_t comp_size = 0;
+    uint64_t checksum = 0;   // XXH64 del dato compresso (0 = non verificato, retrocompatibile)
 };
 
-// ─── SFX TRAILER — Appeso alla fine del file SFX ─────────────────────────────
+// ─── SFX TRAILER ────────────────────────────────────────────────────────────
 // Contiene l'offset esatto dove inizia l'archivio TRC2, cosi' lo stub
 // non deve scansionare tutto il file per trovare il magic "TRC2".
 struct SFXTrailer {
-    uint64_t archive_offset;   // Offset inizio archivio (dopo lo stub)
-    char     magic[4];         // "TSFX" — firma del trailer
+    uint64_t archive_offset = 0;   // Offset inizio archivio (dopo lo stub)
+    char     magic[4];             // "TSFX" — firma del trailer
 };
 #pragma pack(pop)
 
@@ -78,7 +83,7 @@ struct FileEntry {
     std::string name;
 };
 
-// ─── TARCRISULT ARRICCHITO ────────────────────────────────────────────────────
+// ─── RISULTATO OPERAZIONE ───────────────────────────────────────────────────
 struct TarcResult {
     bool        ok          = true;
     std::string message;
