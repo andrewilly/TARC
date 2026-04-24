@@ -49,7 +49,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
 #else
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
-            for (auto& p : fs::recursive_directory_iterator(pattern))
+            for (auto& p : fs::recursive_directory_iterator(pattern)) 
                 if (p.is_regular_file()) out.push_back(p.path().string());
         } else {
             out.push_back(pattern);
@@ -140,12 +140,15 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
 
         if (out.good()) {
             try {
-                // Cross-platform: usa from_time_t che è standard
-                auto sys_time = std::chrono::system_clock::from_time_t(static_cast<time_t>(timestamp));
-                auto file_time = std::chrono::clock_cast<fs::file_time_type>(sys_time);
+#ifdef _WIN32
+                // Windows: use file_time_type directly with seconds
+                auto file_time = fs::file_time_type::clock::from_time_t(static_cast<time_t>(timestamp));
                 fs::last_write_time(p, file_time);
+#else
+                (void)timestamp;
+#endif
             } catch (...) {
-                // Ignora errori timestamp su filesystem che non supportano
+                // Ignore timestamp errors on filesystems that don't support it
             }
         }
         
@@ -154,8 +157,6 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
         return false;
     }
 }
-
-// Timestamp conversion functions (if needed elsewhere)
 
 bool IO::read_bytes(FILE* f, void* buf, size_t size) {
     return fread(buf, 1, size, f) == size;
