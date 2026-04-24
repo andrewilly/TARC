@@ -138,9 +138,9 @@ std::string format_duration(const std::chrono::milliseconds& ms) {
     
     char buf[32];
     if (mins.count() > 0) {
-        snprintf(buf, sizeof(buf), "%02lldm %02llds", mins.count() % 60, secs.count() % 60);
+        snprintf(buf, sizeof(buf), "%02ldm %02lds", static_cast<long>(mins.count() % 60), static_cast<long>(secs.count() % 60));
     } else if (secs.count() > 0) {
-        snprintf(buf, sizeof(buf), "%llds", static_cast<long long>(secs.count()));
+        snprintf(buf, sizeof(buf), "%lds", static_cast<long>(secs.count()));
     } else {
         snprintf(buf, sizeof(buf), "%lldms", static_cast<long long>(ms.count()));
     }
@@ -327,11 +327,15 @@ void UI::Spinner::finish(bool success, const std::string& message) {
     active_ = false;
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << "\r" << message_ << " ";
-    std::cout << (success ? (std::string(Color::GREEN) + "✔" : std::string(Color::RED) + "✖"));
+    if (success) {
+        std::cout << Color::GREEN << "✔" << Color::RESET;
+    } else {
+        std::cout << Color::RED << "✖" << Color::RESET;
+    }
     if (!message.empty()) {
         std::cout << " " << message;
     }
-    std::cout << "\n" << Color::RESET;
+    std::cout << "\n";
 }
 
 }

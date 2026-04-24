@@ -2,8 +2,6 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <system_error>
-#include <expected>
 #include <optional>
 #include <chrono>
 #include <functional>
@@ -119,12 +117,9 @@ struct TarcResult {
 
     static TarcResult success() { return {}; }
     static TarcResult failure(TarcError e, const std::string& msg = {}) {
-        return {false, e, msg};
+        return {false, e, msg, 0, 0, {}};
     }
 };
-
-template<typename T>
-using Result = std::expected<T, TarcError>;
 
 struct CompressOptions {
     int level = 3;
@@ -140,4 +135,15 @@ struct ExtractOptions {
     bool verify = true;
     bool overwrite = false;
     std::string output_dir;
+};
+
+template<typename T>
+struct Result {
+    TarcError err = TarcError::None;
+    std::optional<T> value;
+    
+    bool has_value() const { return value.has_value(); }
+    T& operator*() { return *value; }
+    const T& operator*() const { return *value; }
+    explicit operator bool() const { return value.has_value(); }
 };

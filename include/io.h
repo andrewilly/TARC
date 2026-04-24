@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <chrono>
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -29,8 +30,8 @@ namespace IO {
 
     Result<FileEntry> read_entry(FILE* f);
 
-    std::chrono::file_clock::time_point file_time_from_timestamp(uint64_t ts);
+    std::chrono::system_clock::time_point file_time_from_timestamp(uint64_t ts);
 
-    uint64_t timestamp_from_file_time(const std::chrono::file_clock::time_point& ft);
+    uint64_t timestamp_from_file_time(const std::chrono::system_clock::time_point& ft);
 
 }

@@ -64,7 +64,7 @@ bool IO::read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     
     for (uint32_t i = 0; i < h.file_count; ++i) {
         auto entry = read_entry(f);
-        if (!entry) return false;
+        if (!entry.has_value()) return false;
         toc.push_back(*entry);
     }
     return true;
@@ -73,19 +73,19 @@ bool IO::read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
 Result<FileEntry> IO::read_entry(FILE* f) {
     FileEntry fe;
     if (fread(&fe.meta, sizeof(Entry), 1, f) != 1) {
-        return std::unexpected(TarcError::CorruptedArchive);
+        return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
     
     if (fe.meta.name_len > 4096) {
-        return std::unexpected(TarcError::CorruptedArchive);
+        return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
     
     std::vector<char> name_buf(fe.meta.name_len + 1, 0);
     if (fread(name_buf.data(), 1, fe.meta.name_len, f) != fe.meta.name_len) {
-        return std::unexpected(TarcError::CorruptedArchive);
+        return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
     fe.name = std::string(name_buf.data());
-    return fe;
+    return Result<FileEntry>{TarcError::None, fe};
 }
 
 bool IO::write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
@@ -145,11 +145,11 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
     }
 }
 
-std::chrono::file_clock::time_point IO::file_time_from_timestamp(uint64_t ts) {
-    return std::chrono::file_clock::time_point(std::chrono::seconds(ts));
+std::chrono::system_clock::time_point IO::file_time_from_timestamp(uint64_t ts) {
+    return std::chrono::system_clock::time_point(std::chrono::seconds(ts));
 }
 
-uint64_t IO::timestamp_from_file_time(const std::chrono::file_clock::time_point& ft) {
+uint64_t IO::timestamp_from_file_time(const std::chrono::system_clock::time_point& ft) {
     return std::chrono::duration_cast<std::chrono::seconds>(ft.time_since_epoch()).count();
 }
 
