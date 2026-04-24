@@ -141,14 +141,12 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
         if (out.good()) {
             try {
 #ifdef _WIN32
-                // C++17: construct file_time_type from seconds since epoch
                 auto file_time = fs::file_time_type(std::chrono::seconds(timestamp));
                 fs::last_write_time(p, file_time);
 #else
                 (void)timestamp;
 #endif
             } catch (...) {
-                // Ignore timestamp errors on filesystems that don't support it
             }
         }
         

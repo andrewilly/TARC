@@ -18,10 +18,10 @@
 namespace fs = std::filesystem;
 
 namespace {
-    LicenseInfo g_license_info;
+    License::LicenseInfo g_license_info;
 }
 
-std::optional<LicenseInfo> License::load_saved_key() {
+std::optional<License::LicenseInfo> License::load_saved_key() {
     std::string path = get_license_path();
     if (!fs::exists(path)) return std::nullopt;
     
@@ -29,7 +29,7 @@ std::optional<LicenseInfo> License::load_saved_key() {
         std::ifstream ifs(path);
         if (!ifs) return std::nullopt;
         
-        LicenseInfo info;
+        License::LicenseInfo info;
         std::string line;
         
         while (std::getline(ifs, line)) {
@@ -64,7 +64,7 @@ bool License::save_key(const std::string& key) {
         std::ofstream ofs(p);
         if (!ofs) return false;
         
-        LicenseInfo info;
+        License::LicenseInfo info;
         info.key = key;
         info.is_valid = is_valid(key);
         
@@ -80,7 +80,7 @@ bool License::save_key(const std::string& key) {
     }
 }
 
-bool License::save_license_info(const LicenseInfo& info) {
+bool License::save_license_info(const License::LicenseInfo& info) {
     try {
         fs::path p(get_license_path());
         fs::create_directories(p.parent_path());
@@ -106,7 +106,7 @@ bool License::delete_license() {
     if (fs::exists(path)) {
         try {
             fs::remove(path);
-            g_license_info = {};
+            g_license_info = License::LicenseInfo{};
             return true;
         } catch (...) {
             return false;
@@ -115,11 +115,11 @@ bool License::delete_license() {
     return true;
 }
 
-void License::set_license_info(const LicenseInfo& info) {
+void License::set_license_info(const License::LicenseInfo& info) {
     g_license_info = info;
 }
 
-LicenseInfo License::get_license_info() {
+License::LicenseInfo License::get_license_info() {
     return g_license_info;
 }
 
@@ -163,4 +163,111 @@ void License::check_and_activate() {
     }
     
     std::cout << Color::GREEN << "✔ " << Color::RESET << "Activation successful!\n\n";
+}
+
+bool License::is_valid(const std::string& key) {
+    if (key.empty() || key.length() < 16) return false;
+    
+    std::string hash = hash_key(key);
+    return !hash.empty() && hash.length() >= 16;
+}
+
+bool License::is_valid_key_format(const std::string& key) {
+    if (key.empty()) return false;
+    
+    for (char c : key) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
+            return false;
+        }
+    }
+    
+    return key.length() >= 16 && key.length() <= 64;
+}
+
+std::string License::get_license_path() {
+    std::string config_dir;
+#ifdef _WIN32
+    char* appdata = std::getenv("APPDATA");
+    config_dir = appdata ? std::string(appdata) : ".";
+    config_dir += "\\TARC";
+#elif defined(__APPLE__)
+    char* home = std::getenv("HOME");
+    config_dir = home ? std::string(home) + "/Library/Application Support" : ".";
+    config_dir += "/TARC";
+#else
+    char* home = std::getenv("HOME");
+    config_dir = home ? std::string(home) + "/.config" : ".";
+    config_dir += "/tarc";
+#endif
+    return config_dir + "/license.dat";
+}
+
+std::string License::get_config_path() {
+    return get_license_path();
+}
+
+std::string License::generate_trial_key() {
+    const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    std::string key;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 35);
+    
+    for (int i = 0; i < 24; i++) {
+        if (i > 0 && i % 4 == 0) key += '-';
+        key += chars[dis(gen)];
+    }
+    
+    return "TRIAL-" + key;
+}
+
+std::string License::hash_key(const std::string& key) {
+#ifdef _WIN32
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    BYTE hash[32];
+    DWORD hash_len = 32;
+    
+    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        std::string hash_val = key + "TARC_SALT_2024";
+        for (size_t i = 0; i < 5; i++) {
+            hash_val = std::to_string(std::hash<std::string>{}(hash_val));
+        }
+        return hash_val.substr(0, 32);
+    }
+    
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+    
+    if (!CryptHashData(hHash, reinterpret_cast<const BYTE*>(key.c_str()), 
+                       static_cast<DWORD>(key.length()), 0)) {
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+    
+    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hash_len, 0)) {
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+    
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+    
+    std::stringstream ss;
+    for (DWORD i = 0; i < hash_len; i++) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+    }
+    
+    return ss.str();
+#else
+    std::string hash_val = key + "TARC_SALT_2024";
+    for (size_t i = 0; i < 5; i++) {
+        hash_val = std::to_string(std::hash<std::string>{}(hash_val));
+    }
+    return hash_val.substr(0, 32);
+#endif
 }
