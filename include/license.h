@@ -1,32 +1,37 @@
 #pragma once
 #include <string>
+#include <optional>
+#include <chrono>
+#include "types.h"
 
 namespace License {
 
-    // ─── VALIDAZIONE LICENZA ─────────────────────────────────────────────────
-    // Formato chiave: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX
-    //   Gruppo 1-2: identificativo utente/prodotto (8 hex ciascuno)
-    //   Gruppo 3: checksum XXH64(gruppo1 + "-" + gruppo2 + SALT) troncato a 32 bit
-    //
-    // Il SALT e' compilato nel binario e DEVE essere modificato una sola volta
-    // prima della prima release pubblica, mai piu' cambiato per mantenere
-    // compatibilita' con le chiavi gia' emesse.
+    struct LicenseInfo {
+        std::string key;
+        std::string user;
+        std::string expiry;
+        bool is_valid = false;
+        bool is_trial = false;
+    };
 
-    // Valida il formato e il checksum XXH64 della chiave
     bool is_valid(const std::string& key);
-
-    // Restituisce il path del file licenza (OS-aware, Unicode-safe)
+    bool is_valid_key_format(const std::string& key);
+    
     std::string get_license_path();
-
-    // Carica la chiave salvata dal disco
-    std::string load_saved_key();
-
-    // Salva la chiave su disco
+    std::string get_config_path();
+    
+    std::optional<LicenseInfo> load_saved_key();
     bool save_key(const std::string& key);
-
-    // Controlla la licenza: carica dal disco o chiede all'utente.
-    // Include protezione brute-force (delay crescente dopo tentativi falliti).
-    // Termina il processo se la licenza non e' valida.
+    bool save_license_info(const LicenseInfo& info);
+    
+    bool delete_license();
+    
     void check_and_activate();
+    
+    std::string generate_trial_key();
+    std::string hash_key(const std::string& key);
+    
+    void set_license_info(const LicenseInfo& info);
+    LicenseInfo get_license_info();
 
-} // namespace License
+}

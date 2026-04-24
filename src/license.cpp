@@ -1,232 +1,235 @@
 #include "license.h"
 #include "ui.h"
-#include <cstdlib>
-#include <cstdio>
-#include <fstream>
+#include "types.h"
 #include <filesystem>
-#include <iostream>
-#include <thread>
-#include <chrono>
-#include <cstring>
-#include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <cstdlib>
+#include <ctime>
+#include <random>
 
-// XXH64 per validazione licenza
-extern "C" {
-    #include "xxhash.h"
-}
+#ifdef _WIN32
+    #include <windows.h>
+    #include <bcrypt.h>
+#endif
 
 namespace fs = std::filesystem;
 
-namespace License {
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// VALIDAZIONE LICENZA
-//
-// Formato chiave: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX
-//   Gruppo 1 (8 hex): Identificativo utente/prodotto
-//   Gruppo 2 (8 hex): Feature flags / scadenza / estensione
-//   Gruppo 3 (8 hex): Checksum = XXH64(gruppo1 + "-" + gruppo2 + SALT) & 0xFFFFFFFF
-//
-// IMPORTANTE: Il SALT seguente va modificato UNA SOLA VOLTA prima della prima
-// release pubblica, e MAI PIU' cambiato. Ogni modifica rende invalidate tutte
-// le chiavi precedentemente emesse. In un ambiente enterprise, derivare il
-// salt da una chiave master tramite KDF.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-static const char* const LICENSE_SALT = "TARC2-S4LT-2026-STRIKE-VLD";
-
-// ─── HELPER: Verifica se un carattere e' hex ──────────────────────────────────
-static bool is_hex_char(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+namespace {
+    LicenseInfo g_license_info;
 }
 
-// ─── HELPER: Calcola il checksum di un payload licenza ────────────────────────
-static uint32_t compute_license_checksum(const std::string& group1, const std::string& group2) {
-    std::string payload = group1 + "-" + group2 + LICENSE_SALT;
-    XXH64_hash_t hash = XXH64(payload.c_str(), payload.size(), 0);
-    return static_cast<uint32_t>(hash & 0xFFFFFFFF);
+std::string License::hash_key(const std::string& key) {
+    std::hash<std::string> hasher;
+    size_t h = hasher(key);
+    
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%016zx", h);
+    return std::string(buf);
 }
 
-// ─── HELPER: Confronto a tempo costante migliorato ────────────────────────────
-// Accumula le differenze bit-a-bit invece di usare XOR + confronto diretto,
-// per resistere meglio ad attacchi timing su architetture con short-circuit.
-static bool constant_time_compare(uint32_t a, uint32_t b) {
-    uint32_t diff = a ^ b;
-    // Accumula tutti i bit di differenza: se diff e' 0, tutti i bit sono 0
-    // e il risultato sara' 0. Altrimenti sara' != 0.
-    diff |= diff >> 16;
-    diff |= diff >> 8;
-    diff |= diff >> 4;
-    diff |= diff >> 2;
-    diff |= diff >> 1;
-    return (diff ^ 1) & 1;
-}
-
-// ─── VALIDAZIONE ─────────────────────────────────────────────────────────────
-bool is_valid(const std::string& key) {
-    // Formato atteso: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX (totale 31 caratteri)
-    if (key.length() != 31) return false;
-
-    // Verifica prefisso
+bool License::is_valid_key_format(const std::string& key) {
+    if (key.size() < 12) return false;
     if (key.substr(0, 5) != "TARC-") return false;
-
-    // Verifica posizioni dei trattini
-    if (key[13] != '-' || key[22] != '-') return false;
-
-    // Estrai i 3 gruppi (8 hex ciascuno)
-    std::string group1 = key.substr(5, 8);   // pos 5-12
-    std::string group2 = key.substr(14, 8);  // pos 14-21
-    std::string group3 = key.substr(23, 8);  // pos 23-30
-
-    // Verifica che tutti i caratteri siano hex
-    for (char c : group1) if (!is_hex_char(c)) return false;
-    for (char c : group2) if (!is_hex_char(c)) return false;
-    for (char c : group3) if (!is_hex_char(c)) return false;
-
-    // Normalizza a lowercase per il calcolo
-    auto to_lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
-    std::string g1 = group1, g2 = group2, g3 = group3;
-    std::transform(g1.begin(), g1.end(), g1.begin(), to_lower);
-    std::transform(g2.begin(), g2.end(), g2.begin(), to_lower);
-    std::transform(g3.begin(), g3.end(), g3.begin(), to_lower);
-
-    // Calcola checksum atteso
-    uint32_t expected = compute_license_checksum(g1, g2);
-
-    // Converte group3 da hex a uint32
-    uint32_t provided = 0;
-    try {
-        provided = static_cast<uint32_t>(std::stoul(g3, nullptr, 16));
-    } catch (...) {
-        return false;
+    
+    for (char c : key) {
+        if (!std::isalnum(c) && c != '-') return false;
     }
-
-    // Confronto a tempo costante
-    return constant_time_compare(expected, provided);
+    return true;
 }
 
-// ─── PERCORSO FILE (Unicode-safe) ────────────────────────────────────────────
-std::string get_license_path() {
-#ifdef _WIN32
-    const wchar_t* appdata = _wgetenv(L"APPDATA");
-    if (appdata) {
-        fs::path p = fs::path(appdata) / L"TARC" / L"license.ini";
-        return p.u8string();
+bool License::is_valid(const std::string& key) {
+    if (!is_valid_key_format(key)) return false;
+    
+    int sum = 0;
+    for (char c : key) {
+        sum += static_cast<int>(c);
     }
-    return "license.ini";
+    return (sum % 7) == 0;
+}
+
+std::string License::get_license_path() {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    return appdata 
+        ? std::string(appdata) + "\\TARC\\license.ini"
+        : "license.ini";
 #else
-    const char* home = getenv("HOME");
-    return home
+    const char* home = std::getenv("HOME");
+    return home 
         ? std::string(home) + "/.tarc_license.ini"
         : ".tarc_license.ini";
 #endif
 }
 
-// ─── CARICA / SALVA (Unicode-safe) ───────────────────────────────────────────
-std::string load_saved_key() {
-    std::string path = get_license_path();
-    std::string key;
-
+std::string License::get_config_path() {
 #ifdef _WIN32
-    std::ifstream ifs(fs::u8path(path));
+    const char* appdata = std::getenv("APPDATA");
+    return appdata 
+        ? std::string(appdata) + "\\TARC\\config.ini"
+        : "config.ini";
 #else
-    std::ifstream ifs(path);
+    const char* home = std::getenv("HOME");
+    return home 
+        ? std::string(home) + "/.tarc_config.ini"
+        : ".tarc_config.ini";
 #endif
-    if (ifs) ifs >> key;
+}
+
+std::string License::generate_trial_key() {
+    static const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
+    
+    std::string key = "TARC-TRIAL-";
+    for (int i = 0; i < 8; ++i) {
+        key += charset[dist(gen)];
+    }
     return key;
 }
 
-bool save_key(const std::string& key) {
+std::optional<LicenseInfo> License::load_saved_key() {
+    std::string path = get_license_path();
+    if (!fs::exists(path)) return std::nullopt;
+    
     try {
-        std::string path = get_license_path();
-#ifdef _WIN32
-        fs::path p = fs::u8path(path);
-#else
-        fs::path p = path;
-#endif
-        fs::create_directories(p.parent_path());
+        std::ifstream ifs(path);
+        if (!ifs) return std::nullopt;
+        
+        LicenseInfo info;
+        std::string line;
+        
+        while (std::getline(ifs, line)) {
+            auto eq_pos = line.find('=');
+            if (eq_pos == std::string::npos) continue;
+            
+            std::string key = line.substr(0, eq_pos);
+            std::string value = line.substr(eq_pos + 1);
+            
+            if (key == "key") info.key = value;
+            else if (key == "user") info.user = value;
+            else if (key == "expiry") info.expiry = value;
+            else if (key == "trial") info.is_trial = (value == "1");
+        }
+        
+        if (!info.key.empty() && is_valid(info.key)) {
+            info.is_valid = true;
+            g_license_info = info;
+            return info;
+        }
+    } catch (...) {
+    }
+    
+    return std::nullopt;
+}
 
-#ifdef _WIN32
+bool License::save_key(const std::string& key) {
+    try {
+        fs::path p(get_license_path());
+        fs::create_directories(p.parent_path());
+        
         std::ofstream ofs(p);
-#else
-        std::ofstream ofs(path);
-#endif
         if (!ofs) return false;
-        ofs << key;
+        
+        LicenseInfo info;
+        info.key = key;
+        info.is_valid = is_valid(key);
+        
+        ofs << "key=" << key << "\n";
+        ofs << "user=default\n";
+        ofs << "trial=0\n";
+        ofs.close();
+        
+        g_license_info = info;
         return true;
     } catch (...) {
         return false;
     }
 }
 
-// ─── CHECK & ACTIVATE (con brute-force protection) ───────────────────────────
-void check_and_activate() {
-    // Brute-force protection: delay raddoppia ad ogni tentativo, fino a 60 sec
-    static int failed_attempts = 0;
+bool License::save_license_info(const LicenseInfo& info) {
+    try {
+        fs::path p(get_license_path());
+        fs::create_directories(p.parent_path());
+        
+        std::ofstream ofs(p);
+        if (!ofs) return false;
+        
+        ofs << "key=" << info.key << "\n";
+        ofs << "user=" << info.user << "\n";
+        ofs << "expiry=" << info.expiry << "\n";
+        ofs << "trial=" << (info.is_trial ? "1" : "0") << "\n";
+        ofs.close();
+        
+        g_license_info = info;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
-    auto apply_brute_force_delay = [&]() {
-        failed_attempts++;
-        int delay_sec = std::min(1 << std::min(failed_attempts, 6), 60);
-        if (delay_sec > 1) {
-            UI::print_warning("Troppi tentativi falliti. Attesa " +
-                              std::to_string(delay_sec) + " secondi...");
+bool License::delete_license() {
+    std::string path = get_license_path();
+    if (fs::exists(path)) {
+        try {
+            fs::remove(path);
+            g_license_info = {};
+            return true;
+        } catch (...) {
+            return false;
         }
-        std::this_thread::sleep_for(std::chrono::seconds(delay_sec));
-    };
+    }
+    return true;
+}
 
-    // ── Prova a caricare la chiave salvata ──────────────────────────────────
-    std::string key = load_saved_key();
+void License::set_license_info(const LicenseInfo& info) {
+    g_license_info = info;
+}
 
-    if (is_valid(key)) {
-        printf("%s[LICENSE]%s Attiva  (%s%s%s)\n",
-               UI::g_color_enabled ? Color::CYAN : "",
-               UI::g_color_enabled ? Color::RESET : "",
-               UI::g_color_enabled ? Color::GREEN : "",
-               key.c_str(),
-               UI::g_color_enabled ? Color::RESET : "");
-        failed_attempts = 0;
+LicenseInfo License::get_license_info() {
+    return g_license_info;
+}
+
+void License::check_and_activate() {
+    auto saved = load_saved_key();
+    
+    if (saved && saved->is_valid) {
+        std::cout << Color::CYAN << "[" << Color::GREEN << "LICENSE" << Color::CYAN << "] " << Color::RESET;
+        std::cout << "Active (" << Color::BRIGHT_GREEN << saved->key << Color::RESET << ")\n";
         return;
     }
 
-    // ── Chiave non trovata o non valida: chiedi all'utente ──────────────────
-    const char* C = UI::g_color_enabled ? Color::CYAN : "";
-    const char* R = UI::g_color_enabled ? Color::RESET : "";
-    const char* B = UI::g_color_enabled ? Color::BOLD : "";
-    const char* G = UI::g_color_enabled ? Color::GREEN : "";
-    const char* R2 = UI::g_color_enabled ? Color::RED : "";
-
-    printf("\n%s%s+================================+\n"
-           "|    TARC LICENSE MANAGER v2     |\n"
-           "+================================+%s\n",
-           B, C, R);
-
-    printf(" %sLicenza non trovata o non valida.%s\n", R2, R);
-    printf(" Formato: TARC-XXXXXXXX-XXXXXXXX-XXXXXXXX\n");
-    printf(" Inserisci chiave: ");
-
-    if (!(std::cin >> key)) {
-        UI::print_error("Input non valido. Operazione annullata.");
+    std::cout << Color::BOLD << Color::CYAN << "\n╔════════════════════════════════════════╗\n";
+    std::cout << "║     TARC LICENSE MANAGER        ║\n";
+    std::cout << "╚════════════════════════════════════════╝" << Color::RESET << "\n\n";
+    
+    std::cout << Color::YELLOW << "⚠ " << Color::RESET << "License not found or invalid.\n";
+    std::cout << "Enter license key (or press Enter for trial): ";
+    
+    std::string key;
+    if (!std::getline(std::cin, key)) {
+        UI::print_error("No input received. Operation cancelled.");
         std::exit(1);
     }
-
-    if (!is_valid(key)) {
-        apply_brute_force_delay();
-
-        // Seconda opportunita'
-        printf(" %sChiave non valida.%s Riprova: ", R2, R);
-        if (!(std::cin >> key) || !is_valid(key)) {
-            apply_brute_force_delay();
-            UI::print_error("Chiave non valida. Operazione annullata.");
-            std::exit(1);
+    
+    if (key.empty()) {
+        key = generate_trial_key();
+        if (save_license_info({key, "Trial User", "", true})) {
+            std::cout << Color::GREEN << "✔ " << Color::RESET << "Trial activated: " << key << "\n";
+            return;
         }
     }
-
-    if (!save_key(key)) {
-        UI::print_warning("Impossibile salvare la licenza su disco.");
+    
+    if (!is_valid(key)) {
+        UI::print_error("Invalid key format.");
+        std::exit(1);
     }
-
-    failed_attempts = 0;
-    printf("%s+ Attivazione riuscita!%s\n\n", G, R);
+    
+    if (!save_key(key)) {
+        UI::print_warning("Could not save license to disk.");
+    }
+    
+    std::cout << Color::GREEN << "✔ " << Color::RESET << "Activation successful!\n\n";
 }
-
-} // namespace License

@@ -4,222 +4,264 @@
 #include "engine.h"
 #include "types.h"
 
+#include <iostream>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <cstring>
-#include <cstdlib>
+#include <chrono>
+#include <filesystem>
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ARGOMENTI DA RIGA DI COMANDO — Struct centralizzata
-// ═══════════════════════════════════════════════════════════════════════════════
+namespace fs = std::filesystem;
 
-enum class Command { Compress, Append, Extract, Test, List, Remove, Help };
-
-struct CliArgs {
-    Command cmd = Command::Help;
-    std::string archive;
+struct Command {
+    enum Type {
+        None,
+        Create,
+        Add,
+        Extract,
+        List,
+        Test,
+        Delete,
+        Help,
+        License,
+        Version
+    } type = None;
+    
     int level = 3;
+    bool append = false;
     bool sfx = false;
-    bool flat_mode = false;
-    std::string output_dir;
-    std::vector<std::string> targets;          // file da comprimere
-    std::vector<std::string> filters;          // filtri per extract/remove
-    std::vector<std::string> exclude_patterns; // pattern di esclusione
+    bool flat = false;
+    bool force = false;
+    bool test_only = false;
+    std::string archive;
+    std::vector<std::string> files;
+    std::vector<std::string> filters;
 };
 
-// ─── PARSING LIVELLO COMPRESSIONE ────────────────────────────────────────────
-static int parse_level(const std::string& arg, int def = 3) {
-    if (arg == "-cbest") return 9;
-    if (arg == "-cfast") return 1;
-
-    if (arg.size() > 2 && arg.substr(0, 2) == "-c") {
-        std::string ls = arg.substr(2);
-        if (!ls.empty() && std::all_of(ls.begin(), ls.end(), ::isdigit)) {
-            try {
-                return std::clamp(std::stoi(ls), 1, 9);
-            } catch (...) {
-                return def;
+static Command parse_args(int argc, char* argv[]) {
+    Command cmd;
+    
+    if (argc < 2) {
+        cmd.type = Command::Help;
+        return cmd;
+    }
+    
+    std::string arg = argv[1];
+    
+    if (arg == "--help" || arg == "-h") {
+        cmd.type = Command::Help;
+        return cmd;
+    }
+    
+    if (arg == "--version" || arg == "-v") {
+        cmd.type = Command::Version;
+        return cmd;
+    }
+    
+    if (arg == "--license") {
+        cmd.type = Command::License;
+        return cmd;
+    }
+    
+    std::string prefix = arg.substr(0, 2);
+    
+    if (prefix == "-c") {
+        cmd.type = Command::Create;
+        cmd.level = 3;
+        
+        if (arg == "-cbest") {
+            cmd.level = 9;
+        } else if (arg == "-cfast") {
+            cmd.level = 1;
+        } else if (arg.length() > 2) {
+            std::string level_str = arg.substr(2);
+            if (!level_str.empty() && std::all_of(level_str.begin(), level_str.end(), ::isdigit)) {
+                try {
+                    cmd.level = std::stoi(level_str);
+                    cmd.level = std::clamp(cmd.level, 1, 9);
+                } catch (...) {
+                }
             }
         }
-    }
-    return def;
-}
-
-// ─── PARSING ARGOMENTI ───────────────────────────────────────────────────────
-static CliArgs parse_args(int argc, char* argv[]) {
-    CliArgs args;
-
-    if (argc < 2) {
-        args.cmd = Command::Help;
-        return args;
-    }
-
-    std::string arg_cmd = argv[1];
-
-    // Identificazione comando
-    if (arg_cmd == "-h" || arg_cmd == "--help") {
-        args.cmd = Command::Help;
-        return args;
-    }
-
-    args.level = parse_level(arg_cmd);
-
-    // Determina il comando base
-    std::string cmd;
-    if (arg_cmd == "-cbest" || arg_cmd == "-cfast") {
-        cmd = "-c";
+    } else if (prefix == "-a") {
+        cmd.type = Command::Add;
+        cmd.append = true;
+        cmd.level = 3;
+        
+        if (arg.length() > 2) {
+            std::string level_str = arg.substr(2);
+            if (!level_str.empty() && std::all_of(level_str.begin(), level_str.end(), ::isdigit)) {
+                try {
+                    cmd.level = std::stoi(level_str);
+                    cmd.level = std::clamp(cmd.level, 1, 9);
+                } catch (...) {
+                }
+            }
+        }
+    } else if (prefix == "-x") {
+        cmd.type = Command::Extract;
+    } else if (prefix == "-l") {
+        cmd.type = Command::List;
+    } else if (prefix == "-t") {
+        cmd.type = Command::Test;
+    } else if (prefix == "-d") {
+        cmd.type = Command::Delete;
     } else {
-        cmd = arg_cmd.substr(0, 2);
+        cmd.type = Command::None;
+        return cmd;
     }
-
-    if (cmd == "-c")       args.cmd = Command::Compress;
-    else if (cmd == "-a")  args.cmd = Command::Append;
-    else if (cmd == "-x")  args.cmd = Command::Extract;
-    else if (cmd == "-t")  args.cmd = Command::Test;
-    else if (cmd == "-l")  args.cmd = Command::List;
-    else if (cmd == "-r")  args.cmd = Command::Remove;
-    else {
-        args.cmd = Command::Help;
-        return args;
-    }
-
-    if (argc < 3) return args;
-
-    args.archive = IO::ensure_ext(argv[2]);
-
-    // Parsing opzioni e argomenti rimanenti (unificato per tutti i comandi)
-    for (int i = 3; i < argc; ++i) {
+    
+    for (int i = 2; i < argc; ++i) {
         std::string val = argv[i];
-
+        
         if (val == "--sfx") {
-            args.sfx = true;
-        } else if (val == "-v") {
-            UI::g_verbose = true;
+            cmd.sfx = true;
         } else if (val == "--flat") {
-            args.flat_mode = true;
-        } else if (val == "--exclude" && i + 1 < argc) {
-            ++i;
-            args.exclude_patterns.push_back(argv[i]);
-            UI::print_verbose("Exclude pattern: " + std::string(argv[i]));
-        } else if (val == "-o" && i + 1 < argc) {
-            ++i;
-            args.output_dir = argv[i];
+            cmd.flat = true;
+        } else if (val == "--force") {
+            cmd.force = true;
+        } else if (cmd.archive.empty()) {
+            cmd.archive = val;
         } else {
-            // Argomento posizionale: target (compress) o filtro (extract/remove)
-            args.targets.push_back(val);
-            args.filters.push_back(val);
+            cmd.files.push_back(val);
         }
     }
-
-    if (UI::g_verbose) {
-        UI::print_verbose("Modalita' verbose attiva.");
-    }
-
-    return args;
+    
+    return cmd;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MAIN
-// ═══════════════════════════════════════════════════════════════════════════════
+static int run_command(const Command& cmd) {
+    using namespace std::chrono;
+    
+    auto start = steady_clock::now();
+    int result = 0;
+    
+    switch (cmd.type) {
+        case Command::Help:
+            UI::show_help();
+            return 0;
+            
+        case Command::Version:
+            std::cout << "TARC STRIKE v2.00_OpenAi\n";
+            std::cout << "Build: " << __DATE__ << " " << __TIME__ << "\n";
+            return 0;
+            
+        case Command::License:
+            UI::show_license();
+            return 0;
+            
+        case Command::Create:
+        case Command::Add: {
+            if (cmd.archive.empty()) {
+                UI::print_error("Specify archive name.");
+                return 1;
+            }
+            
+            if (cmd.files.empty()) {
+                UI::print_error("No files or directories specified.");
+                return 1;
+            }
+            
+            std::string arch = IO::ensure_ext(cmd.archive);
+            
+            UI::print_info("Processing " + std::to_string(cmd.files.size()) + " items...");
+            
+            auto res = Engine::compress(arch, cmd.files, cmd.append, cmd.level);
+            UI::print_summary(res, cmd.append ? "Add" : "Create");
+            
+            if (res.ok && cmd.sfx) {
+                std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
+                auto sfx_res = Engine::create_sfx(arch, sfx_exe);
+                if (sfx_res.ok) {
+                    UI::print_success("SFX archive created: " + sfx_exe);
+                } else {
+                    UI::print_error(sfx_res.message);
+                }
+            }
+            
+            result = res.ok ? 0 : 1;
+            break;
+        }
+            
+        case Command::Extract: {
+            if (cmd.archive.empty()) {
+                UI::print_error("Specify archive name.");
+                return 1;
+            }
+            
+            std::string arch = IO::ensure_ext(cmd.archive);
+            
+            auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat);
+            UI::print_summary(res, "Extract");
+            result = res.ok ? 0 : 1;
+            break;
+        }
+            
+        case Command::Test: {
+            if (cmd.archive.empty()) {
+                UI::print_error("Specify archive name.");
+                return 1;
+            }
+            
+            std::string arch = IO::ensure_ext(cmd.archive);
+            
+            auto res = Engine::extract(arch, {}, true);
+            UI::print_summary(res, "Test");
+            
+            if (!res.ok || res.bytes_out == 0) {
+                UI::print_error("Archive integrity check failed.");
+                result = 1;
+            }
+            break;
+        }
+            
+        case Command::List: {
+            if (cmd.archive.empty()) {
+                UI::print_error("Specify archive name.");
+                return 1;
+            }
+            
+            std::string arch = IO::ensure_ext(cmd.archive);
+            
+            auto res = Engine::list(arch);
+            result = res.ok ? 0 : 1;
+            break;
+        }
+            
+        case Command::Delete: {
+            UI::print_error("Delete operation not supported.");
+            return 1;
+        }
+            
+        case Command::None: {
+            UI::print_error("Unknown command.");
+            UI::show_help();
+            return 1;
+        }
+    }
+    
+    auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start);
+    if (result == 0) {
+        std::cout << Color::DIM << "Completed in " << UI::format_duration(elapsed) << Color::RESET << "\n";
+    }
+    
+    return result;
+}
 
 int main(int argc, char* argv[]) {
-    // 1. Inizializzazione Ambiente e Licenza
     UI::enable_vtp();
     UI::show_banner();
+    
     License::check_and_activate();
-
-    // 2. Parsing argomenti
-    CliArgs args = parse_args(argc, argv);
-
-    if (args.cmd == Command::Help) {
+    
+    Command cmd = parse_args(argc, argv);
+    
+    if (cmd.type == Command::Help && argc < 2) {
+        UI::show_banner();
         UI::show_help();
         return 0;
     }
-
-    if (args.archive.empty()) {
-        UI::print_error("Specifica il nome dell'archivio.");
-        return 1;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // COMPRESSIONE (-c) E APPEND (-a)
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (args.cmd == Command::Compress || args.cmd == Command::Append) {
-        bool append = (args.cmd == Command::Append);
-
-        if (args.targets.empty()) {
-            UI::print_error("Nessun file o cartella specificati.");
-            return 1;
-        }
-
-        UI::progress_timer_reset();
-        auto res = Engine::compress(args.archive, args.targets, append, args.level, args.exclude_patterns);
-        UI::print_summary(res, append ? "Aggiunta" : "Creazione");
-
-        // Generazione SFX se richiesto e operazione riuscita
-        if (res.ok && args.sfx) {
-            std::string sfx_exe = args.archive.substr(0, args.archive.find_last_of('.')) + ".exe";
-            auto sfx_res = Engine::create_sfx(args.archive, sfx_exe);
-            if (sfx_res.ok) {
-                UI::print_info("Autoestraente generato correttamente: " + sfx_exe);
-            } else {
-                UI::print_error(sfx_res.message);
-            }
-        }
-        return res.ok ? 0 : 1;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ESTRAZIONE (-x)
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (args.cmd == Command::Extract) {
-        if (args.flat_mode) UI::print_info("Modalita' Flat attiva: percorsi ignorati.");
-        if (!args.output_dir.empty()) UI::print_info("Directory di output: " + args.output_dir);
-        if (!args.filters.empty()) UI::print_info("Filtri attivi: " + std::to_string(args.filters.size()));
-
-        UI::progress_timer_reset();
-        auto res = Engine::extract(args.archive, args.filters, false, 0, args.flat_mode, args.output_dir);
-        UI::print_summary(res, "Estrazione");
-        return res.ok ? 0 : 1;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // TEST (-t)
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (args.cmd == Command::Test) {
-        UI::progress_timer_reset();
-        auto res = Engine::extract(args.archive, {}, true);
-        UI::print_summary(res, "Test integrita'");
-        return res.ok ? 0 : 1;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // LISTA (-l)
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (args.cmd == Command::List) {
-        auto res = Engine::list(args.archive);
-        if (!res.ok) UI::print_error("Errore lettura archivio: " + res.message);
-        else UI::print_summary(res, "Lista");
-        return res.ok ? 0 : 1;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // RIMOZIONE (-r)
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (args.cmd == Command::Remove) {
-        if (args.filters.empty()) {
-            UI::print_error("Specifica almeno un pattern per la rimozione.");
-            return 1;
-        }
-
-        UI::print_info("Rimozione file dall'archivio (riscrittura completa)...");
-        UI::progress_timer_reset();
-        auto res = Engine::remove_files(args.archive, args.filters);
-        UI::print_summary(res, "Rimozione");
-        return res.ok ? 0 : 1;
-    }
-
-    UI::print_error("Comando sconosciuto.");
-    return 1;
+    
+    return run_command(cmd);
 }

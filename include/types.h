@@ -2,33 +2,47 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <map>
+#include <system_error>
+#include <expected>
+#include <optional>
+#include <chrono>
+#include <functional>
 
-// ─── COSTANTI FORMATO ARCHIVIO ──────────────────────────────────────────────
-constexpr const char* TARC_MAGIC        = "TRC2";
-constexpr uint32_t    TARC_VERSION      = 204;
-constexpr size_t      CHUNK_SIZE        = 8ULL * 1024 * 1024;
-constexpr const char* TARC_EXT          = ".strk";
-constexpr const char* SFX_TRAILER_MAGIC = "TSFX";
+#define TARC_MAGIC     "TRC2"
+#define TARC_VERSION   200
+#define CHUNK_SIZE     (8 * 1024 * 1024)
+#define TARC_EXT       ".strk"
 
-// ─── COSTANTI DI SICUREZZA ──────────────────────────────────────────────────
-// Soglia dimensione chunk solid (256 MB)
-constexpr size_t CHUNK_THRESHOLD       = 256ULL * 1024 * 1024;
-// Soglia per codec switch: sotto questa dimensione ZSTD, sopra LZMA (512 KB)
-constexpr size_t CODEC_SWITCH_SIZE     = 512ULL * 1024;
-// Dimensione massima nome file nel TOC
-constexpr uint16_t MAX_NAME_LEN        = 4096;
-// Numero massimo di file nell'archivio (protezione OOM da header malevolo)
-constexpr uint32_t MAX_FILE_COUNT      = 1'000'000;
-// Dimensione massima dati compressi in un singolo chunk (protezione OOM)
-constexpr uint32_t MAX_CHUNK_COMP_SIZE = 512ULL * 1024 * 1024;
+#ifdef _WIN32
+    #define TARC_PATH_MAX 260
+#else
+    #define TARC_PATH_MAX 4096
+#endif
 
 enum class Codec : uint8_t {
-    ZSTD  = 0,
-    LZMA  = 1,
+    ZSTD = 0,
+    LZMA = 1,
     STORE = 2,
-    LZ4   = 3,
-    BR    = 4
+    LZ4  = 3,
+    BR   = 4
+};
+
+enum class TarcError : uint32_t {
+    None = 0,
+    FileNotFound,
+    AccessDenied,
+    CorruptedArchive,
+    InvalidHeader,
+    InconsistentToc,
+    CompressionFailed,
+    DecompressionFailed,
+    OutOfMemory,
+    UnsupportedVersion,
+    InvalidKey,
+    LicenseMissing,
+    DiskFull,
+    Cancelled,
+    Unknown
 };
 
 inline const char* codec_name(Codec c) {
@@ -42,39 +56,51 @@ inline const char* codec_name(Codec c) {
     }
 }
 
+inline const char* error_message(TarcError e) {
+    switch (e) {
+        case TarcError::None:                return "Success";
+        case TarcError::FileNotFound:       return "File not found";
+        case TarcError::AccessDenied:      return "Access denied";
+        case TarcError::CorruptedArchive: return "Archive is corrupted";
+        case TarcError::InvalidHeader: return "Invalid archive header";
+        case TarcError::InconsistentToc: return "TOC inconsistent with data";
+        case TarcError::CompressionFailed: return "Compression failed";
+        case TarcError::DecompressionFailed: return "Decompression failed";
+        case TarcError::OutOfMemory:   return "Out of memory";
+        case TarcError::UnsupportedVersion: return "Unsupported archive version";
+        case TarcError::InvalidKey:    return "Invalid license key";
+        case TarcError::LicenseMissing: return "License not found";
+        case TarcError::DiskFull:     return "Disk full";
+        case TarcError::Cancelled:    return "Operation cancelled";
+        default:                     return "Unknown error";
+    }
+}
+
 #pragma pack(push, 1)
 struct Header {
-    char     magic[4];
-    uint32_t version;
-    uint64_t toc_offset;
-    uint32_t file_count;
+    char     magic[4];   
+    uint32_t version;    
+    uint64_t toc_offset; 
+    uint32_t file_count; 
 };
 
 struct Entry {
-    uint64_t offset           = 0;
-    uint64_t orig_size        = 0;
-    uint64_t comp_size        = 0;
-    uint64_t xxhash           = 0;
-    uint64_t timestamp        = 0;
-    uint32_t duplicate_of_idx = 0;
-    uint16_t name_len         = 0;
-    uint8_t  codec            = 0;
-    uint8_t  is_duplicate     = 0;
+    uint64_t offset;     
+    uint64_t orig_size;  
+    uint64_t comp_size;  
+    uint64_t xxhash;     
+    uint64_t timestamp;  
+    uint32_t duplicate_of_idx; 
+    uint16_t name_len;   
+    uint8_t  codec;      
+    uint8_t  is_duplicate;     
 };
 
 struct ChunkHeader {
-    uint32_t codec    = 0;
-    uint32_t raw_size = 0;
-    uint32_t comp_size = 0;
-    uint64_t checksum = 0;   // XXH64 del dato compresso (0 = non verificato, retrocompatibile)
-};
-
-// ─── SFX TRAILER ────────────────────────────────────────────────────────────
-// Contiene l'offset esatto dove inizia l'archivio TRC2, cosi' lo stub
-// non deve scansionare tutto il file per trovare il magic "TRC2".
-struct SFXTrailer {
-    uint64_t archive_offset = 0;   // Offset inizio archivio (dopo lo stub)
-    char     magic[4];             // "TSFX" — firma del trailer
+    uint32_t codec;      // Aggiunto per multi-codec
+    uint32_t raw_size;   
+    uint32_t comp_size;  
+    uint64_t checksum;   // Per corruzione dati
 };
 #pragma pack(pop)
 
@@ -83,27 +109,35 @@ struct FileEntry {
     std::string name;
 };
 
-// ─── RISULTATO OPERAZIONE ───────────────────────────────────────────────────
 struct TarcResult {
-    bool        ok          = true;
+    bool        ok      = true;
+    TarcError   error   = TarcError::None;
     std::string message;
+    uint64_t    bytes_in  = 0;
+    uint64_t    bytes_out = 0;
+    std::vector<std::string> warnings;
 
-    // Statistiche base
-    uint64_t    bytes_in    = 0;
-    uint64_t    bytes_out   = 0;
+    static TarcResult success() { return {}; }
+    static TarcResult failure(TarcError e, const std::string& msg = {}) {
+        return {false, e, msg};
+    }
+};
 
-    // Conteggi
-    uint32_t    file_count  = 0;
-    uint32_t    dup_count   = 0;
-    uint32_t    skip_count  = 0;
+template<typename T>
+using Result = std::expected<T, TarcError>;
 
-    // Statistiche per-codec
-    std::map<Codec, uint64_t> codec_bytes;
-    std::map<Codec, uint32_t> codec_chunks;
+struct CompressOptions {
+    int level = 3;
+    bool solid_mode = true;
+    bool sfx_requested = false;
+    bool verify = true;
+    size_t chunk_size = 256 * 1024 * 1024;
+};
 
-    // Tempo impiegato (millisecondi)
-    uint64_t    elapsed_ms  = 0;
-
-    // Dimensione archivio su disco
-    uint64_t    archive_size = 0;
+struct ExtractOptions {
+    bool test_only = false;
+    bool flat_mode = false;
+    bool verify = true;
+    bool overwrite = false;
+    std::string output_dir;
 };
