@@ -237,11 +237,10 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
         if (produced > 0) {
             output.insert(output.end(), out_buf, out_buf + produced);
         }
-        if (ret != LZMA_OK) break;
+        if (ret != LZMA_OK && ret != LZMA_NEED_INPUT) break;
     }
     
-    stream.avail_in = 0;
-    while (ret == LZMA_OK) {
+    while (ret == LZMA_OK || ret == LZMA_NEED_INPUT) {
         stream.next_out = out_buf;
         stream.avail_out = sizeof(out_buf);
         ret = lzma_code(&stream, LZMA_FINISH);
