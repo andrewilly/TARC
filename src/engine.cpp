@@ -26,11 +26,6 @@ extern "C" {
 
 namespace fs = std::filesystem;
 
-// Helper function for async compression
-static ChunkResult compress_chunk_async(std::vector<char> data, int level, Codec codec, const std::string& path) {
-    return Engine::compress_worker(std::move(data), level, codec, path);
-}
-
 namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
@@ -584,7 +579,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 }
                 future_chunk = std::async(
                     std::launch::async, 
-                    compress_chunk_async,
+                    compress_worker, 
                     std::move(solid_buf), 
                     level, 
                     Codec::LZMA,
