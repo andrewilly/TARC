@@ -139,8 +139,8 @@ struct ChunkResult {
     std::string error_message;
 };
 
-// Compressione LZMA ottimizzata con parametri 7zip-like
-ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) {
+// Compressione LZMA ottimizzata con LZMA2 e BCJ
+ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, const std::string& file_path = "") {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = Codec::LZMA;
@@ -152,54 +152,52 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
         return res;
     }
     
-    // Calcola dimensione buffer output
     size_t max_out = lzma_stream_buffer_bound(raw_data.size());
     res.compressed_data.resize(max_out);
     size_t out_pos = 0;
     
-    // Parametri LZMA ottimizzati come 7zip
-    lzma_options_lzma options{};
-    options.lc = 3;  // Literal context (3 è ottimo per la maggior parte dei dati)
-    options.lp = 0;  // Literal position
-    options.pb = 2;  // Position bits (2 è default 7zip)
+    // Determina se applicare BCJ basandosi sull'estensione
+    std::string ext = fs::path(file_path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     
-    // Dictionary size: 64MB per livello 9, scala per altri livelli
-    size_t dict_size = 1 << 23; // 8MB base
-    if (level >= 9) {
-        dict_size = 1 << 26; // 64MB per ultra compression
-    } else if (level >= 6) {
-        dict_size = 1 << 25; // 32MB
-    } else if (level >= 3) {
-        dict_size = 1 << 24; // 16MB
+    lzma_filter filters[3];
+    int filter_count = 0;
+    
+    // BCJ per eseguibili x86 (.exe, .dll)
+    if (ext == ".exe" || ext == ".dll" || ext == ".sys") {
+        filters[filter_count++] = { LZMA_FILTER_X86, nullptr };
     }
-    options.dict_size = std::min(dict_size, raw_data.size() + (raw_data.size() / 4));
     
-    // Nice length: più grande = meglio per file solid
-    options.nice_len = 273;
+    // Filtro LZMA2 come base (uguale a quello usato da 7zip)
+    lzma_options_lzma lzma_options{};
+    lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(std::min(level, 9)));
     
-    // Depth di ricerca: più profondo = migliore compressione
-    options.search_depth = 96;
+    if (level >= 7) {
+        lzma_options.lc = 3;
+        lzma_options.lp = 0;
+        lzma_options.pb = 2;
+        if (level >= 9) {
+            lzma_options.dict_size = 64 * 1024 * 1024; // 64MB dict per ultra
+        } else {
+            lzma_options.dict_size = 32 * 1024 * 1024; // 32MB dict
+        }
+    }
     
-    // Fast bytes: più basso = migliore ma più lento
-    options.fast_bytes = 64;
+    filters[filter_count++] = { LZMA_FILTER_LZMA2, &lzma_options };
+    filters[filter_count++] = { LZMA_VLI_UNKNOWN, nullptr };
     
-    // Mode: normal per bilanciamento, optimal per massima compressione
-    options.mode = (level >= 7) ? LZMA_MODE_OPTIMAL : LZMA_MODE_NORMAL;
-    
-    // Encoder diretto con opzioni personalizzate
     lzma_stream stream = LZMA_STREAM_INIT;
     
-    lzma_filter filters[] = {
-        { LZMA_FILTER_LZMA2, &options },
-        { LZMA_VLI_UNKNOWN, nullptr }
-    };
-    
-    lzma_ret ret = lzma_simple_encoder(&stream, filters, LZMA_CHECK_CRC64);
+    // Inizializza encoder con catena di filtri
+    lzma_ret ret = lzma_stream_encoder(&stream, filters, LZMA_CHECK_CRC64);
     
     if (ret != LZMA_OK) {
-        // Fallback: usa easy_buffer_encode con preset massimo
-        stream = LZMA_STREAM_INIT;
-        uint32_t preset = static_cast<uint32_t>(std::min(level, 9)) | LZMA_PRESET_EXTREME;
+        // Fallback: encoder semplice
+        uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
+        if (level >= 7) {
+            preset |= LZMA_PRESET_EXTREME;
+        }
+        
         ret = lzma_easy_buffer_encode(
             preset,
             LZMA_CHECK_CRC64,
@@ -222,7 +220,7 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
         return res;
     }
     
-    // Encode chunk
+    // Encode con stream
     std::vector<uint8_t> output;
     output.reserve(raw_data.size() / 2);
     
@@ -234,20 +232,16 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     while (true) {
         stream.next_out = out_buf;
         stream.avail_out = sizeof(out_buf);
-        
         ret = lzma_code(&stream, LZMA_RUN);
-        
         size_t produced = sizeof(out_buf) - stream.avail_out;
         if (produced > 0) {
             output.insert(output.end(), out_buf, out_buf + produced);
         }
-        
         if (ret != LZMA_OK) break;
     }
     
-    // Finish
     stream.avail_in = 0;
-    while (true) {
+    while (ret == LZMA_OK) {
         stream.next_out = out_buf;
         stream.avail_out = sizeof(out_buf);
         ret = lzma_code(&stream, LZMA_FINISH);
@@ -255,7 +249,6 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
         if (produced > 0) {
             output.insert(output.end(), out_buf, out_buf + produced);
         }
-        if (ret != LZMA_OK) break;
     }
     
     lzma_end(&stream);
@@ -264,7 +257,6 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
         res.compressed_data.assign(output.begin(), output.end());
         res.success = true;
     } else {
-        // Non ha compresso, usa raw
         res.compressed_data = raw_data;
         res.codec = Codec::STORE;
         res.success = true;
@@ -295,7 +287,7 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
 }
 
 // Worker principale
-ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
+ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec, const std::string& file_path = "") {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = chosen_codec;
@@ -315,8 +307,8 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
     
-    // Usa sempre LZMA per massima compressione (7zip style)
-    res = compress_lzma_optimal(raw_data, level);
+    // Usa LZMA2 con filtri BCJ per eseguibili
+    res = compress_lzma_optimal(raw_data, level, file_path);
     
     return res;
 }
