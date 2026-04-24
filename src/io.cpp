@@ -135,8 +135,11 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
 
         if (out.good()) {
             auto sys_time = file_time_from_timestamp(timestamp);
-            std::error_code ec;
-            fs::last_write_time(p, sys_time, ec);
+            try {
+                fs::last_write_time(p, sys_time);
+            } catch (...) {
+                // Ignore timestamp errors on filesystems that don't support it
+            }
         }
         
         return true;

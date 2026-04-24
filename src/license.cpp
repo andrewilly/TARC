@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <random>
+#include <iostream>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -17,7 +18,7 @@
 namespace fs = std::filesystem;
 
 namespace {
-    LicenseInfo g_license_info;
+    License::License::LicenseInfo g_license_info;
 }
 
 std::string License::hash_key(const std::string& key) {
@@ -90,7 +91,7 @@ std::string License::generate_trial_key() {
     return key;
 }
 
-std::optional<LicenseInfo> License::load_saved_key() {
+std::optional<License::License::LicenseInfo> License::load_saved_key() {
     std::string path = get_license_path();
     if (!fs::exists(path)) return std::nullopt;
     
@@ -98,7 +99,7 @@ std::optional<LicenseInfo> License::load_saved_key() {
         std::ifstream ifs(path);
         if (!ifs) return std::nullopt;
         
-        LicenseInfo info;
+        License::License::LicenseInfo info;
         std::string line;
         
         while (std::getline(ifs, line)) {
@@ -133,7 +134,7 @@ bool License::save_key(const std::string& key) {
         std::ofstream ofs(p);
         if (!ofs) return false;
         
-        LicenseInfo info;
+        License::LicenseInfo info;
         info.key = key;
         info.is_valid = is_valid(key);
         
@@ -149,7 +150,7 @@ bool License::save_key(const std::string& key) {
     }
 }
 
-bool License::save_license_info(const LicenseInfo& info) {
+bool License::save_license_info(const License::LicenseInfo& info) {
     try {
         fs::path p(get_license_path());
         fs::create_directories(p.parent_path());
@@ -184,11 +185,11 @@ bool License::delete_license() {
     return true;
 }
 
-void License::set_license_info(const LicenseInfo& info) {
+void License::set_license_info(const License::LicenseInfo& info) {
     g_license_info = info;
 }
 
-LicenseInfo License::get_license_info() {
+License::LicenseInfo License::get_license_info() {
     return g_license_info;
 }
 
