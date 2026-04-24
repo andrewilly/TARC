@@ -54,11 +54,11 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN
-              << "================================================================\n"
-              << "                    TARC STRIKE v2.00_OpenAi                   \n"
-              << "                    Advanced Solid Compression                \n"
-              << "                    (c) 2026 Andre Willy Rizzo                \n"
-              << "================================================================\n" << Color::RESET << "\n";
+              << "═══════════════════════════════════════════════════════════════════\n"
+              << "                                 TARC STRIKE v2.00_OpenAi                 \n"
+              << "                                Advanced Solid Compression                \n"
+              << "                                (c) 2026 Andre Willy Rizzo                \n"
+              << "═══════════════════════════════════════════════════════════════════\n" << Color::RESET << "\n";
 }
 
 void show_help() {
