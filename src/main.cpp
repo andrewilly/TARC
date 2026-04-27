@@ -44,18 +44,17 @@ struct Command {
     enum Type {
         None,
         Create,
-        Add,
         Extract,
         List,
         Test,
         Delete,
+        Verify,
         Help,
         License,
         Version
     } type = None;
     
     int level = 3;
-    bool append = false;
     bool sfx = false;
     bool flat = false;
     bool force = false;
@@ -110,27 +109,14 @@ static Command parse_args(int argc, char* argv[]) {
                 }
             }
         }
-    } else if (prefix == "-a") {
-        cmd.type = Command::Add;
-        cmd.append = true;
-        cmd.level = 3;
-        
-        if (arg.length() > 2) {
-            std::string level_str = arg.substr(2);
-            if (!level_str.empty() && std::all_of(level_str.begin(), level_str.end(), ::isdigit)) {
-                try {
-                    cmd.level = std::stoi(level_str);
-                    cmd.level = std::clamp(cmd.level, 1, 9);
-                } catch (...) {
-                }
-            }
-        }
     } else if (prefix == "-x") {
         cmd.type = Command::Extract;
     } else if (prefix == "-l") {
         cmd.type = Command::List;
     } else if (prefix == "-t") {
         cmd.type = Command::Test;
+    } else if (arg == "-V") {
+        cmd.type = Command::Verify;
     } else if (prefix == "-d") {
         cmd.type = Command::Delete;
     } else {
@@ -177,8 +163,7 @@ static int run_command(const Command& cmd) {
             UI::show_license();
             return 0;
             
-        case Command::Create:
-        case Command::Add: {
+        case Command::Create: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
                 return 1;
@@ -194,9 +179,9 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto res = Engine::compress(arch, cmd.files, cmd.append, cmd.level);
+            auto res = Engine::compress(arch, cmd.files, false, cmd.level);
             UI::print_progress_end();
-            UI::print_summary(res, cmd.append ? "Add" : "Create");
+            UI::print_summary(res, "Create");
             
             if (res.ok && cmd.sfx) {
                 std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
@@ -247,6 +232,33 @@ static int run_command(const Command& cmd) {
             
             if (!res.ok || res.bytes_out == 0) {
                 UI::print_error("Archive integrity check failed.");
+                result = 1;
+            }
+            break;
+        }
+            
+        case Command::Verify: {
+            if (cmd.archive.empty()) {
+                UI::print_error("Specify archive name.");
+                return 1;
+            }
+            
+            std::string arch = IO::ensure_ext(cmd.archive);
+            
+            ProgressReporter reporter;
+            Engine::set_progress_callback(&reporter);
+            
+            auto res = Engine::verify(arch);
+            UI::print_progress_end();
+            UI::print_summary(res, "Verify");
+            
+            if (!res.ok) {
+                if (!res.warnings.empty()) {
+                    std::cerr << "\nCorrupted files:\n";
+                    for (const auto& w : res.warnings) {
+                        std::cerr << "  - " << w << "\n";
+                    }
+                }
                 result = 1;
             }
             break;

@@ -95,10 +95,11 @@ struct Entry {
 };
 
 struct ChunkHeader {
-    uint32_t codec;      // Aggiunto per multi-codec
+    uint32_t codec;      
     uint32_t raw_size;   
     uint32_t comp_size;  
-    uint64_t checksum;   // Per corruzione dati
+    uint64_t checksum;   // XXH64 of raw data
+    uint64_t reserved;   // For future use
 };
 #pragma pack(pop)
 

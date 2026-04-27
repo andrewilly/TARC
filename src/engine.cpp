@@ -134,17 +134,19 @@ std::string normalize_path(std::string path) {
 struct ChunkResult {
     std::vector<char> compressed_data;
     uint32_t raw_size;
+    uint64_t checksum;    // XXH64 of raw data for integrity
     Codec codec;
     bool success;
     std::string error_message;
 };
 
 // Compressione LZMA ottimizzata con LZMA2 e BCJ
-ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, const std::string& file_path = "") {
+ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, const std::string& file_path = "", uint64_t checksum = 0) {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = Codec::LZMA;
     res.success = false;
+    res.checksum = checksum;
     
     if (raw_data.empty()) {
         res.compressed_data = raw_data;
@@ -295,6 +297,10 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     res.codec = chosen_codec;
     res.success = false;
     
+    // Compute checksum of raw data
+    XXH64_hash_t xxh = XXH64(raw_data.data(), raw_data.size(), 0);
+    res.checksum = xxh;
+    
     // Skip piccoli file
     if (raw_data.size() < 4096) {
         res.compressed_data = std::move(raw_data);
@@ -310,7 +316,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     }
     
     // Usa LZMA2 con filtri BCJ per eseguibili
-    res = compress_lzma_optimal(raw_data, level, file_path);
+    res = compress_lzma_optimal(raw_data, level, file_path, xxh);
     
     return res;
 }
@@ -467,6 +473,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             static_cast<uint32_t>(cr.codec),
             cr.raw_size,
             static_cast<uint32_t>(cr.compressed_data.size()),
+            cr.checksum,
             0
         };
         
@@ -633,6 +640,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             static_cast<uint32_t>(last.codec),
             last.raw_size,
             static_cast<uint32_t>(last.compressed_data.size()),
+            last.checksum,
             0
         };
         if (fwrite(&ch, sizeof(ch), 1, f) != 1 || fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f) != last.compressed_data.size()) {
@@ -644,7 +652,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         res.bytes_out += last.compressed_data.size();
     }
 
-    ChunkHeader end_mark = {0, 0, 0, 0};
+    ChunkHeader end_mark = {0, 0, 0, 0, 0};
     if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
         fclose(f);
         res.error = TarcError::CompressionFailed;
@@ -804,6 +812,15 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     res.message = "Chunk decompression failed.";
                     return res;
                 }
+                
+                XXH64_hash_t computed = XXH64(current_block.data(), current_block.size(), 0);
+                if (computed != ch.checksum && ch.checksum != 0) {
+                    fclose(f);
+                    res.error = TarcError::CorruptedArchive;
+                    res.message = "Chunk checksum mismatch (data corrupted).";
+                    return res;
+                }
+                
                 block_pos = 0;
             }
             block_pos += fe.meta.orig_size;
@@ -833,6 +850,15 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 res.message = "Decompression failed.";
                 return res;
             }
+            
+            XXH64_hash_t computed = XXH64(current_block.data(), current_block.size(), 0);
+            if (computed != ch.checksum && ch.checksum != 0) {
+                fclose(f);
+                res.error = TarcError::CorruptedArchive;
+                res.message = "Chunk checksum mismatch (data corrupted).";
+                return res;
+            }
+            
             block_pos = 0;
         }
         
@@ -865,6 +891,24 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 res.message = "Failed to write: " + final_path;
                 fclose(f);
                 return res;
+            }
+            
+            if (fe.meta.xxhash != 0) {
+                std::vector<char> file_data(static_cast<size_t>(fe.meta.orig_size));
+                FILE* vf = fopen(final_path.c_str(), "rb");
+                if (vf) {
+                    if (fread(file_data.data(), 1, file_data.size(), vf) == file_data.size()) {
+                        XXH64_hash_t file_hash = XXH64(file_data.data(), file_data.size(), 0);
+                        if (file_hash != fe.meta.xxhash) {
+                            fclose(vf);
+                            fclose(f);
+                            res.error = TarcError::CorruptedArchive;
+                            res.message = "File integrity check failed: " + final_path;
+                            return res;
+                        }
+                    }
+                    fclose(vf);
+                }
             }
         }
         
@@ -923,6 +967,147 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     fclose(f);
     res.ok = true;
     res.message = "Listed " + std::to_string(toc.size()) + " files.";
+    return res;
+}
+
+TarcResult verify(const std::string& arch_path, size_t offset) {
+    TarcResult res;
+    res.ok = false;
+    reset_stats();
+    
+    FILE* f = fopen(arch_path.c_str(), "rb");
+    if (!f) {
+        res.error = TarcError::FileNotFound;
+        res.message = "Archive not found.";
+        return res;
+    }
+    
+    if (offset > 0) {
+        fseek(f, static_cast<long>(offset), SEEK_SET);
+    }
+    
+    Header h;
+    if (fread(&h, sizeof(h), 1, f) != 1) {
+        fclose(f);
+        res.error = TarcError::InvalidHeader;
+        res.message = "Invalid header.";
+        return res;
+    }
+    
+    std::vector<FileEntry> toc;
+    h.toc_offset += offset;
+    if (!IO::read_toc(f, h, toc)) {
+        fclose(f);
+        res.error = TarcError::CorruptedArchive;
+        res.message = "Cannot read TOC.";
+        return res;
+    }
+    
+    long data_start = static_cast<long>(offset + sizeof(Header));
+    uint32_t old_chunk_count = 0;
+    bool has_append = false;
+    
+    ChunkHeader ch_test;
+    fseek(f, data_start, SEEK_SET);
+    if (fread(&ch_test, sizeof(ch_test), 1, f) == 1 && ch_test.raw_size == 0) {
+        if (fread(&old_chunk_count, sizeof(old_chunk_count), 1, f) == 1) {
+            has_append = true;
+            data_start = ftell(f);
+        }
+    }
+    
+    fseek(f, data_start, SEEK_SET);
+
+    if (has_append) {
+        for (uint32_t i = 0; i < old_chunk_count; ++i) {
+            ChunkHeader chk;
+            if (fread(&chk, sizeof(chk), 1, f) != 1) break;
+            if (chk.raw_size == 0) break;
+            if (fseek(f, static_cast<long>(chk.comp_size), SEEK_CUR) != 0) break;
+        }
+    }
+    
+    std::vector<char> current_block;
+    size_t block_pos = 0;
+    size_t verified_files = 0;
+    size_t corrupted_files = 0;
+    std::vector<std::string> corrupted_names;
+    
+    for (size_t i = 0; i < toc.size(); ++i) {
+        auto& fe = toc[i];
+        report_progress(i + 1, toc.size(), "[VERIFY] " + fe.name);
+        
+        if (check_cancelled()) {
+            res.error = TarcError::Cancelled;
+            res.message = "Verification cancelled.";
+            fclose(f);
+            return res;
+        }
+        
+        if (fe.meta.is_duplicate) {
+            verified_files++;
+            continue;
+        }
+        
+        if (block_pos >= current_block.size()) {
+            ChunkHeader ch;
+            if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
+                corrupted_files++;
+                corrupted_names.push_back(fe.name);
+                break;
+            }
+            
+            std::vector<char> comp(ch.comp_size);
+            if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
+                corrupted_files++;
+                corrupted_names.push_back(fe.name);
+                break;
+            }
+            
+            current_block.resize(ch.raw_size);
+            
+            Codec codec = static_cast<Codec>(ch.codec);
+            if (!decompress_chunk(comp, current_block, codec) || current_block.size() != ch.raw_size) {
+                fclose(f);
+                res.error = TarcError::DecompressionFailed;
+                res.message = "Decompression failed during verification.";
+                return res;
+            }
+            
+            XXH64_hash_t computed = XXH64(current_block.data(), current_block.size(), 0);
+            if (computed != ch.checksum && ch.checksum != 0) {
+                fclose(f);
+                res.error = TarcError::CorruptedArchive;
+                res.message = "Chunk checksum mismatch (data corrupted).";
+                return res;
+            }
+            
+            block_pos = 0;
+        }
+        
+        if (fe.meta.xxhash != 0) {
+            XXH64_hash_t file_hash = XXH64(current_block.data() + block_pos, static_cast<size_t>(fe.meta.orig_size), 0);
+            if (file_hash != fe.meta.xxhash) {
+                corrupted_files++;
+                corrupted_names.push_back(fe.name);
+            }
+        }
+        
+        block_pos += fe.meta.orig_size;
+        verified_files++;
+    }
+    
+    fclose(f);
+    
+    if (corrupted_files > 0) {
+        res.error = TarcError::CorruptedArchive;
+        res.message = "Verification failed: " + std::to_string(corrupted_files) + " corrupted files found.";
+        res.warnings = corrupted_names;
+    } else {
+        res.ok = true;
+        res.message = "Archive verified successfully. " + std::to_string(verified_files) + " files OK.";
+    }
+    
     return res;
 }
 
