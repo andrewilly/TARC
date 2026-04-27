@@ -98,15 +98,20 @@ namespace {
 
 namespace Engine {
 
-void Engine::set_progress_callback(ProgressCallback* callback) {
+std::string normalize_path(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return path;
+}
+
+void set_progress_callback(ProgressCallback* callback) {
     g_progress_callback = callback;
 }
 
-Engine::CompressionStats Engine::get_stats() {
+CompressionStats get_stats() {
     return g_stats;
 }
 
-void Engine::reset_stats() {
+void reset_stats() {
     g_stats = {};
     g_cancelled = false;
 }
@@ -142,7 +147,6 @@ namespace CodecSelector {
         
         if (!is_compressible(ext)) return Codec::STORE;
         
-        // Testi/code - LZMA ottimo
         if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".hpp" ||
             ext == ".c" || ext == ".py" || ext == ".js" || ext == ".ts" ||
             ext == ".json" || ext == ".xml" || ext == ".html" || ext == ".css" ||
@@ -151,29 +155,24 @@ namespace CodecSelector {
             return Codec::LZMA;
         }
         
-        // Database - ZSTD
         if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde" ||
             ext == ".db" || ext == ".sqlite" || ext == ".sqlite3") {
             return Codec::ZSTD;
         }
         
-        // Immagini - LZMA (Brotli non disponibile per questa API)
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
             ext == ".bmp" || ext == ".ico" || ext == ".webp") {
             return Codec::LZMA;
         }
         
-        // Documenti Office
         if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt") {
             return Codec::LZMA;
         }
         
-        // File piccoli - LZ4
         if (size < 64 * 1024) {
             return Codec::LZ4;
         }
         
-        // Default: LZMA (come 7zip)
         return Codec::LZMA;
     }
 }
@@ -197,13 +196,6 @@ static bool check_cancelled() {
         return true;
     }
     return false;
-}
-
-namespace Engine {
-
-std::string normalize_path(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
-    return path;
 }
 
 struct ChunkResult {
@@ -449,7 +441,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
 static bool decompress_zstd(const std::vector<char>& compressed, std::vector<char>& decompressed) {
     if (compressed.empty()) return false;
     
-    size_t dbuf_size = ZSTD_decompressGetDecompressedSize(compressed.data(), compressed.size());
+    size_t dbuf_size = ZSTD_getDecompressedSize(compressed.data(), compressed.size());
     if (dbuf_size == ZSTD_CONTENTSIZE_UNKNOWN) {
         dbuf_size = compressed.size() * 4;
     }
@@ -649,7 +641,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     
     init_pools();
     
-    constexpr size_t PREFETCH_SIZE = 4;
     std::queue<std::pair<std::string, std::vector<char>>> prefetch_queue;
     std::mutex prefetch_mutex;
     
@@ -793,35 +784,34 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         uintmax_t fsize = 0;
         bool read_ok = false;
         uint64_t h64 = 0;
+        XXH64_state_t* state = nullptr;
         
         if (!data.empty()) {
             fsize = data.size();
-            XXH64_state_t* state = XXH64_createState();
+            state = XXH64_createState();
             if (state) {
                 XXH64_reset(state, 0);
                 XXH64_update(state, data.data(), data.size());
                 h64 = XXH64_digest(state);
                 XXH64_freeState(state);
+                state = nullptr;
             }
             read_ok = true;
         } else {
             disk_path = expanded_files[i];
             fsize = fs::file_size(disk_path);
+            state = XXH64_createState();
+            if (state) XXH64_reset(state, 0);
             try {
                 data.resize(static_cast<size_t>(fsize));
             } catch (const std::bad_alloc&) {
                 res.error = TarcError::OutOfMemory;
                 res.message = "Insufficient memory: " + disk_path;
                 report_warning(res.message);
+                if (state) XXH64_freeState(state);
                 continue;
             }
 
-            XXH64_state_t* const state = XXH64_createState();
-            if (state) XXH64_reset(state, 0);
-
-            bool read_ok = false;
-            uint64_t h64 = 0;
-        
 #ifdef _WIN32
         HANDLE hFile = CreateFileA(
             disk_path.c_str(), 
