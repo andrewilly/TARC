@@ -95,20 +95,10 @@ struct Entry {
 };
 
 struct ChunkHeader {
-    uint32_t codec;       // Codec usato per questo chunk
-    uint32_t raw_size;    // Dimensione dati non compressi
-    uint32_t comp_size;   // Dimensione dati compressi
-    uint64_t checksum;    // Checksum integrità dati
-    uint32_t threads_used; // Numero thread usati (0=single-thread, >0=multi-thread)
-};
-
-// Configurazione performance per battere 7zip
-struct PerfConfig {
-    size_t io_buffer_size = 4 * 1024 * 1024;  // 4MB I/O buffer (default 4KB -> 4MB)
-    size_t chunk_size = 256 * 1024 * 1024;    // 256MB chunk per compressione parallela
-    uint32_t compression_threads = 0;            // 0 = auto-detect (usa tutti i core)
-    bool use_lzma_mt = true;                    // Abilita LZMA multi-threaded (come 7zip)
-    bool use_large_pages = false;                // Usa Large Pages per dictionary LZMA (futuro)
+    uint32_t codec;      
+    uint32_t raw_size;   
+    uint32_t comp_size;  
+    uint64_t checksum;   
 };
 #pragma pack(pop)
 

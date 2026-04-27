@@ -30,26 +30,6 @@ namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
-    
-    // NUOVO: Configurazione performance per battere 7zip
-    // Posizionato qui per essere accessibile dalle funzioni di compressione
-    struct PerfConfig {
-        size_t io_buffer_size = 4 * 1024 * 1024;  // 4MB I/O buffer (default era 4KB)
-        size_t chunk_size = 256 * 1024 * 1024;    // 256MB chunk per compressione parallela
-        uint32_t compression_threads = 0;           // 0 = auto-detect (usa tutti i core)
-        bool use_lzma_mt = true;                   // Abilita LZMA multi-threaded (come 7zip)
-    };
-    PerfConfig g_perf_config;
-    
-    // Inizializza configurazione: auto-rileva numero core CPU
-    void init_perf_config() {
-        if (g_perf_config.compression_threads == 0) {
-            g_perf_config.compression_threads = std::thread::hardware_concurrency();
-            if (g_perf_config.compression_threads == 0) {
-                g_perf_config.compression_threads = 4; // Fallback sicuro
-            }
-        }
-    }
 }
 
 void Engine::set_progress_callback(ProgressCallback* callback) {
@@ -68,7 +48,7 @@ void Engine::reset_stats() {
 namespace CodecSelector {
     static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip", ".strk" };
     static bool initialized = false;
-
+    
     void init() {
         if (!initialized) {
             initialized = true;
@@ -102,7 +82,7 @@ namespace CodecSelector {
             return Codec::ZSTD;
         }
         
-        // Immagini - LZMA (Brotli non disponibile per questa API)
+        // Immagini - LZMA
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
             ext == ".bmp" || ext == ".ico" || ext == ".webp") {
             return Codec::LZMA;
@@ -328,7 +308,6 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     
     // Usa LZMA2 con filtri BCJ per eseguibili
     res = compress_lzma_optimal(raw_data, level, file_path);
-    
     return res;
 }
 
@@ -895,4 +874,4 @@ TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
     return res;
 }
 
-}
+} // namespace Engine
