@@ -177,8 +177,8 @@ void print_add(const std::string& name, uint64_t size, Codec codec, float ratio)
               << Color::YELLOW << std::setw(5) << codec_name(codec) << Color::RESET << "] "
               << std::left << std::setw(40) << name.substr(0, 40) << " "
               << std::right << std::setw(10) << human_size(size) << "  "
-              << Color::DIM << (is_dedup ? "→ DEDUP" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio)))
-              << Color::RESET << "\n";
+               << Color::DIM << (is_dedup ? "→ DEDUP" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio))).c_str())
+               << Color::RESET << "\n";
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
