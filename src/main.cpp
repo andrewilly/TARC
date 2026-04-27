@@ -120,6 +120,11 @@ static Command parse_args(int argc, char* argv[]) {
     } else if (prefix == "-d") {
         cmd.type = Command::Delete;
     } else {
+        if (fs::exists(arg) && fs::is_directory(arg)) {
+            cmd.type = Command::Create;
+            cmd.files.push_back(arg);
+            return cmd;
+        }
         cmd.type = Command::None;
         return cmd;
     }
@@ -133,10 +138,16 @@ static Command parse_args(int argc, char* argv[]) {
             cmd.flat = true;
         } else if (val == "--force") {
             cmd.force = true;
-        } else if (cmd.archive.empty()) {
-            cmd.archive = val;
-        } else {
+        } else if (!cmd.archive.empty()) {
             cmd.files.push_back(val);
+        } else {
+            if (fs::exists(val) && fs::is_directory(val)) {
+                cmd.files.push_back(val);
+            } else if (fs::exists(val) && fs::is_regular_file(val)) {
+                cmd.files.push_back(val);
+            } else {
+                cmd.archive = val;
+            }
         }
     }
     

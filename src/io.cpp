@@ -23,70 +23,22 @@ std::string IO::ensure_ext(const std::string& path) {
 
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
     if (pattern.empty()) return false;
-    
+    out.clear();
+
     try {
         if (fs::exists(pattern) && fs::is_directory(pattern)) {
             for (auto& p : fs::recursive_directory_iterator(pattern)) {
-                if (p.is_regular_file()) {
-                    out.push_back(p.path().string());
-                }
+                if (p.is_regular_file()) out.push_back(p.path().string());
             }
             return !out.empty();
         }
-        
-        std::string path_to_expand = pattern;
-        if (!fs::exists(pattern)) {
-            size_t last_slash = pattern.find_last_of("\\/");
-            if (last_slash != std::string::npos) {
-                std::string dir = pattern.substr(0, last_slash + 1);
-                std::string file = pattern.substr(last_slash + 1);
-                if (fs::exists(dir)) {
-                    path_to_expand = pattern;
-                }
-            }
-        }
-        
-        if (fs::exists(path_to_expand) && fs::is_regular_file(path_to_expand)) {
-            out.push_back(path_to_expand);
-            return true;
-        }
-        
-#ifdef _WIN32
-        std::string directory = ".";
-        std::string file_pattern = pattern;
-        
-        size_t last_slash = pattern.find_last_of("\\/");
-        if (last_slash != std::string::npos) {
-            directory = pattern.substr(0, last_slash + 1);
-            file_pattern = pattern.substr(last_slash + 1);
-        }
-        
-        WIN32_FIND_DATAA findData;
-        HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
-        if (hFind == INVALID_HANDLE_VALUE) {
-            hFind = FindFirstFileA((directory + "*").c_str(), &findData);
-            if (hFind == INVALID_HANDLE_VALUE) return false;
-            file_pattern = "*";
-        }
-        
-        do {
-            std::string foundName(findData.cFileName);
-            if (foundName != "." && foundName != "..") {
-                std::string fullPath = directory + foundName;
-                if (fs::exists(fullPath) && fs::is_regular_file(fullPath)) {
-                    out.push_back(fullPath);
-                }
-            }
-        } while (FindNextFileA(hFind, &findData));
-        FindClose(hFind);
-        return !out.empty();
-#else
+
         if (fs::exists(pattern) && fs::is_regular_file(pattern)) {
             out.push_back(pattern);
             return true;
         }
+
         return false;
-#endif
     } catch (...) {
         return false;
     }

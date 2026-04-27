@@ -7,7 +7,7 @@
 #include <functional>
 
 #define TARC_MAGIC     "TRC2"
-#define TARC_VERSION   200
+#define TARC_VERSION   210
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
 
