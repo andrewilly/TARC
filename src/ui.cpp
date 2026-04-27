@@ -80,12 +80,15 @@ void show_help() {
     std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "       Create self-extracting archive\n";
     std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "      Flat extraction (no paths)\n";
     std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "    Overwrite existing files\n";
+    std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "    Verify integrity after operation\n";
+    std::cout << "  " << Color::WHITE << "--threads N" << Color::RESET << " Set compression threads (default: auto)\n";
     
     std::cout << "\n" << Color::BOLD << "Features:" << Color::RESET << "\n";
     std::cout << "  • Solid blocks (256MB) for maximum ratio\n";
     std::cout << "  • Deduplication via XXH64 checksums\n";
     std::cout << "  • Smart codec selection (LZMA/ZSTD/STORE)\n";
     std::cout << "  • Windows native I/O for best performance\n";
+    std::cout << "  • Multi-threaded LZMA compression\n";
     
     std::cout << "\n" << Color::DIM << "Type 'tarc --license' for license information.\n" << Color::RESET;
 }
@@ -243,10 +246,21 @@ void print_summary(const TarcResult& result, const std::string& op) {
         return;
     }
     
+    // Ottieni statistiche per mostrare velocità
+    auto stats = Engine::get_stats();
+    
     if (result.bytes_in > 0 && result.bytes_out > 0) {
         std::cout << Color::GREEN << "✔ " << op << " completed successfully." << Color::RESET << "\n";
         std::cout << "  " << human_size(result.bytes_in) << " → " << human_size(result.bytes_out) << "  "
                   << Color::DIM << "(" << compress_ratio(result.bytes_in, result.bytes_out) << ")" << Color::RESET << "\n";
+        
+        // Mostra velocità se abbiamo statistiche
+        if (stats.elapsed.count() > 0) {
+            double seconds = stats.elapsed.count() / 1000.0;
+            double mbps_in = (result.bytes_in / (1024.0 * 1024.0)) / seconds;
+            std::cout << Color::CYAN << "  Speed: " << Color::BRIGHT_CYAN << std::fixed << std::setprecision(1) 
+                      << mbps_in << Color::CYAN << " MB/s" << Color::RESET << "\n";
+        }
         
         for (const auto& warn : result.warnings) {
             std::cout << Color::YELLOW << "  ⚠ " << warn << Color::RESET << "\n";
@@ -290,13 +304,34 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     int bar_width = 20;
     int pos = static_cast<int>(bar_width * current / total_);
     
+    // Calcola velocità e ETA se abbiamo statistiche
+    static auto start_time = std::chrono::steady_clock::now();
+    static bool start_set = false;
+    if (!start_set) { start_time = std::chrono::steady_clock::now(); start_set = true; }
+    
+    std::string speed_info = "";
+    if (current > 0 && current < total_) {
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - start_time).count();
+        if (elapsed > 0.5) { // Dopo 0.5s calcola velocità
+            double mbps = (current / (1024.0 * 1024.0)) / elapsed;
+            double remaining = (total_ - current) / (current / elapsed);
+            
+            char buf[64];
+            snprintf(buf, sizeof(buf), " %.1f MB/s ETA: %.0fs", mbps, remaining);
+            speed_info = buf;
+        }
+    }
+    
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << "\r" << Color::CYAN << label_ << " [";
     for (int i = 0; i < bar_width; ++i) {
         std::cout << (i < pos ? "█" : "░");
     }
     std::cout << Color::RESET << "] " << std::fixed << std::setprecision(1) << pct << "%";
-    if (!status.empty()) {
+    if (!speed_info.empty()) {
+        std::cout << Color::DIM << speed_info << Color::RESET;
+    } else if (!status.empty()) {
         std::cout << " " << Color::DIM << status << Color::RESET;
     }
     std::cout << std::flush;
