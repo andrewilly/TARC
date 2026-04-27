@@ -360,7 +360,7 @@ static bool check_cancelled() {
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
     std::string stub_path = "tarc_sfx_stub.exe";
     if (!fs::exists(fs::u8path(stub_path))) {
-        return {false, "Stub SFX non trovato."};
+        return TarcResult(false, "Stub SFX non trovato.");
     }
 
     std::ifstream stub_in(fs::u8path(stub_path), std::ios::binary);
@@ -368,7 +368,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     std::ofstream sfx_out(fs::u8path(sfx_name), std::ios::binary);
 
     if (!stub_in || !data_in || !sfx_out) {
-        return {false, "Errore fatale durante la fusione SFX."};
+        return TarcResult(false, "Errore fatale durante la fusione SFX.");
     }
 
     sfx_out << stub_in.rdbuf();
@@ -385,10 +385,10 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     sfx_out.write(reinterpret_cast<const char*>(&trailer), sizeof(trailer));
 
     if (!sfx_out.good()) {
-        return {false, "Errore scrittura trailer SFX."};
+        return TarcResult(false, "Errore scrittura trailer SFX.");
     }
 
-    return {true, "Archivio autoestraente generato."};
+    return TarcResult(true, "Archivio autoestraente generato.");
 }
 
 TarcResult compress(const std::string& archive_path, const std::vector<std::string>& inputs,
@@ -411,7 +411,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         result.skip_count += static_cast<uint32_t>(before - expanded_files.size());
     }
 
-    if (expanded_files.empty()) return {false, "Nessun file trovato."};
+    if (expanded_files.empty()) return TarcResult(false, "Nessun file trovato.");
 
     std::vector<FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
@@ -419,15 +419,15 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     if (append && fs::exists(fs::u8path(archive_path))) {
         IO::FilePtr f_old(IO::u8fopen(archive_path, "rb"));
-        if (!f_old) return {false, "Impossibile aprire l'archivio per lettura."};
-        if (fread(&h, sizeof(h), 1, f_old) != 1) return {false, "Header archivio corrotto."};
+        if (!f_old) return TarcResult(false, "Impossibile aprire l'archivio per lettura.");
+        if (fread(&h, sizeof(h), 1, f_old) != 1) return TarcResult(false, "Header archivio corrotto.");
 
         if (!IO::validate_header(h)) {
-            return {false, "Il file non e' un archivio TARC valido o versione incompatibile."};
+            return TarcResult(false, "Il file non e' un archivio TARC valido o versione incompatibile.");
         }
 
         if (!IO::read_toc(f_old, h, final_toc)) {
-            return {false, "Impossibile leggere TOC dall'archivio."};
+            return TarcResult(false, "Impossibile leggere TOC dall'archivio.");
         }
         for (size_t k = 0; k < final_toc.size(); ++k) {
             if (!final_toc[k].meta.is_duplicate) {
@@ -448,7 +448,7 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
         try {
             fs::copy_file(fs::u8path(archive_path), fs::u8path(temp_path), fs::copy_options::overwrite_existing);
         } catch (...) {
-            return {false, "Impossibile creare file temporaneo per append atomico."};
+            return TarcResult(false, "Impossibile creare file temporaneo per append atomico.");
         }
         actual_write_path = temp_path;
         using_temp = true;
@@ -461,18 +461,18 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
     IO::FilePtr f(IO::u8fopen(actual_write_path, append ? "rb+" : "wb"));
     if (!f) {
         if (using_temp && !temp_path.empty()) IO::safe_remove(temp_path);
-        return {false, "ERRORE CRITICO: Impossibile scrivere l'archivio."};
-    }
-
-    if (append) {
-        if (!IO::seek64(f, static_cast<int64_t>(h.toc_offset), SEEK_SET)) {
-            IO::safe_remove(temp_path);
-            return {false, "Errore seek nell'archivio."};
+return TarcResult(false, "ERRORE CRITICO: Impossibile scrivere l'archivio.");
         }
-    } else {
-        if (fwrite(&h, sizeof(h), 1, f) != 1) {
-            IO::safe_remove(temp_path);
-            return {false, "Errore scrittura header."};
+
+        if (append) {
+            if (!IO::seek64(f, static_cast<int64_t>(h.toc_offset), SEEK_SET)) {
+                IO::safe_remove(temp_path);
+                return TarcResult(false, "Errore seek nell'archivio.");
+            }
+        } else {
+            if (fwrite(&h, sizeof(h), 1, f) != 1) {
+                IO::safe_remove(temp_path);
+                return TarcResult(false, "Errore scrittura header.");
         }
     }
 
@@ -575,7 +575,37 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
             if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 if (!flush_solid_buf(last_codec)) {
                     IO::safe_remove(temp_path);
-                    return {false, "Errore compressione chunk."};
+return TarcResult(false, "Errore compressione chunk.");
+                    }
+                }
+
+                return TarcResult(false, "Errore chunk finale (async).");
+            }
+
+            if (!solid_buf.empty()) {
+                ChunkResult last = compress_worker(std::move(solid_buf), level, last_codec);
+                if (!last.success || !write_chunk_result(last)) {
+                    IO::safe_remove(temp_path);
+                    return TarcResult(false, "Errore compressione/scrittura chunk finale.");
+                }
+            }
+
+            ChunkHeader end_mark = {0, 0, 0, 0};
+            if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
+                IO::safe_remove(temp_path);
+                return TarcResult(false, "Errore scrittura end mark.");
+            }
+
+            if (!IO::write_toc(f, h, final_toc)) {
+                IO::safe_remove(temp_path);
+                return TarcResult(false, "Errore scrittura TOC.");
+            }
+
+            f.reset();
+
+            if (using_temp && !temp_path.empty()) {
+                if (!IO::atomic_rename(temp_path, archive_path)) {
+                    return TarcResult(false, "Errore rename atomico.");
                 }
             }
 
@@ -588,33 +618,33 @@ TarcResult compress(const std::string& archive_path, const std::vector<std::stri
 
     if (!write_pending_async()) {
         IO::safe_remove(temp_path);
-        return {false, "Errore chunk finale (async)."};
+        return TarcResult(false, "Errore chunk finale (async).");
     }
 
     if (!solid_buf.empty()) {
         ChunkResult last = compress_worker(std::move(solid_buf), level, last_codec);
         if (!last.success || !write_chunk_result(last)) {
             IO::safe_remove(temp_path);
-            return {false, "Errore compressione/scrittura chunk finale."};
+            return TarcResult(false, "Errore compressione/scrittura chunk finale.");
         }
     }
 
     ChunkHeader end_mark = {0, 0, 0, 0};
     if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
         IO::safe_remove(temp_path);
-        return {false, "Errore scrittura end mark."};
+        return TarcResult(false, "Errore scrittura end mark.");
     }
 
     if (!IO::write_toc(f, h, final_toc)) {
         IO::safe_remove(temp_path);
-        return {false, "Errore scrittura TOC."};
+        return TarcResult(false, "Errore scrittura TOC.");
     }
 
     f.reset();
 
     if (using_temp && !temp_path.empty()) {
         if (!IO::atomic_rename(temp_path, archive_path)) {
-            return {false, "Errore rename atomico."};
+            return TarcResult(false, "Errore rename atomico.");
         }
     }
 
@@ -635,29 +665,29 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     auto t_start = std::chrono::steady_clock::now();
 
     IO::FilePtr f(IO::u8fopen(arch_path, "rb"));
-    if (!f) return {false, "Archivio non trovato."};
+    if (!f) return TarcResult(false, "Archivio non trovato.");
 
     if (offset > 0) {
         if (!IO::seek64(f, static_cast<int64_t>(offset), SEEK_SET)) {
-            return {false, "Errore seek offset."};
+            return TarcResult(false, "Errore seek offset.");
         }
     }
 
     Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
-        return {false, "Header corrotto o illeggibile."};
+        return TarcResult(false, "Header corrotto o illeggibile.");
     }
     if (!IO::validate_header(h)) {
-        return {false, "File non e' un archivio TARC valido."};
+        return TarcResult(false, "File non e' un archivio TARC valido.");
     }
 
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {
-        return {false, "Impossibile leggere TOC."};
+        return TarcResult(false, "Impossibile leggere TOC.");
     }
     if (!IO::seek64(f, static_cast<int64_t>(offset + sizeof(Header)), SEEK_SET)) {
-        return {false, "Errore seek dati."};
+        return TarcResult(false, "Errore seek dati.");
     }
 
     std::vector<char> current_block;
@@ -740,7 +770,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             if (src_pos >= current_block.size()) {
                 DecodedChunk chunk = read_next_chunk(f);
                 if (!chunk.valid) {
-                    return {false, "Errore lettura chunk durante estrazione."};
+                    return TarcResult(false, "Errore lettura chunk durante estrazione.");
                 }
                 current_block = std::move(chunk.data);
                 src_pos = 0;
@@ -828,32 +858,30 @@ TarcResult verify(const std::string& arch_path, size_t offset) {
     auto t_start = std::chrono::steady_clock::now();
 
     IO::FilePtr f(IO::u8fopen(arch_path, "rb"));
-    if (!f) return {false, "Archivio non trovato."};
+    if (!f) return TarcResult(false, "Archivio non trovato.");
 
     if (offset > 0) {
         if (!IO::seek64(f, static_cast<int64_t>(offset), SEEK_SET)) {
-            return {false, "Errore seek offset."};
+            return TarcResult(false, "Errore seek offset.");
         }
     }
 
     Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
-        return {false, "Header corrotto."};
-    }
-    if (!IO::validate_header(h)) {
-        return {false, "File non e' un archivio TARC valido."};
-    }
+return TarcResult(false, "Header corrotto.");
+        }
+        if (!IO::validate_header(h)) {
+            return TarcResult(false, "File non e' un archivio TARC valido.");
+        }
 
-    std::vector<FileEntry> toc;
-    h.toc_offset += offset;
-    if (!IO::read_toc(f, h, toc)) {
-        return {false, "Impossibile leggere TOC."};
-    }
-    if (!IO::seek64(f, static_cast<int64_t>(offset + sizeof(Header)), SEEK_SET)) {
-        return {false, "Errore seek dati."};
-    }
+        if (!IO::read_toc(f, h, toc)) {
+            return TarcResult(false, "Impossibile leggere TOC.");
+        }
+        if (!IO::seek64(f, static_cast<int64_t>(offset + sizeof(Header)), SEEK_SET)) {
+            return TarcResult(false, "Errore seek dati.");
+        }
 
-    std::vector<char> current_block;
+        std::vector<char> current_block;
     size_t block_pos = 0;
     size_t verified = 0;
     size_t corrupted = 0;
@@ -877,11 +905,12 @@ TarcResult verify(const std::string& arch_path, size_t offset) {
             if (src_pos >= current_block.size()) {
                 DecodedChunk chunk = read_next_chunk(f);
                 if (!chunk.valid) {
-                    return {false, "Errore lettura chunk durante verifica."};
+return TarcResult(false, "Errore lettura chunk durante verifica.");
                 }
-                current_block = std::move(chunk.data);
-                src_pos = 0;
-            }
+
+                if (IO::seek64(f, static_cast<int64_t>(offset + sizeof(Header)), SEEK_SET)) {
+                    return TarcResult(false, "Errore seek dati.");
+                }
 
             size_t available = current_block.size() - src_pos;
             size_t to_copy = std::min(available, remaining);
@@ -927,24 +956,24 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     auto t_start = std::chrono::steady_clock::now();
 
     IO::FilePtr f(IO::u8fopen(arch_path, "rb"));
-    if (!f) return {false, "Errore apertura archivio."};
+    if (!f) return TarcResult(false, "Errore apertura archivio.");
     if (offset > 0) {
         if (!IO::seek64(f, static_cast<int64_t>(offset), SEEK_SET)) {
-            return {false, "Errore seek."};
+            return TarcResult(false, "Errore seek.");
         }
     }
     Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
-        return {false, "Errore Header"};
+        return TarcResult(false, "Errore Header");
     }
     if (!IO::validate_header(h)) {
-        return {false, "File non e' un archivio TARC valido."};
+        return TarcResult(false, "File non e' un archivio TARC valido.");
     }
 
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {
-        return {false, "Errore TOC"};
+        return TarcResult(false, "Errore TOC");
     }
 
     for (const auto& fe : toc) {
@@ -966,19 +995,19 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
     auto t_start = std::chrono::steady_clock::now();
 
     IO::FilePtr f_src(IO::u8fopen(arch_path, "rb"));
-    if (!f_src) return {false, "Impossibile aprire l'archivio."};
+    if (!f_src) return TarcResult(false, "Impossibile aprire l'archivio.");
 
     Header h;
     if (fread(&h, sizeof(h), 1, f_src) != 1) {
-        return {false, "Header corrotto."};
+        return TarcResult(false, "Header corrotto.");
     }
     if (!IO::validate_header(h)) {
-        return {false, "File non e' un archivio TARC valido."};
+        return TarcResult(false, "File non e' un archivio TARC valido.");
     }
 
     std::vector<FileEntry> toc;
     if (!IO::read_toc(f_src, h, toc)) {
-        return {false, "Impossibile leggere TOC."};
+        return TarcResult(false, "Impossibile leggere TOC.");
     }
 
     std::set<size_t> remove_set;
@@ -992,11 +1021,11 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
     }
 
     if (remove_set.empty()) {
-        return {false, "Nessun file corrisponde ai pattern specificati."};
+        return TarcResult(false, "Nessun file corrisponde ai pattern specificati.");
     }
 
     if (!IO::seek64(f_src, static_cast<int64_t>(sizeof(Header)), SEEK_SET)) {
-        return {false, "Errore seek dati."};
+        return TarcResult(false, "Errore seek dati.");
     }
 
     std::map<size_t, std::vector<char>> file_data_map;
@@ -1014,7 +1043,7 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
             if (block_pos >= current_block.size()) {
                 DecodedChunk chunk = read_next_chunk(f_src);
                 if (!chunk.valid) {
-                    return {false, "Errore lettura chunk durante rimozione."};
+                    return TarcResult(false, "Errore lettura chunk durante rimozione.");
                 }
                 current_block = std::move(chunk.data);
                 block_pos = 0;
@@ -1038,14 +1067,14 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
 
     std::string temp_path = IO::make_temp_path(arch_path);
     IO::FilePtr f_dst(IO::u8fopen(temp_path, "wb"));
-    if (!f_dst) return {false, "Impossibile creare archivio temporaneo."};
+    if (!f_dst) return TarcResult(false, "Impossibile creare archivio temporaneo.");
 
     Header new_h{};
     memcpy(new_h.magic, TARC_MAGIC, 4);
     new_h.version = TARC_VERSION;
     if (fwrite(&new_h, sizeof(new_h), 1, f_dst) != 1) {
         IO::safe_remove(temp_path);
-        return {false, "Errore scrittura header."};
+        return TarcResult(false, "Errore scrittura header.");
     }
 
     std::vector<FileEntry> new_toc;
@@ -1091,15 +1120,16 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
                 ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
                 if (!cr.success) {
                     IO::safe_remove(temp_path);
-                    return {false, "Errore ricompressione chunk."};
-                }
-                ChunkHeader ch = { static_cast<uint32_t>(cr.codec), cr.raw_size,
-                             static_cast<uint32_t>(cr.compressed_data.size()), 0 };
-                ch.checksum = XXH64(cr.compressed_data.data(), cr.compressed_data.size(), 0);
-                fwrite(&ch, sizeof(ch), 1, f_dst);
-                fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f_dst);
-                result.bytes_out += cr.compressed_data.size();
-            }
+return TarcResult(false, "Errore ricompressione chunk.");
+                    }
+
+                    constexpr size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
+                    if (solid_buf.size() + data_it->second.size() > CHUNK_THRESHOLD && !solid_buf.empty()) {
+                        ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
+                        if (!cr.success) {
+                            IO::safe_remove(temp_path);
+                            return TarcResult(false, "Errore ricompressione chunk finale.");
+                        }
 
             last_codec = chosen;
             solid_buf.insert(solid_buf.end(), data_it->second.begin(), data_it->second.end());
@@ -1115,7 +1145,7 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
         ChunkResult cr = compress_worker(std::move(solid_buf), level, last_codec);
         if (!cr.success) {
             IO::safe_remove(temp_path);
-            return {false, "Errore ricompressione chunk finale."};
+            return TarcResult(false, "Errore ricompressione chunk finale.");
         }
         ChunkHeader ch = { static_cast<uint32_t>(cr.codec), cr.raw_size,
                         static_cast<uint32_t>(cr.compressed_data.size()), 0 };
@@ -1130,14 +1160,14 @@ TarcResult remove_files(const std::string& arch_path, const std::vector<std::str
 
     if (!IO::write_toc(f_dst, new_h, new_toc)) {
         IO::safe_remove(temp_path);
-        return {false, "Errore scrittura TOC."};
+        return TarcResult(false, "Errore scrittura TOC.");
     }
 
     f_dst.reset();
     f_src.reset();
 
     if (!IO::atomic_rename(temp_path, arch_path)) {
-        return {false, "Errore rename atomico."};
+        return TarcResult(false, "Errore rename atomico.");
     }
 
     auto t_end = std::chrono::steady_clock::now();
