@@ -724,10 +724,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             }
             
             uintmax_t sz = fs::file_size(path);
-            if (sz > 100 * 1024 * 1024) {
-                idx++;
-                continue;
-            }
             
             std::vector<char> buf;
             try {
