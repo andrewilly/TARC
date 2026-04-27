@@ -26,6 +26,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     out.clear();
 
     try {
+        // Directory: espandi ricorsivamente tutti i file regolari
         if (fs::exists(pattern) && fs::is_directory(pattern)) {
             for (auto& p : fs::recursive_directory_iterator(pattern)) {
                 if (p.is_regular_file()) out.push_back(p.path().string());
@@ -33,10 +34,41 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
             return !out.empty();
         }
 
+        // File singolo esistente
         if (fs::exists(pattern) && fs::is_regular_file(pattern)) {
             out.push_back(pattern);
             return true;
         }
+
+        // Supporto wildcard Windows (* e *)
+        #ifdef _WIN32
+        std::string dir = ".";
+        std::string file_pat = pattern;
+        
+        size_t pos = pattern.find_last_of("\\/");
+        if (pos != std::string::npos) {
+            dir = pattern.substr(0, pos + 1);
+            file_pat = pattern.substr(pos + 1);
+        }
+        
+        if (file_pat.find('*') != std::string::npos) {
+            WIN32_FIND_DATAA fd;
+            HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                do {
+                    std::string name(fd.cFileName);
+                    if (name != "." && name != "..") {
+                        std::string full = dir + name;
+                        if (fs::exists(full) && fs::is_regular_file(full)) {
+                            out.push_back(full);
+                        }
+                    }
+                } while (FindNextFileA(h, &fd));
+                FindClose(h);
+                return !out.empty();
+            }
+        }
+        #endif
 
         return false;
     } catch (...) {

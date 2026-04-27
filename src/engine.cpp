@@ -1020,6 +1020,14 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         return res;
     }
     
+    // Verifica magic number (supporta formati vecchi)
+    if (std::memcmp(h.magic, "TRC1", 4) != 0 && std::memcmp(h.magic, "TRC2", 4) != 0) {
+        fclose(f);
+        res.error = TarcError::InvalidHeader;
+        res.message = "Not a valid TARC archive.";
+        return res;
+    }
+    
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {
@@ -1240,6 +1248,14 @@ TarcResult list(const std::string& arch_path, size_t offset) {
         return res;
     }
     
+    // Verifica magic number (supporta formati vecchi)
+    if (std::memcmp(h.magic, "TRC1", 4) != 0 && std::memcmp(h.magic, "TRC2", 4) != 0) {
+        fclose(f);
+        res.error = TarcError::InvalidHeader;
+        res.message = "Not a valid TARC archive.";
+        return res;
+    }
+    
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {
@@ -1285,6 +1301,14 @@ TarcResult verify(const std::string& arch_path, size_t offset) {
         fclose(f);
         res.error = TarcError::InvalidHeader;
         res.message = "Invalid header.";
+        return res;
+    }
+    
+    // Verifica magic number (supporta formati vecchi)
+    if (std::memcmp(h.magic, "TRC1", 4) != 0 && std::memcmp(h.magic, "TRC2", 4) != 0) {
+        fclose(f);
+        res.error = TarcError::InvalidHeader;
+        res.message = "Not a valid TARC archive.";
         return res;
     }
     

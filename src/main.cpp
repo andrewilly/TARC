@@ -135,17 +135,15 @@ static Command parse_args(int argc, char* argv[]) {
         } else if (!cmd.archive.empty()) {
             cmd.files.push_back(val);
         } else {
-            // arg non riconosciuto: potrebbe essere archivio o file/directory
-            if (!fs::exists(arg)) {
-                cmd.archive = arg;
-                continue;
-            }
-            if (fs::is_directory(arg)) {
-                cmd.files.push_back(arg);
-            } else if (fs::is_regular_file(arg)) {
-                cmd.files.push_back(arg);
+            // val: potrebbe essere archivio, file o directory
+            if (fs::exists(val) && fs::is_directory(val)) {
+                cmd.files.push_back(val);
+            } else if (fs::exists(val) && fs::is_regular_file(val)) {
+                cmd.files.push_back(val);
+            } else if (!cmd.archive.empty()) {
+                cmd.files.push_back(val);
             } else {
-                cmd.archive = arg;
+                cmd.archive = val;
             }
         }
     }
