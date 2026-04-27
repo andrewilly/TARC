@@ -54,7 +54,7 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN << Color::BOLD
-              << "                       TARC STRIKE v2.00_OpenAi\n"
+              << "                       TARC STRIKE v2.10\n"
               << "                  Advanced Solid Compression Tool\n"
               << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";

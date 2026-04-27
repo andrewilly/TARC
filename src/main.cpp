@@ -155,7 +155,7 @@ static int run_command(const Command& cmd) {
             return 0;
             
         case Command::Version:
-            std::cout << "TARC STRIKE v2.00_OpenAi\n";
+            std::cout << "TARC STRIKE v2.10\n";
             std::cout << "Build: " << __DATE__ << " " << __TIME__ << "\n";
             return 0;
             

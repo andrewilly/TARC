@@ -22,14 +22,35 @@ std::string IO::ensure_ext(const std::string& path) {
 }
 
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
+    if (pattern.empty()) return false;
+    
+    std::string path_to_check = pattern;
+    std::string search_pattern = pattern;
+    
+    size_t last_slash = pattern.find_last_of("\\/");
+    std::string directory = "";
+    if (last_slash != std::string::npos) {
+        directory = pattern.substr(0, last_slash + 1);
+    }
+    
+    if (fs::is_directory(pattern)) {
+        for (auto& p : fs::recursive_directory_iterator(pattern)) {
+            if (p.is_regular_file()) {
+                out.push_back(p.path().string());
+            }
+        }
+        return true;
+    }
+    
+    if (directory.empty()) {
+        directory = ".";
+        search_pattern = pattern;
+    }
+
 #ifdef _WIN32
     WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
+    HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
     if (hFind == INVALID_HANDLE_VALUE) return false;
-
-    std::string directory = "";
-    size_t last_slash = pattern.find_last_of("\\/");
-    if (last_slash != std::string::npos) directory = pattern.substr(0, last_slash + 1);
 
     do {
         std::string foundName(findData.cFileName);
@@ -47,12 +68,9 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     FindClose(hFind);
     return true;
 #else
-    if (fs::exists(pattern)) {
-        if (fs::is_directory(pattern)) {
-            for (auto& p : fs::recursive_directory_iterator(pattern)) 
-                if (p.is_regular_file()) out.push_back(p.path().string());
-        } else {
-            out.push_back(pattern);
+    if (fs::exists(search_pattern)) {
+        if (fs::is_regular_file(search_pattern)) {
+            out.push_back(search_pattern);
         }
     }
     return !out.empty();
