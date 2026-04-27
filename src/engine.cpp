@@ -67,7 +67,6 @@ namespace CodecSelector {
         
         if (!is_compressible(ext)) return Codec::STORE;
         
-        // Testi/code - LZMA ottimo
         if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".hpp" ||
             ext == ".c" || ext == ".py" || ext == ".js" || ext == ".ts" ||
             ext == ".json" || ext == ".xml" || ext == ".html" || ext == ".css" ||
@@ -76,29 +75,24 @@ namespace CodecSelector {
             return Codec::LZMA;
         }
         
-        // Database - ZSTD
         if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde" ||
             ext == ".db" || ext == ".sqlite" || ext == ".sqlite3") {
             return Codec::ZSTD;
         }
         
-        // Immagini - LZMA
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
             ext == ".bmp" || ext == ".ico" || ext == ".webp") {
             return Codec::LZMA;
         }
         
-        // Documenti Office
         if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt") {
             return Codec::LZMA;
         }
         
-        // File piccoli - LZ4
         if (size < 64 * 1024) {
             return Codec::LZ4;
         }
         
-        // Default: LZMA (come 7zip)
         return Codec::LZMA;
     }
 }
@@ -139,8 +133,7 @@ struct ChunkResult {
     std::string error_message;
 };
 
-// Compressione LZMA ottimizzata con LZMA2 e BCJ
-ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, const std::string& file_path = "") {
+ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = Codec::LZMA;
@@ -156,118 +149,35 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
     res.compressed_data.resize(max_out);
     size_t out_pos = 0;
     
-    // Determina se applicare BCJ basandosi sull'estensione
-    std::string ext = fs::path(file_path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    
-    lzma_filter filters[3];
-    int filter_count = 0;
-    
-    // BCJ per eseguibili x86 (.exe, .dll)
-    if (ext == ".exe" || ext == ".dll" || ext == ".sys") {
-        filters[filter_count++] = { LZMA_FILTER_X86, nullptr };
-    }
-    
-    // Filtro LZMA2 come base (uguale a quello usato da 7zip)
-    lzma_options_lzma lzma_options{};
-    lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(std::min(level, 9)));
-    
+    uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
     if (level >= 7) {
-        lzma_options.lc = 3;
-        lzma_options.lp = 0;
-        lzma_options.pb = 2;
-        if (level >= 9) {
-            lzma_options.dict_size = 64 * 1024 * 1024; // 64MB dict per ultra
-        } else {
-            lzma_options.dict_size = 32 * 1024 * 1024; // 32MB dict
-        }
+        preset |= LZMA_PRESET_EXTREME;
     }
     
-    filters[filter_count++] = { LZMA_FILTER_LZMA2, &lzma_options };
-    filters[filter_count++] = { LZMA_VLI_UNKNOWN, nullptr };
+    lzma_ret ret = lzma_easy_buffer_encode(
+        preset,
+        LZMA_CHECK_CRC64,
+        nullptr,
+        reinterpret_cast<const uint8_t*>(raw_data.data()),
+        raw_data.size(),
+        reinterpret_cast<uint8_t*>(res.compressed_data.data()),
+        &out_pos,
+        max_out
+    );
     
-    lzma_stream stream = LZMA_STREAM_INIT;
-    
-    // Inizializza encoder con catena di filtri
-    lzma_ret ret = lzma_stream_encoder(&stream, filters, LZMA_CHECK_CRC64);
-    
-    if (ret != LZMA_OK) {
-        // Fallback: encoder semplice
-        uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
-        if (level >= 7) {
-            preset |= LZMA_PRESET_EXTREME;
-        }
-        
-        ret = lzma_easy_buffer_encode(
-            preset,
-            LZMA_CHECK_CRC64,
-            nullptr,
-            reinterpret_cast<const uint8_t*>(raw_data.data()),
-            raw_data.size(),
-            reinterpret_cast<uint8_t*>(res.compressed_data.data()),
-            &out_pos,
-            max_out
-        );
-        
-        if (ret == LZMA_OK) {
-            res.compressed_data.resize(out_pos);
-            res.success = true;
-        } else {
-            res.compressed_data = raw_data;
-            res.codec = Codec::STORE;
-            res.success = true;
-        }
-        return res;
-    }
-    
-    // Encode con stream
-    std::vector<uint8_t> output;
-    output.reserve(raw_data.size() / 2);
-    
-    stream.next_in = reinterpret_cast<const uint8_t*>(raw_data.data());
-    stream.avail_in = raw_data.size();
-    
-    uint8_t out_buf[65536];
-    
-    while (stream.avail_in > 0) {
-        stream.next_out = out_buf;
-        stream.avail_out = sizeof(out_buf);
-        ret = lzma_code(&stream, LZMA_RUN);
-        size_t produced = sizeof(out_buf) - stream.avail_out;
-        if (produced > 0) {
-            output.insert(output.end(), out_buf, out_buf + produced);
-        }
-        if (ret != LZMA_OK) break;
-    }
-    
-    while (ret == LZMA_OK) {
-        stream.next_out = out_buf;
-        stream.avail_out = sizeof(out_buf);
-        ret = lzma_code(&stream, LZMA_FINISH);
-        size_t produced = sizeof(out_buf) - stream.avail_out;
-        if (produced > 0) {
-            output.insert(output.end(), out_buf, out_buf + produced);
-        }
-    }
-    
-    lzma_end(&stream);
-    
-    if (output.size() < raw_data.size()) {
-        res.compressed_data.assign(output.begin(), output.end());
+    if (ret == LZMA_OK) {
+        res.compressed_data.resize(out_pos);
         res.success = true;
     } else {
         res.compressed_data = raw_data;
         res.codec = Codec::STORE;
         res.success = true;
     }
-    
     return res;
 }
 
-// Decompressione LZMA (gestisce sia stream semplici che con filtri BCJ)
 bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& decompressed) {
-    // Prova prima con buffer_decode (per dati senza filtri BCJ)
-    decompressed.resize(256 * 1024 * 1024); // Max 256MB
+    decompressed.resize(256 * 1024 * 1024);
     size_t src_pos = 0, dst_pos = 0;
     uint64_t limit = UINT64_MAX;
     
@@ -283,64 +193,15 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
         decompressed.resize(dst_pos);
         return true;
     }
-    
-    // Fallback: prova con decodifica stream (gestisce BCJ + LZMA2)
-    // Questo è necessario per i file compressi con -cbest che usano filtri x86
-    decompressed.clear();
-    decompressed.reserve(256 * 1024 * 1024);
-    
-    lzma_stream stream = LZMA_STREAM_INIT;
-    
-    // Prova a decodificare come stream raw (auto-detect filtri)
-    ret = lzma_stream_decoder(&stream, UINT64_MAX, LZMA_TELL_NO_CHECK | LZMA_CONCATENATED);
-    
-    if (ret != LZMA_OK) {
-        return false;
-    }
-    
-    stream.next_in = reinterpret_cast<const uint8_t*>(compressed.data());
-    stream.avail_in = compressed.size();
-    
-    std::vector<uint8_t> out_buf(65536);
-    bool success = false;
-    
-    while (true) {
-        stream.next_out = out_buf.data();
-        stream.avail_out = out_buf.size();
-        
-        ret = lzma_code(&stream, LZMA_RUN);
-        
-        size_t produced = out_buf.size() - stream.avail_out;
-        if (produced > 0) {
-            decompressed.insert(decompressed.end(), out_buf.begin(), out_buf.begin() + produced);
-        }
-        
-        if (ret == LZMA_STREAM_END) {
-            success = true;
-            break;
-        }
-        if (ret != LZMA_OK) {
-            break;
-        }
-    }
-    
-    lzma_end(&stream);
-    
-    if (!success) {
-        decompressed.clear();
-    }
-    
-    return success;
+    return false;
 }
 
-// Worker principale
-ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec, const std::string& file_path = "") {
+ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = chosen_codec;
     res.success = false;
     
-    // Skip piccoli file
     if (raw_data.size() < 4096) {
         res.compressed_data = std::move(raw_data);
         res.codec = Codec::STORE;
@@ -354,8 +215,7 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
     
-    // Usa LZMA2 con filtri BCJ per eseguibili
-    res = compress_lzma_optimal(raw_data, level, file_path);
+    res = compress_lzma_optimal(raw_data, level);
     return res;
 }
 
@@ -365,11 +225,10 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
         return true;
     }
     
-    if (codec == Codec::LZMA) {
+    if (codec == Codec::LZMA || codec == Codec::LZ4 || codec == Codec::BR) {
         return decompress_lzma(compressed, decompressed);
     }
     
-    // Fallback: prova LZMA
     return decompress_lzma(compressed, decompressed);
 }
 
@@ -380,7 +239,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     std::string stub_path = "tarc_sfx_stub.exe";
     if (!fs::exists(stub_path)) {
         res.error = TarcError::FileNotFound;
-        res.message = "Stub SFX (tarc_sfx_stub.exe) not found in current directory.";
+        res.message = "Stub SFX not found.";
         return res;
     }
 
@@ -390,7 +249,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
 
     if (!stub_in || !data_in || !sfx_out) {
         res.error = TarcError::AccessDenied;
-        res.message = "Failed to create SFX archive.";
+        res.message = "Failed to create SFX.";
         return res;
     }
 
@@ -398,7 +257,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     sfx_out << data_in.rdbuf();
     
     res.ok = true;
-    res.message = "SFX archive created successfully.";
+    res.message = "SFX created.";
     return res;
 }
 
@@ -418,28 +277,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         res.message = "No files found.";
         return res;
     }
-
-    // Ordina file per estensione (migliora compressione solid)
-    std::map<std::string, std::vector<std::string>> files_by_ext;
-    for (const auto& f : expanded_files) {
-        std::string ext = fs::path(f).extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        files_by_ext[ext].push_back(f);
-    }
-    
-    // Ricostruisci lista ordinata: estensioni con piu file prima
-    std::vector<std::string> sorted_files;
-    std::vector<std::pair<size_t, std::string>> ext_counts;
-    for (const auto& [ext, files] : files_by_ext) {
-        ext_counts.emplace_back(files.size(), ext);
-    }
-    std::sort(ext_counts.begin(), ext_counts.end(), std::greater<>());
-    for (const auto& [count, ext] : ext_counts) {
-        for (const auto& f : files_by_ext[ext]) {
-            sorted_files.push_back(f);
-        }
-    }
-    expanded_files = sorted_files;
 
     std::vector<FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
@@ -476,7 +313,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         fwrite(&h, sizeof(h), 1, f);
     }
 
-    // Solid block: 1GB per massima compressione solid
     constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
@@ -509,7 +345,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
-            res.message = "Operation cancelled by user.";
+            res.message = "Cancelled.";
             fclose(f);
             return res;
         }
@@ -526,7 +362,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             data.resize(static_cast<size_t>(fsize));
         } catch (const std::bad_alloc&) {
             res.error = TarcError::OutOfMemory;
-            res.message = "Insufficient memory: " + disk_path;
+            res.message = "Out of memory: " + disk_path;
             report_warning(res.message);
             continue;
         }
@@ -568,7 +404,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
                     bytesReadTotal += bytesRead;
                 } else {
-                    report_warning("Read error: " + disk_path + " (WinErr: " + std::to_string(GetLastError()) + ")");
+                    report_warning("Read error: " + disk_path);
                     break;
                 }
             }
@@ -628,8 +464,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     compress_worker, 
                     std::move(solid_buf), 
                     level, 
-                    Codec::LZMA,
-                    std::string("")
+                    Codec::LZMA
                 );
                 worker_active = true;
                 solid_buf.clear();
@@ -646,7 +481,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
     if (worker_active && !write_worker(future_chunk)) {
         res.error = TarcError::CompressionFailed;
-        res.message = "Final chunk compression failed.";
+        res.message = "Final chunk failed.";
         fclose(f);
         return res;
     }
@@ -677,7 +512,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     res.ok = true;
     res.bytes_in = g_stats.bytes_read;
     res.bytes_out = res.bytes_out;
-    res.message = "Compression completed successfully.";
+    res.message = "Compression completed.";
     return res;
 }
 
@@ -728,7 +563,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     if (fread(&h, sizeof(h), 1, f) != 1) {
         fclose(f);
         res.error = TarcError::InvalidHeader;
-        res.message = "Invalid or corrupted header.";
+        res.message = "Invalid header.";
         return res;
     }
     
@@ -750,7 +585,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     for (size_t i = 0; i < toc.size(); ++i) {
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
-            res.message = "Operation cancelled.";
+            res.message = "Cancelled.";
             fclose(f);
             return res;
         }
@@ -808,7 +643,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
                 fclose(f);
                 res.error = TarcError::CorruptedArchive;
-                res.message = "Error reading compressed data.";
+                res.message = "Error reading data.";
                 return res;
             }
             
@@ -863,7 +698,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     
     fclose(f);
     res.ok = true;
-    res.message = test_only ? "Test completed successfully." : "Extraction completed successfully.";
+    res.message = test_only ? "Test completed." : "Extraction completed.";
     return res;
 }
 
@@ -918,7 +753,7 @@ TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
     TarcResult res;
     res.ok = false;
     res.error = TarcError::Unknown;
-    res.message = "Remove operation not supported in Solid mode without full rewrite.";
+    res.message = "Remove not supported.";
     return res;
 }
 
