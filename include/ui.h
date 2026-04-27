@@ -65,7 +65,8 @@ namespace UI {
     void print_extract(const std::string& name, uint64_t size, bool test, bool ok);
     void print_delete(const std::string& name);
     void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec);
-    void print_summary(const TarcResult& result, const std::string& operation);
+    void print_summary(const TarcResult& result, const std::string& operation, 
+                        std::chrono::milliseconds elapsed = std::chrono::milliseconds(0));
     
     void print_spinner(size_t step);
     void print_table_row(const std::vector<std::string>& cols, const std::vector<size_t>& widths);

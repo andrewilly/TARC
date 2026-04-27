@@ -94,9 +94,9 @@ void show_help() {
 }
 
 void show_license() {
-    std::cout << Color::CYAN << "═══════════════════════════════════════════════════════════════════\n";
+    std::cout << Color::CYAN << "═════════════════════════════════════════════════════════════════\n";
     std::cout << "                     TARC LICENSE                        \n";
-    std::cout << "═══════════════════════════════════════════════════════════════════" << Color::RESET << "\n\n";
+    std::cout << "═════════════════════════════════════════════════════════════════" << Color::RESET << "\n\n";
     std::cout << "TARC STRIKE v2.00_OpenAi\n";
     std::cout << "Copyright (C) 2026 André Willy Rizzo\n\n";
     std::cout << "This software is provided AS IS, without warranty of any kind.\n";
@@ -134,69 +134,40 @@ std::string compress_ratio(uint64_t orig, uint64_t comp) {
 }
 
 std::string format_duration(const std::chrono::milliseconds& ms) {
-    auto secs = std::chrono::duration_cast<std::chrono::seconds>(ms);
-    auto mins = std::chrono::duration_cast<std::chrono::minutes>(secs);
-    
-    char buf[32];
-    if (mins.count() > 0) {
-        snprintf(buf, sizeof(buf), "%02ldm %02lds", static_cast<long>(mins.count() % 60), static_cast<long>(secs.count() % 60));
-    } else if (secs.count() > 0) {
-        snprintf(buf, sizeof(buf), "%lds", static_cast<long>(secs.count()));
-    } else {
-        snprintf(buf, sizeof(buf), "%lldms", static_cast<long long>(ms.count()));
+    auto sec = std::chrono::duration_cast<std::chrono::seconds>(ms).count();
+    if (sec >= 60) {
+        auto min = sec / 60;
+        sec %= 60;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%lum %lus", static_cast<unsigned long>(min), static_cast<unsigned long>(sec));
+        return std::string(buf);
     }
-    return std::string(buf);
+    return std::to_string(ms.count()) + "ms";
 }
 
 void print_info(const std::string& msg) {
-    std::cout << Color::CYAN << "ℹ" << Color::RESET << "  " << msg << "\n";
+    std::cout << Color::CYAN << "[i] " << Color::RESET << msg << "\n";
 }
 
 void print_warning(const std::string& msg) {
-    std::cout << Color::YELLOW << "⚠" << Color::RESET << "  " << msg << "\n";
+    std::cout << Color::YELLOW << "⚠ " << Color::RESET << msg << "\n";
 }
 
 void print_error(const std::string& msg) {
-    std::cerr << Color::RED << "✖" << Color::RESET << "  ERROR: " << msg << "\n";
+    std::cout << Color::RED << "✖ " << Color::RESET << msg << "\n";
 }
 
 void print_success(const std::string& msg) {
-    std::cout << Color::GREEN << "✔" << Color::RESET << "  " << msg << "\n";
+    std::cout << Color::GREEN << "✔ " << Color::RESET << msg << "\n";
 }
 
 void print_progress(size_t current, size_t total, const std::string& current_file) {
-    if (total == 0) return;
-    
-    float percent = static_cast<float>(current) / total * 100.0f;
-    int width = 25;
-    int pos = static_cast<int>(width * current / total);
-    
-    std::string short_name = current_file;
-    if (short_name.length() > 35) {
-        short_name = "..." + short_name.substr(short_name.length() - 32);
-    }
-    
-    std::lock_guard<std::mutex> lock(cout_mutex);
-    std::cout << "\r" << Color::CYAN << " [" << Color::BOLD;
-    for (int i = 0; i < width; ++i) {
-        if (i < pos) std::cout << "=";
-        else if (i == pos) std::cout << ">";
-        else std::cout << " ";
-    }
-    std::cout << Color::RESET << Color::CYAN << "] " 
-              << std::fixed << std::setprecision(1) << percent << "% "
-              << Color::DIM << short_name;
-    
-    // Clear remaining characters from previous longer names
-    int padding = 40 - static_cast<int>(short_name.length());
-    if (padding > 0) {
-        std::cout << std::string(padding, ' ');
-    }
-    std::cout << std::flush;
+    static ProgressBar bar(total, "Compressing");
+    bar.update(current, current_file.substr(current_file.find_last_of("/\\") + 1));
 }
 
 void print_progress_end() {
-    std::cout << "\n" << Color::RESET;
+    // Handled by ProgressBar destructor
 }
 
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
@@ -206,7 +177,7 @@ void print_add(const std::string& name, uint64_t size, Codec codec, float ratio)
               << Color::YELLOW << std::setw(5) << codec_name(codec) << Color::RESET << "] "
               << std::left << std::setw(40) << name.substr(0, 40) << " "
               << std::right << std::setw(10) << human_size(size) << "  "
-              << Color::DIM << (is_dedup ? "→ DEDUP" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio)))) 
+              << Color::DIM << (is_dedup ? "→ DEDUP" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio)))
               << Color::RESET << "\n";
 }
 
@@ -235,7 +206,8 @@ void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Cod
               << Color::RESET << "\n";
 }
 
-void print_summary(const TarcResult& result, const std::string& op) {
+void print_summary(const TarcResult& result, const std::string& op, 
+                   std::chrono::milliseconds elapsed) {
     std::cout << "\n";
     
     if (!result.ok) {
@@ -246,20 +218,17 @@ void print_summary(const TarcResult& result, const std::string& op) {
         return;
     }
     
-    // Ottieni statistiche per mostrare velocità
-    auto stats = Engine::get_stats();
-    
     if (result.bytes_in > 0 && result.bytes_out > 0) {
         std::cout << Color::GREEN << "✔ " << op << " completed successfully." << Color::RESET << "\n";
         std::cout << "  " << human_size(result.bytes_in) << " → " << human_size(result.bytes_out) << "  "
                   << Color::DIM << "(" << compress_ratio(result.bytes_in, result.bytes_out) << ")" << Color::RESET << "\n";
         
-        // Mostra velocità se abbiamo statistiche
-        if (stats.elapsed.count() > 0) {
-            double seconds = stats.elapsed.count() / 1000.0;
-            double mbps_in = (result.bytes_in / (1024.0 * 1024.0)) / seconds;
+        // Mostra velocità se abbiamo durata
+        if (elapsed.count() > 0) {
+            double seconds = elapsed.count() / 1000.0;
+            double mbps = (result.bytes_in / (1024.0 * 1024.0)) / seconds;
             std::cout << Color::CYAN << "  Speed: " << Color::BRIGHT_CYAN << std::fixed << std::setprecision(1) 
-                      << mbps_in << Color::CYAN << " MB/s" << Color::RESET << "\n";
+                      << mbps << Color::CYAN << " MB/s" << Color::RESET << "\n";
         }
         
         for (const auto& warn : result.warnings) {
@@ -378,4 +347,4 @@ void UI::Spinner::finish(bool success, const std::string& message) {
     std::cout << "\n";
 }
 
-}
+} // namespace UI

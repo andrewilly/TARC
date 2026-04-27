@@ -199,9 +199,14 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
+            auto start = std::chrono::steady_clock::now();
             auto res = Engine::compress(arch, cmd.files, cmd.append, cmd.level);
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start
+            );
+            
             UI::print_progress_end();
-            UI::print_summary(res, cmd.append ? "Add" : "Create");
+            UI::print_summary(res, cmd.append ? "Add" : "Create", elapsed);
             
             if (res.ok && cmd.sfx) {
                 std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
@@ -216,7 +221,7 @@ static int run_command(const Command& cmd) {
             result = res.ok ? 0 : 1;
             break;
         }
-            
+        
         case Command::Extract: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
@@ -228,13 +233,18 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
+            auto start = std::chrono::steady_clock::now();
             auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat);
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start
+            );
+            
             UI::print_progress_end();
-            UI::print_summary(res, "Extract");
+            UI::print_summary(res, "Extract", elapsed);
             result = res.ok ? 0 : 1;
             break;
         }
-            
+        
         case Command::Test: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
@@ -246,9 +256,14 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
+            auto start = std::chrono::steady_clock::now();
             auto res = Engine::extract(arch, {}, true, 0, false);
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start
+            );
+            
             UI::print_progress_end();
-            UI::print_summary(res, "Test");
+            UI::print_summary(res, "Test", elapsed);
             
             if (!res.ok || res.bytes_out == 0) {
                 UI::print_error("Archive integrity check failed.");
