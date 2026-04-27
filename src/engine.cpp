@@ -96,6 +96,8 @@ namespace {
     std::unique_ptr<ThreadPool> g_io_pool;
 }
 
+namespace Engine {
+
 void Engine::set_progress_callback(ProgressCallback* callback) {
     g_progress_callback = callback;
 }
@@ -250,15 +252,12 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
         lzma_options.lc = 4;
         lzma_options.lp = 0;
         lzma_options.pb = 2;
-        lzma_options.fast_bytes = (level >= 9) ? 273 : 64;
         lzma_options.dict_size = (level >= 9) ? 64 * 1024 * 1024 : 32 * 1024 * 1024;
         lzma_options.mode = LZMA_MODE_NORMAL;
-        lzma_options mf = {};
         lzma_options.mf = LZMA_MF_BT4;
     } else if (level >= 5) {
         lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(level));
         lzma_options.dict_size = 8 * 1024 * 1024;
-        lzma_options.fast_bytes = 32;
     } else {
         lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(level));
         lzma_options.dict_size = 2 * 1024 * 1024;
@@ -668,7 +667,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             fwrite(&h, sizeof(h), 1, f);
         } else {
             fseek(f, 0, SEEK_END);
-            ChunkHeader end_mark = {0, 0, 0, 0};
+            ChunkHeader end_mark = {0, 0, 0, 0, 0};
             fwrite(&end_mark, sizeof(end_mark), 1, f);
             uint32_t old_chunk_count = 0;
             for (size_t i = 0; i < final_toc.size(); ++i) {
@@ -791,7 +790,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
         if (!fs::exists(disk_path)) continue;
         
-        uintmax_t fsize;
+        uintmax_t fsize = 0;
+        bool read_ok = false;
+        uint64_t h64 = 0;
         
         if (!data.empty()) {
             fsize = data.size();
@@ -804,6 +805,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             }
             read_ok = true;
         } else {
+            disk_path = expanded_files[i];
             fsize = fs::file_size(disk_path);
             try {
                 data.resize(static_cast<size_t>(fsize));

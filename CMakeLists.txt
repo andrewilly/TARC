@@ -91,11 +91,15 @@ target_include_directories(tarc PRIVATE
 
 if(MSVC)
     set(ZSTD_FOUND FALSE)
-    message(WARNING "ZSTD support is experimental on MSVC. Using LZMA as primary codec.")
+    message(WARNING "ZSTD/LZ4 support is experimental on MSVC. Using LZMA as primary codec.")
 else()
     if(TARGET libzstd_static)
         set(ZSTD_FOUND TRUE)
     endif()
+endif()
+
+if(ZSTD_FOUND)
+    target_compile_definitions(tarc PRIVATE HAVE_ZSTD=1)
 endif()
 
 target_link_libraries(tarc PRIVATE
