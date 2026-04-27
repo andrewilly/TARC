@@ -971,6 +971,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     res.message = "Compression completed successfully.";
     return res;
 }
+}
 
 static bool match_pattern(const std::string& full_path, const std::string& pattern) {
     if (pattern.empty()) return true;
