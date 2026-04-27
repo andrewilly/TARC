@@ -264,8 +264,9 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
     return res;
 }
 
-// Decompressione LZMA
+// Decompressione LZMA (gestisce sia stream semplici che con filtri BCJ)
 bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& decompressed) {
+    // Prova prima con buffer_decode (per dati senza filtri BCJ)
     decompressed.resize(256 * 1024 * 1024); // Max 256MB
     size_t src_pos = 0, dst_pos = 0;
     uint64_t limit = UINT64_MAX;
@@ -282,7 +283,54 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
         decompressed.resize(dst_pos);
         return true;
     }
-    return false;
+    
+    // Fallback: prova con decodifica stream (gestisce BCJ + LZMA2)
+    // Questo è necessario per i file compressi con -cbest che usano filtri x86
+    decompressed.clear();
+    decompressed.reserve(256 * 1024 * 1024);
+    
+    lzma_stream stream = LZMA_STREAM_INIT;
+    
+    // Prova a decodificare come stream raw (auto-detect filtri)
+    ret = lzma_stream_decoder(&stream, UINT64_MAX, LZMA_TELL_NO_CHECK | LZMA_CONCATENATED);
+    
+    if (ret != LZMA_OK) {
+        return false;
+    }
+    
+    stream.next_in = reinterpret_cast<const uint8_t*>(compressed.data());
+    stream.avail_in = compressed.size();
+    
+    std::vector<uint8_t> out_buf(65536);
+    bool success = false;
+    
+    while (true) {
+        stream.next_out = out_buf.data();
+        stream.avail_out = out_buf.size();
+        
+        ret = lzma_code(&stream, LZMA_RUN);
+        
+        size_t produced = out_buf.size() - stream.avail_out;
+        if (produced > 0) {
+            decompressed.insert(decompressed.end(), out_buf.begin(), out_buf.begin() + produced);
+        }
+        
+        if (ret == LZMA_STREAM_END) {
+            success = true;
+            break;
+        }
+        if (ret != LZMA_OK) {
+            break;
+        }
+    }
+    
+    lzma_end(&stream);
+    
+    if (!success) {
+        decompressed.clear();
+    }
+    
+    return success;
 }
 
 // Worker principale
