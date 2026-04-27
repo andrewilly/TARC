@@ -3,7 +3,6 @@
 #include "io.h"
 #include "engine.h"
 #include "types.h"
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -13,6 +12,30 @@
 #include <filesystem>
 
 namespace fs = std::filesystem;
+
+struct Command {
+    enum Type {
+        None,
+        Create,
+        Extract,
+        List,
+        Test,
+        Delete,
+        Verify,
+        Help,
+        License,
+        Version
+    } type = None;
+    
+    int level = 3;
+    bool sfx = false;
+    bool flat = false;
+    bool force = false;
+    bool test_only = false;
+    std::string archive;
+    std::vector<std::string> files;
+    std::vector<std::string> filters;
+};
 
 class ProgressReporter : public ProgressCallback {
 public:
