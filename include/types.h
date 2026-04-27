@@ -7,7 +7,7 @@
 #include <functional>
 
 #define TARC_MAGIC     "TRC2"
-#define TARC_VERSION   210
+#define TARC_VERSION   200
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
 
@@ -22,8 +22,7 @@ enum class Codec : uint8_t {
     LZMA = 1,
     STORE = 2,
     LZ4  = 3,
-    BR   = 4,
-    AES  = 5
+    BR   = 4
 };
 
 enum class TarcError : uint32_t {
@@ -41,9 +40,6 @@ enum class TarcError : uint32_t {
     LicenseMissing,
     DiskFull,
     Cancelled,
-    WrongPassword,
-    EncryptionFailed,
-    DecryptionFailed,
     Unknown
 };
 
@@ -74,18 +70,8 @@ inline const char* error_message(TarcError e) {
         case TarcError::LicenseMissing: return "License not found";
         case TarcError::DiskFull:     return "Disk full";
         case TarcError::Cancelled:    return "Operation cancelled";
-        case TarcError::WrongPassword: return "Wrong password";
-        case TarcError::EncryptionFailed: return "Encryption failed";
-        case TarcError::DecryptionFailed: return "Decryption failed";
         default:                     return "Unknown error";
     }
-}
-
-namespace Crypto {
-    uint64_t derive_key(const std::string& password, uint64_t salt);
-    
-    std::vector<char> encrypt_chunk(const std::vector<char>& data, const std::string& password);
-    bool decrypt_chunk(const std::vector<char>& encrypted, std::vector<char>& decrypted, const std::string& password);
 }
 
 #pragma pack(push, 1)
@@ -109,12 +95,24 @@ struct Entry {
 };
 
 struct ChunkHeader {
-    uint32_t codec;      
+    uint32_t codec;      // Aggiunto per multi-codec
     uint32_t raw_size;   
     uint32_t comp_size;  
-    uint64_t checksum;   // XXH64 of raw data
-    uint64_t reserved;   // For future use
+    uint64_t checksum;   // Per corruzione dati
+    uint32_t threads_used; // Numero thread usati per compressione
+    uint8_t  reserved[4]; // Padding per futuro
 };
+
+// Configurazione performance
+struct PerfConfig {
+    size_t io_buffer_size = 4 * 1024 * 1024;  // 4MB I/O buffer
+    size_t chunk_size = 256 * 1024 * 1024;     // 256MB chunk default
+    uint32_t compression_threads = 0;           // 0 = auto-detect
+    bool use_lzma_mt = true;                   // LZMA multi-threaded
+    bool use_simd_hash = true;                 // XXH64 SIMD
+};
+
+extern PerfConfig g_perf_config;
 #pragma pack(pop)
 
 struct FileEntry {
@@ -141,9 +139,7 @@ struct CompressOptions {
     bool solid_mode = true;
     bool sfx_requested = false;
     bool verify = true;
-    size_t chunk_size = 64 * 1024 * 1024;
-    std::string password;
-    bool encrypt = false;
+    size_t chunk_size = 256 * 1024 * 1024;
 };
 
 struct ExtractOptions {
@@ -152,7 +148,6 @@ struct ExtractOptions {
     bool verify = true;
     bool overwrite = false;
     std::string output_dir;
-    std::string password;
 };
 
 template<typename T>
@@ -165,3 +160,32 @@ struct Result {
     const T& operator*() const { return *value; }
     explicit operator bool() const { return value.has_value(); }
 };
+
+// Memory pool per ridurre allocazioni
+class BufferPool {
+    std::vector<std::vector<char>> buffers;
+    std::mutex pool_mutex;
+    size_t buffer_size;
+    
+public:
+    explicit BufferPool(size_t size = 8 * 1024 * 1024) : buffer_size(size) {}
+    
+    std::vector<char> acquire() {
+        std::lock_guard<std::mutex> lock(pool_mutex);
+        if (!buffers.empty()) {
+            auto buf = std::move(buffers.back());
+            buffers.pop_back();
+            return buf;
+        }
+        return std::vector<char>(buffer_size);
+    }
+    
+    void release(std::vector<char>&& buf) {
+        std::lock_guard<std::mutex> lock(pool_mutex);
+        if (buf.size() == buffer_size && buffers.size() < 4) {
+            buffers.push_back(std::move(buf));
+        }
+    }
+};
+
+extern BufferPool g_buffer_pool;;

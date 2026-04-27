@@ -54,7 +54,7 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN << Color::BOLD
-              << "                       TARC STRIKE v2.10\n"
+              << "                       TARC STRIKE v2.00_OpenAi\n"
               << "                  Advanced Solid Compression Tool\n"
               << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";
@@ -65,10 +65,10 @@ void show_help() {
     
     std::cout << Color::BOLD << "Commands:" << Color::RESET << "\n";
     std::cout << "  " << Color::GREEN << "-c" << Color::RESET << " [level]  Create archive (level 1-9, default 3)\n";
+    std::cout << "  " << Color::GREEN << "-a" << Color::RESET << " [level]  Add files to existing archive\n";
     std::cout << "  " << Color::YELLOW << "-x" << Color::RESET << " [filt]  Extract files (supports wildcards)\n";
     std::cout << "  " << Color::CYAN << "-l" << Color::RESET << "          List archive contents\n";
     std::cout << "  " << Color::MAGENTA << "-t" << Color::RESET << "          Test archive integrity\n";
-    std::cout << "  " << Color::MAGENTA << "-V" << Color::RESET << "          Verify archive (deep checksum check)\n";
     std::cout << "  " << Color::RED << "-d" << Color::RESET << " [files]  Delete files from archive\n";
     
     std::cout << "\n" << Color::BOLD << "Compression Levels:" << Color::RESET << "\n";
@@ -82,12 +82,10 @@ void show_help() {
     std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "    Overwrite existing files\n";
     
     std::cout << "\n" << Color::BOLD << "Features:" << Color::RESET << "\n";
-    std::cout << "  • Solid blocks (64MB) for maximum ratio\n";
+    std::cout << "  • Solid blocks (256MB) for maximum ratio\n";
     std::cout << "  • Deduplication via XXH64 checksums\n";
     std::cout << "  • Smart codec selection (LZMA/ZSTD/STORE)\n";
     std::cout << "  • Windows native I/O for best performance\n";
-    std::cout << "  • XXH64 chunk checksums for data integrity\n";
-    std::cout << "  • File-level hash verification\n";
     
     std::cout << "\n" << Color::DIM << "Type 'tarc --license' for license information.\n" << Color::RESET;
 }

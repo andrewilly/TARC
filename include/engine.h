@@ -46,8 +46,6 @@ namespace Engine {
     
     TarcResult list(const std::string& arch_path, size_t offset = 0);
     
-    TarcResult verify(const std::string& arch_path, size_t offset = 0);
-    
     TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
     
     TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_path);
