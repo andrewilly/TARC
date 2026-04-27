@@ -10,10 +10,14 @@
 #include <random>
 #include <algorithm>
 
+namespace {
+
 static std::string normalize_path_str(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     return path;
 }
+
+} // namespace anonimo
 
 #ifdef _WIN32
     #include <windows.h>
@@ -118,11 +122,6 @@ std::string IO::sanitize_path(const std::string& path) {
     #endif
     
     return result;
-}
-
-static std::string normalize_path_str(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
-    return path;
 }
 
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
