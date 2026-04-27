@@ -24,57 +24,72 @@ std::string IO::ensure_ext(const std::string& path) {
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
     if (pattern.empty()) return false;
     
-    std::string path_to_check = pattern;
-    std::string search_pattern = pattern;
-    
-    size_t last_slash = pattern.find_last_of("\\/");
-    std::string directory = "";
-    if (last_slash != std::string::npos) {
-        directory = pattern.substr(0, last_slash + 1);
-    }
-    
-    if (fs::is_directory(pattern)) {
-        for (auto& p : fs::recursive_directory_iterator(pattern)) {
-            if (p.is_regular_file()) {
-                out.push_back(p.path().string());
+    try {
+        if (fs::exists(pattern) && fs::is_directory(pattern)) {
+            for (auto& p : fs::recursive_directory_iterator(pattern)) {
+                if (p.is_regular_file()) {
+                    out.push_back(p.path().string());
+                }
             }
+            return !out.empty();
         }
-        return true;
-    }
-    
-    if (directory.empty()) {
-        directory = ".";
-        search_pattern = pattern;
-    }
-
-#ifdef _WIN32
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
-    if (hFind == INVALID_HANDLE_VALUE) return false;
-
-    do {
-        std::string foundName(findData.cFileName);
-        if (foundName != "." && foundName != "..") {
-            std::string fullPath = directory + foundName;
-            if (fs::exists(fullPath)) {
-                if (fs::is_regular_file(fullPath)) out.push_back(fullPath);
-                else if (fs::is_directory(fullPath)) {
-                    for (auto& p : fs::recursive_directory_iterator(fullPath))
-                        if (p.is_regular_file()) out.push_back(p.path().string());
+        
+        std::string path_to_expand = pattern;
+        if (!fs::exists(pattern)) {
+            size_t last_slash = pattern.find_last_of("\\/");
+            if (last_slash != std::string::npos) {
+                std::string dir = pattern.substr(0, last_slash + 1);
+                std::string file = pattern.substr(last_slash + 1);
+                if (fs::exists(dir)) {
+                    path_to_expand = pattern;
                 }
             }
         }
-    } while (FindNextFileA(hFind, &findData));
-    FindClose(hFind);
-    return true;
-#else
-    if (fs::exists(search_pattern)) {
-        if (fs::is_regular_file(search_pattern)) {
-            out.push_back(search_pattern);
+        
+        if (fs::exists(path_to_expand) && fs::is_regular_file(path_to_expand)) {
+            out.push_back(path_to_expand);
+            return true;
         }
-    }
-    return !out.empty();
+        
+#ifdef _WIN32
+        std::string directory = ".";
+        std::string file_pattern = pattern;
+        
+        size_t last_slash = pattern.find_last_of("\\/");
+        if (last_slash != std::string::npos) {
+            directory = pattern.substr(0, last_slash + 1);
+            file_pattern = pattern.substr(last_slash + 1);
+        }
+        
+        WIN32_FIND_DATAA findData;
+        HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            hFind = FindFirstFileA((directory + "*").c_str(), &findData);
+            if (hFind == INVALID_HANDLE_VALUE) return false;
+            file_pattern = "*";
+        }
+        
+        do {
+            std::string foundName(findData.cFileName);
+            if (foundName != "." && foundName != "..") {
+                std::string fullPath = directory + foundName;
+                if (fs::exists(fullPath) && fs::is_regular_file(fullPath)) {
+                    out.push_back(fullPath);
+                }
+            }
+        } while (FindNextFileA(hFind, &findData));
+        FindClose(hFind);
+        return !out.empty();
+#else
+        if (fs::exists(pattern) && fs::is_regular_file(pattern)) {
+            out.push_back(pattern);
+            return true;
+        }
+        return false;
 #endif
+    } catch (...) {
+        return false;
+    }
 }
 
 bool IO::read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
