@@ -95,24 +95,21 @@ struct Entry {
 };
 
 struct ChunkHeader {
-    uint32_t codec;      // Aggiunto per multi-codec
-    uint32_t raw_size;   
-    uint32_t comp_size;  
-    uint64_t checksum;   // Per corruzione dati
-    uint32_t threads_used; // Numero thread usati per compressione
-    uint8_t  reserved[4]; // Padding per futuro
+    uint32_t codec;       // Codec usato per questo chunk
+    uint32_t raw_size;    // Dimensione dati non compressi
+    uint32_t comp_size;   // Dimensione dati compressi
+    uint64_t checksum;    // Checksum integrità dati
+    uint32_t threads_used; // Numero thread usati (0=single-thread, >0=multi-thread)
 };
 
-// Configurazione performance
+// Configurazione performance per battere 7zip
 struct PerfConfig {
-    size_t io_buffer_size = 4 * 1024 * 1024;  // 4MB I/O buffer
-    size_t chunk_size = 256 * 1024 * 1024;     // 256MB chunk default
-    uint32_t compression_threads = 0;           // 0 = auto-detect
-    bool use_lzma_mt = true;                   // LZMA multi-threaded
-    bool use_simd_hash = true;                 // XXH64 SIMD
+    size_t io_buffer_size = 4 * 1024 * 1024;  // 4MB I/O buffer (default 4KB -> 4MB)
+    size_t chunk_size = 256 * 1024 * 1024;    // 256MB chunk per compressione parallela
+    uint32_t compression_threads = 0;            // 0 = auto-detect (usa tutti i core)
+    bool use_lzma_mt = true;                    // Abilita LZMA multi-threaded (come 7zip)
+    bool use_large_pages = false;                // Usa Large Pages per dictionary LZMA (futuro)
 };
-
-extern PerfConfig g_perf_config;
 #pragma pack(pop)
 
 struct FileEntry {
@@ -160,32 +157,3 @@ struct Result {
     const T& operator*() const { return *value; }
     explicit operator bool() const { return value.has_value(); }
 };
-
-// Memory pool per ridurre allocazioni
-class BufferPool {
-    std::vector<std::vector<char>> buffers;
-    std::mutex pool_mutex;
-    size_t buffer_size;
-    
-public:
-    explicit BufferPool(size_t size = 8 * 1024 * 1024) : buffer_size(size) {}
-    
-    std::vector<char> acquire() {
-        std::lock_guard<std::mutex> lock(pool_mutex);
-        if (!buffers.empty()) {
-            auto buf = std::move(buffers.back());
-            buffers.pop_back();
-            return buf;
-        }
-        return std::vector<char>(buffer_size);
-    }
-    
-    void release(std::vector<char>&& buf) {
-        std::lock_guard<std::mutex> lock(pool_mutex);
-        if (buf.size() == buffer_size && buffers.size() < 4) {
-            buffers.push_back(std::move(buf));
-        }
-    }
-};
-
-extern BufferPool g_buffer_pool;;

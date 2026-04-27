@@ -14,8 +14,6 @@
 #include <set>
 #include <atomic>
 #include <thread>
-#include <mutex>
-#include <queue>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -32,16 +30,24 @@ namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
+    
+    // NUOVO: Configurazione performance per battere 7zip
+    // Posizionato qui per essere accessibile dalle funzioni di compressione
+    struct PerfConfig {
+        size_t io_buffer_size = 4 * 1024 * 1024;  // 4MB I/O buffer (default era 4KB)
+        size_t chunk_size = 256 * 1024 * 1024;    // 256MB chunk per compressione parallela
+        uint32_t compression_threads = 0;           // 0 = auto-detect (usa tutti i core)
+        bool use_lzma_mt = true;                   // Abilita LZMA multi-threaded (come 7zip)
+    };
     PerfConfig g_perf_config;
-    BufferPool g_buffer_pool(4 * 1024 * 1024); // 4MB buffers
-}
-
-// Inizializza configurazione performance
-void init_perf_config() {
-    if (g_perf_config.compression_threads == 0) {
-        g_perf_config.compression_threads = std::thread::hardware_concurrency();
+    
+    // Inizializza configurazione: auto-rileva numero core CPU
+    void init_perf_config() {
         if (g_perf_config.compression_threads == 0) {
-            g_perf_config.compression_threads = 4;
+            g_perf_config.compression_threads = std::thread::hardware_concurrency();
+            if (g_perf_config.compression_threads == 0) {
+                g_perf_config.compression_threads = 4; // Fallback sicuro
+            }
         }
     }
 }
@@ -153,7 +159,7 @@ struct ChunkResult {
     std::string error_message;
 };
 
-// Compressione LZMA multi-threaded con LZMA2, BCJ e dictionary size ottimizzato
+// Compressione LZMA ottimizzata con LZMA2 e BCJ
 ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, const std::string& file_path = "") {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
@@ -166,35 +172,25 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
         return res;
     }
     
-    // Prova compressione multi-threaded se abilitata e dati sufficienti grandi
-    if (g_perf_config.use_lzma_mt && raw_data.size() > 1024 * 1024) {
-        ChunkResult mt_result = compress_lzma_mt(raw_data, level, file_path);
-        if (mt_result.success && mt_result.compressed_data.size() < raw_data.size()) {
-            return mt_result;
-        }
+    size_t max_out = lzma_stream_buffer_bound(raw_data.size());
+    res.compressed_data.resize(max_out);
+    size_t out_pos = 0;
+    
+    // Determina se applicare BCJ basandosi sull'estensione
+    std::string ext = fs::path(file_path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    
+    lzma_filter filters[3];
+    int filter_count = 0;
+    
+    // BCJ per eseguibili x86 (.exe, .dll)
+    if (ext == ".exe" || ext == ".dll" || ext == ".sys") {
+        filters[filter_count++] = { LZMA_FILTER_X86, nullptr };
     }
     
-    // Fallback a single-threaded ottimizzato
-    return compress_lzma_single(raw_data, level, file_path);
-}
-
-// Compressione LZMA multi-threaded (simile a 7zip con LZMA2 MT)
-ChunkResult compress_lzma_mt(const std::vector<char>& raw_data, int level, const std::string& file_path) {
-    ChunkResult res;
-    res.raw_size = static_cast<uint32_t>(raw_data.size());
-    res.codec = Codec::LZMA;
-    res.success = false;
-    
-    lzma_mt mt_options = {};
-    mt_options.flags = 0;
-    mt_options.threads = g_perf_config.compression_threads;
-    mt_options.timeout = 0;
-    mt_options.preset = static_cast<uint32_t>(std::min(level, 9));
-    mt_options.filters = nullptr; // Usa preset
-    
-    // Configura dictionary size basato sul livello (come 7zip)
+    // Filtro LZMA2 come base (uguale a quello usato da 7zip)
     lzma_options_lzma lzma_options{};
-    lzma_lzma_preset(&lzma_options, mt_options.preset);
+    lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(std::min(level, 9)));
     
     if (level >= 7) {
         lzma_options.lc = 3;
@@ -207,104 +203,77 @@ ChunkResult compress_lzma_mt(const std::vector<char>& raw_data, int level, const
         }
     }
     
-    // Applica filtro BCJ per eseguibili
-    std::string ext = fs::path(file_path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    
-    lzma_filter filters[3];
-    int filter_count = 0;
-    
-    if (ext == ".exe" || ext == ".dll" || ext == ".sys") {
-        filters[filter_count++] = { LZMA_FILTER_X86, nullptr };
-    }
     filters[filter_count++] = { LZMA_FILTER_LZMA2, &lzma_options };
     filters[filter_count++] = { LZMA_VLI_UNKNOWN, nullptr };
     
-    mt_options.filters = filters;
+    lzma_stream stream = LZMA_STREAM_INIT;
     
-    size_t max_out = lzma_stream_buffer_bound(raw_data.size());
-    res.compressed_data.resize(max_out);
-    size_t out_pos = 0;
+    // Inizializza encoder con catena di filtri
+    lzma_ret ret = lzma_stream_encoder(&stream, filters, LZMA_CHECK_CRC64);
     
-    lzma_ret ret = lzma_stream_buffer_encode(
-        filters,
-        LZMA_CHECK_CRC64,
-        nullptr,
-        reinterpret_cast<const uint8_t*>(raw_data.data()),
-        raw_data.size(),
-        reinterpret_cast<uint8_t*>(res.compressed_data.data()),
-        &out_pos,
-        max_out
-    );
-    
-    if (ret == LZMA_OK && out_pos < raw_data.size()) {
-        res.compressed_data.resize(out_pos);
-        res.success = true;
-    } else {
-        res.compressed_data = raw_data;
-        res.codec = Codec::STORE;
-        res.success = true;
-    }
-    
-    return res;
-}
-
-// Compressione LZMA single-threaded ottimizzata
-ChunkResult compress_lzma_single(const std::vector<char>& raw_data, int level, const std::string& file_path) {
-    ChunkResult res;
-    res.raw_size = static_cast<uint32_t>(raw_data.size());
-    res.codec = Codec::LZMA;
-    res.success = false;
-    
-    size_t max_out = lzma_stream_buffer_bound(raw_data.size());
-    res.compressed_data.resize(max_out);
-    size_t out_pos = 0;
-    
-    std::string ext = fs::path(file_path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    
-    lzma_filter filters[3];
-    int filter_count = 0;
-    
-    if (ext == ".exe" || ext == ".dll" || ext == ".sys") {
-        filters[filter_count++] = { LZMA_FILTER_X86, nullptr };
-    }
-    
-    lzma_options_lzma lzma_options{};
-    lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(std::min(level, 9)));
-    
-    if (level >= 7) {
-        lzma_options.lc = 3;
-        lzma_options.lp = 0;
-        lzma_options.pb = 2;
-        if (level >= 9) {
-            lzma_options.dict_size = 64 * 1024 * 1024;
+    if (ret != LZMA_OK) {
+        // Fallback: encoder semplice
+        uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
+        if (level >= 7) {
+            preset |= LZMA_PRESET_EXTREME;
+        }
+        
+        ret = lzma_easy_buffer_encode(
+            preset,
+            LZMA_CHECK_CRC64,
+            nullptr,
+            reinterpret_cast<const uint8_t*>(raw_data.data()),
+            raw_data.size(),
+            reinterpret_cast<uint8_t*>(res.compressed_data.data()),
+            &out_pos,
+            max_out
+        );
+        
+        if (ret == LZMA_OK) {
+            res.compressed_data.resize(out_pos);
+            res.success = true;
         } else {
-            lzma_options.dict_size = 32 * 1024 * 1024;
+            res.compressed_data = raw_data;
+            res.codec = Codec::STORE;
+            res.success = true;
+        }
+        return res;
+    }
+    
+    // Encode con stream
+    std::vector<uint8_t> output;
+    output.reserve(raw_data.size() / 2);
+    
+    stream.next_in = reinterpret_cast<const uint8_t*>(raw_data.data());
+    stream.avail_in = raw_data.size();
+    
+    uint8_t out_buf[65536];
+    
+    while (stream.avail_in > 0) {
+        stream.next_out = out_buf;
+        stream.avail_out = sizeof(out_buf);
+        ret = lzma_code(&stream, LZMA_RUN);
+        size_t produced = sizeof(out_buf) - stream.avail_out;
+        if (produced > 0) {
+            output.insert(output.end(), out_buf, out_buf + produced);
+        }
+        if (ret != LZMA_OK) break;
+    }
+    
+    while (ret == LZMA_OK) {
+        stream.next_out = out_buf;
+        stream.avail_out = sizeof(out_buf);
+        ret = lzma_code(&stream, LZMA_FINISH);
+        size_t produced = sizeof(out_buf) - stream.avail_out;
+        if (produced > 0) {
+            output.insert(output.end(), out_buf, out_buf + produced);
         }
     }
     
-    filters[filter_count++] = { LZMA_FILTER_LZMA2, &lzma_options };
-    filters[filter_count++] = { LZMA_VLI_UNKNOWN, nullptr };
+    lzma_end(&stream);
     
-    uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
-    if (level >= 7) {
-        preset |= LZMA_PRESET_EXTREME;
-    }
-    
-    lzma_ret ret = lzma_easy_buffer_encode(
-        preset,
-        LZMA_CHECK_CRC64,
-        nullptr,
-        reinterpret_cast<const uint8_t*>(raw_data.data()),
-        raw_data.size(),
-        reinterpret_cast<uint8_t*>(res.compressed_data.data()),
-        &out_pos,
-        max_out
-    );
-    
-    if (ret == LZMA_OK && out_pos < raw_data.size()) {
-        res.compressed_data.resize(out_pos);
+    if (output.size() < raw_data.size()) {
+        res.compressed_data.assign(output.begin(), output.end());
         res.success = true;
     } else {
         res.compressed_data = raw_data;
@@ -336,25 +305,18 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
     return false;
 }
 
-// Worker principale - ora usa LZMA MT automaticamente
+// Worker principale
 ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec, const std::string& file_path = "") {
     ChunkResult res;
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = chosen_codec;
     res.success = false;
     
-    // Skip piccoli file - usa STORE
+    // Skip piccoli file
     if (raw_data.size() < 4096) {
         res.compressed_data = std::move(raw_data);
         res.codec = Codec::STORE;
         res.success = true;
-        return res;
-    }
-    
-    // Usa LZMA ottimizzato (proverà MT automaticamente)
-    res = compress_lzma_optimal(raw_data, level, file_path);
-    return res;
-}
         return res;
     }
     
@@ -417,7 +379,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     TarcResult res;
     res.ok = false;
     reset_stats();
-    init_perf_config();
     
     CodecSelector::init();
     
@@ -488,47 +449,31 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         fwrite(&h, sizeof(h), 1, f);
     }
 
-    // Imposta buffer I/O grande per performance
-    setvbuf(f, nullptr, _IOFBF, g_perf_config.io_buffer_size);
-
-    // Solid block: usa chunk_size configurabile
-    size_t CHUNK_THRESHOLD = g_perf_config.chunk_size;
+    // Solid block: 1GB per massima compressione solid
+    constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     
-    // Coda per compressione parallela multi-chunk
-    struct PendingChunk {
-        std::future<ChunkResult> future;
-        size_t bytes_out_before;
-    };
-    std::queue<PendingChunk> pending_chunks;
-    std::mutex pending_mutex;
-    
-    auto write_completed_chunks = [&]() -> bool {
-        while (!pending_chunks.empty()) {
-            auto& front = pending_chunks.front();
-            if (front.future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-                ChunkResult cr = front.future.get();
-                if (!cr.success) return false;
-                
-                ChunkHeader ch = {
-                    static_cast<uint32_t>(cr.codec),
-                    cr.raw_size,
-                    static_cast<uint32_t>(cr.compressed_data.size()),
-                    0,
-                    g_perf_config.compression_threads,
-                    {0, 0, 0, 0}
-                };
-                
-                if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
-                if (fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f) != cr.compressed_data.size()) return false;
-                
-                res.bytes_out += cr.compressed_data.size();
-                pending_chunks.pop();
-            } else {
-                break;
-            }
-        }
+    std::future<ChunkResult> future_chunk;
+    bool worker_active = false;
+
+    auto write_worker = [&](std::future<ChunkResult>& fut) -> bool {
+        if (check_cancelled()) return false;
+        
+        ChunkResult cr = fut.get();
+        if (!cr.success) return false;
+        
+        ChunkHeader ch = {
+            static_cast<uint32_t>(cr.codec),
+            cr.raw_size,
+            static_cast<uint32_t>(cr.compressed_data.size()),
+            0
+        };
+        
+        if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
+        if (fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f) != cr.compressed_data.size()) return false;
+        
+        res.bytes_out += cr.compressed_data.size();
         return true;
     };
 
@@ -549,14 +494,16 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         
         uintmax_t fsize = fs::file_size(disk_path);
         
-        // Usa buffer pool per ridurre allocazioni
-        std::vector<char> data = g_buffer_pool.acquire();
-        if (data.size() < static_cast<size_t>(fsize)) {
+        std::vector<char> data;
+        try {
             data.resize(static_cast<size_t>(fsize));
-        } else {
-            data.resize(static_cast<size_t>(fsize));
+        } catch (const std::bad_alloc&) {
+            res.error = TarcError::OutOfMemory;
+            res.message = "Insufficient memory: " + disk_path;
+            report_warning(res.message);
+            continue;
         }
-        
+
         XXH64_state_t* const state = XXH64_createState();
         if (state) XXH64_reset(state, 0);
 
@@ -570,14 +517,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             FILE_SHARE_READ | FILE_SHARE_WRITE, 
             nullptr, 
             OPEN_EXISTING, 
-            FILE_FLAG_SEQUENTIAL_SCAN, 
+            FILE_ATTRIBUTE_NORMAL, 
             nullptr
         );
         
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD bytesReadTotal = 0;
             DWORD bytesRead = 0;
-            constexpr DWORD BUF_STEP = 4 * 1024 * 1024; // 4MB reads
+            constexpr DWORD BUF_STEP = 1024 * 1024;
             char* ptr = data.data();
             
             while (bytesReadTotal < static_cast<DWORD>(fsize)) {
@@ -607,7 +554,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
-            setvbuf(in_f, nullptr, _IOFBF, g_perf_config.io_buffer_size);
             size_t read_res = fread(data.data(), 1, static_cast<size_t>(fsize), in_f);
             if (read_res == static_cast<size_t>(fsize)) {
                 read_ok = true;
@@ -622,10 +568,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             XXH64_freeState(state);
         }
 
-        if (!read_ok) {
-            g_buffer_pool.release(std::move(data));
-            continue;
-        }
+        if (!read_ok) continue;
 
         FileEntry fe;
         fe.name = normalize_path(disk_path);
@@ -642,27 +585,26 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
             g_stats.duplicates_skipped++;
-            g_buffer_pool.release(std::move(data));
         } else {
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
             
-            // Controlla se il chunk è pieno
-            if (solid_buf.size() + data.size() > CHUNK_THRESHOLD && !solid_buf.empty()) {
-                write_completed_chunks();
-                
-                // Avvia compressione asincrona per chunk pieno
-                std::vector<char> chunk_data = std::move(solid_buf);
-                auto future = std::async(
+            if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
+                if (worker_active && !write_worker(future_chunk)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Chunk compression failed.";
+                    fclose(f);
+                    return res;
+                }
+                future_chunk = std::async(
                     std::launch::async, 
                     compress_worker, 
-                    std::move(chunk_data), 
+                    std::move(solid_buf), 
                     level, 
                     Codec::LZMA,
                     std::string("")
                 );
-                pending_chunks.push({std::move(future), res.bytes_out});
-                
+                worker_active = true;
                 solid_buf.clear();
                 solid_buf.reserve(CHUNK_THRESHOLD);
             }
@@ -674,65 +616,27 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         final_toc.push_back(fe);
         g_stats.files_processed++;
     }
-    
-    // Processa l'ultimo chunk solid se presente
-    if (!solid_buf.empty()) {
-        write_completed_chunks();
-        
-        auto future = std::async(
-            std::launch::async,
-            compress_worker,
-            std::move(solid_buf),
-            level,
-            Codec::LZMA,
-            std::string("")
-        );
-        pending_chunks.push({std::move(future), res.bytes_out});
+
+    if (worker_active && !write_worker(future_chunk)) {
+        res.error = TarcError::CompressionFailed;
+        res.message = "Final chunk compression failed.";
+        fclose(f);
+        return res;
     }
     
-    // Attendi e scrivi tutti i chunk compressi pending
-    while (!pending_chunks.empty()) {
-        write_completed_chunks();
-        if (pending_chunks.empty()) break;
-        
-        // Aspetta il chunk più vecchio
-        auto& front = pending_chunks.front();
-        ChunkResult cr = front.future.get();
-        
-        if (!cr.success) {
-            res.error = TarcError::CompressionFailed;
-            res.message = "Chunk compression failed.";
-            fclose(f);
-            return res;
-        }
-        
+    if (!solid_buf.empty()) {
+        ChunkResult last = compress_worker(std::move(solid_buf), level, Codec::LZMA);
         ChunkHeader ch = {
-            static_cast<uint32_t>(cr.codec),
-            cr.raw_size,
-            static_cast<uint32_t>(cr.compressed_data.size()),
-            0,
-            g_perf_config.compression_threads,
-            {0, 0, 0, 0}
+            static_cast<uint32_t>(last.codec),
+            last.raw_size,
+            static_cast<uint32_t>(last.compressed_data.size()),
+            0
         };
-        
-        if (fwrite(&ch, sizeof(ch), 1, f) != 1) {
-            res.error = TarcError::CompressionFailed;
-            res.message = "Failed to write chunk header.";
-            fclose(f);
-            return res;
-        }
-        if (fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f) != cr.compressed_data.size()) {
-            res.error = TarcError::CompressionFailed;
-            res.message = "Failed to write compressed data.";
-            fclose(f);
-            return res;
-        }
-        
-        res.bytes_out += cr.compressed_data.size();
-        pending_chunks.pop();
+        fwrite(&ch, sizeof(ch), 1, f);
+        fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f);
     }
 
-    ChunkHeader end_mark = {0, 0, 0, 0, 0, {0, 0, 0, 0}};
+    ChunkHeader end_mark = {0, 0, 0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     IO::write_toc(f, h, final_toc);
     fclose(f);
