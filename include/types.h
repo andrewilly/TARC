@@ -8,9 +8,8 @@
 
 #define TARC_MAGIC     "TRC2"
 #define TARC_VERSION   210
-#define CHUNK_SIZE   (8 * 1024 * 1024)
-#define TARC_EXT     ".strk"
-#define SFX_TRAILER_MAGIC "TRSX"
+#define CHUNK_SIZE     (8 * 1024 * 1024)
+#define TARC_EXT       ".strk"
 
 #ifdef _WIN32
     #define TARC_PATH_MAX 260
@@ -116,11 +115,6 @@ struct ChunkHeader {
     uint64_t checksum;   // XXH64 of raw data
     uint64_t reserved;   // For future use
 };
-
-struct SFXTrailer {
-    char     magic[4];
-    uint64_t archive_offset;
-};
 #pragma pack(pop)
 
 struct FileEntry {
@@ -134,18 +128,11 @@ struct TarcResult {
     std::string message;
     uint64_t    bytes_in  = 0;
     uint64_t    bytes_out = 0;
-    uint32_t    skip_count = 0;
-    uint32_t    dup_count = 0;
     std::vector<std::string> warnings;
-    std::map<Codec, uint64_t> codec_bytes;
-    std::map<Codec, uint32_t> codec_chunks;
-
-    TarcResult() = default;
-    TarcResult(bool success, const std::string& msg) : ok(success), message(msg) {}
 
     static TarcResult success() { return {}; }
     static TarcResult failure(TarcError e, const std::string& msg = {}) {
-        return {false, e, msg, 0, 0, 0, 0, {}, {}, {}};
+        return {false, e, msg, 0, 0, {}};
     }
 };
 

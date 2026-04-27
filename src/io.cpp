@@ -7,17 +7,6 @@
 #include <cstring>
 #include <system_error>
 #include <ctime>
-#include <random>
-#include <algorithm>
-
-namespace {
-
-static std::string normalize_path_str(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
-    return path;
-}
-
-} // namespace anonimo
 
 #ifdef _WIN32
     #include <windows.h>
@@ -32,155 +21,54 @@ std::string IO::ensure_ext(const std::string& path) {
     return path;
 }
 
-#ifdef _WIN32
-FILE* IO::u8fopen(const std::string& path, const std::string& mode) {
-    return _wfopen(fs::u8path(path).wstring().c_str(), fs::u8path(mode).wstring().c_str());
-}
-#else
-FILE* IO::u8fopen(const std::string& path, const std::string& mode) {
-    return fopen(path.c_str(), mode.c_str());
-}
-#endif
-
-bool IO::seek64(FILE* f, int64_t offset, int origin) {
-    #ifdef _WIN32
-    return _fseeki64(f, offset, origin) == 0;
-    #else
-    return fseek(f, offset, origin) == 0;
-    #endif
-}
-
-bool IO::validate_header(const Header& h) {
-    if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0 &&
-        std::memcmp(h.magic, "TRC1", 4) != 0 &&
-        std::memcmp(h.magic, "TRC2", 4) != 0) {
-        return false;
-    }
-    return true;
-}
-
-std::string IO::make_temp_path(const std::string& path) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 15);
-    
-    std::string ext = fs::path(path).extension().string();
-    std::string dir = fs::path(path).parent_path().string();
-    std::string stem = fs::path(path).stem().string();
-    
-    std::string temp;
-    do {
-        std::string suffix;
-        for (int i = 0; i < 8; ++i) {
-            suffix += "0123456789abcdef"[dis(gen)];
-        }
-        temp = dir + "/" + stem + ".tmp_" + suffix + ext;
-    } while (fs::exists(temp));
-    
-    return temp;
-}
-
-bool IO::safe_remove(const std::string& path) {
-    try {
-        return fs::remove(path);
-    } catch (...) {
-        return false;
-    }
-}
-
-bool IO::atomic_rename(const std::string& from, const std::string& to) {
-    #ifdef _WIN32
-    return MoveFileExA(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-    #else
-    return rename(from.c_str(), to.c_str()) == 0;
-    #endif
-}
-
-std::string IO::sanitize_path(const std::string& path) {
-    std::string result = path;
-    
-    // Rimuovi path components pericolosi
-    std::vector<std::string> dangerous = {"..", "~", "$", "`", "|"};
-    for (const auto& d : dangerous) {
-        if (result.find(d) != std::string::npos) {
-            return "";
-        }
-    }
-    
-    // Unix: non permettere path assoluti
-    if (!result.empty() && result[0] == '/') {
-        return "";
-    }
-    
-    // Windows: non permettere drive letters esterne a C:
-    #ifdef _WIN32
-    if (result.length() >= 2 && result[1] == ':') {
-        char drive = std::toupper(result[0]);
-        if (drive < 'A' || drive > 'Z') return "";
-        if (drive > 'C') return "";
-    }
-    #endif
-    
-    return result;
-}
-
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
     if (pattern.empty()) return false;
     out.clear();
 
     try {
-        fs::path p = fs::u8path(pattern);
-
-        // Directory: expand recursively
-        if (fs::exists(p) && fs::is_directory(p)) {
-            for (auto& entry : fs::recursive_directory_iterator(p)) {
-                if (entry.is_regular_file()) {
-                    out.push_back(normalize_path_str(entry.path().string()));
-                }
+        // Directory: espandi ricorsivamente tutti i file regolari
+        if (fs::exists(pattern) && fs::is_directory(pattern)) {
+            for (auto& p : fs::recursive_directory_iterator(pattern)) {
+                if (p.is_regular_file()) out.push_back(p.path().string());
             }
             return !out.empty();
         }
 
-        // Single existing file
-        if (fs::exists(p) && fs::is_regular_file(p)) {
-            out.push_back(normalize_path_str(p.string()));
+        // File singolo esistente
+        if (fs::exists(pattern) && fs::is_regular_file(pattern)) {
+            out.push_back(pattern);
             return true;
         }
 
-        // Wildcard support
+        // Supporto wildcard Windows (* e *)
+        #ifdef _WIN32
         std::string dir = ".";
-        std::string file_pat = p.filename().string();
-
-        if (p.has_parent_path()) {
-            dir = p.parent_path().string();
+        std::string file_pat = pattern;
+        
+        size_t pos = pattern.find_last_of("\\/");
+        if (pos != std::string::npos) {
+            dir = pattern.substr(0, pos + 1);
+            file_pat = pattern.substr(pos + 1);
         }
-
-        if (file_pat.find('*') != std::string::npos || file_pat.find('?') != std::string::npos) {
-            std::error_code ec;
-            if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return false;
-
-            for (auto& entry : fs::directory_iterator(fs::u8path(dir), ec)) {
-                std::string name = entry.path().filename().string();
-                if (name == "." || name == "..") continue;
-
-                if (entry.is_regular_file(ec)) {
-                    bool match = true;
-                    if (file_pat == "*" || file_pat == "*.*") {
-                        match = true;
-                    } else if (file_pat.find('*') != std::string::npos) {
-                        std::string prefix = file_pat.substr(0, file_pat.find('*'));
-                        match = name.find(prefix) == 0;
-                    } else {
-                        match = (name == file_pat);
+        
+        if (file_pat.find('*') != std::string::npos) {
+            WIN32_FIND_DATAA fd;
+            HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                do {
+                    std::string name(fd.cFileName);
+                    if (name != "." && name != "..") {
+                        std::string full = dir + name;
+                        if (fs::exists(full) && fs::is_regular_file(full)) {
+                            out.push_back(full);
+                        }
                     }
-
-                    if (match) {
-                        out.push_back(normalize_path_str(entry.path().string()));
-                    }
-                }
+                } while (FindNextFileA(h, &fd));
+                FindClose(h);
+                return !out.empty();
             }
-            return !out.empty();
         }
+        #endif
 
         return false;
     } catch (...) {
