@@ -150,7 +150,12 @@ static Command parse_args(int argc, char* argv[]) {
         } else if (cmd.archive.empty()) {
             cmd.archive = val;
         } else {
-            cmd.files.push_back(val);
+            // Per estrazione/lista, i parametri sono filtri, non file
+            if (cmd.type == Command::Extract || cmd.type == Command::List || cmd.type == Command::Test) {
+                cmd.filters.push_back(val);
+            } else {
+                cmd.files.push_back(val);
+            }
         }
     }
     

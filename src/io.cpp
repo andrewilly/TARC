@@ -23,30 +23,67 @@ std::string IO::ensure_ext(const std::string& path) {
 
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
 #ifdef _WIN32
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
-    if (hFind == INVALID_HANDLE_VALUE) return false;
-
+    // Windows: la shell NON espande le wildcard (*, ?)
+    // FindFirstFileA gestisce *.ext, nome.*, *.*, ma non * da solo
     std::string directory = "";
+    std::string filePattern = pattern;
+    
+    // Estrai directory e pattern file
     size_t last_slash = pattern.find_last_of("\\/");
-    if (last_slash != std::string::npos) directory = pattern.substr(0, last_slash + 1);
-
+    if (last_slash != std::string::npos) {
+        directory = pattern.substr(0, last_slash + 1);
+        filePattern = pattern.substr(last_slash + 1);
+    } else {
+        directory = ".\\";
+    }
+    
+    // Se non ci sono wildcard, prova come percorso diretto
+    if (filePattern.find('*') == std::string::npos && filePattern.find('?') == std::string::npos) {
+        if (fs::exists(pattern)) {
+            if (fs::is_regular_file(pattern)) {
+                out.push_back(pattern);
+                return true;
+            } else if (fs::is_directory(pattern)) {
+                for (auto& p : fs::recursive_directory_iterator(pattern))
+                    if (p.is_regular_file()) out.push_back(p.path().string());
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    // Pattern con wildcard: usa FindFirstFileA
+    std::string searchPath = directory + filePattern;
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
+    
+    if (hFind == INVALID_HANDLE_VALUE) {
+        // Se fallisce con tutto il percorso, prova solo con il pattern
+        hFind = FindFirstFileA(pattern.c_str(), &findData);
+        if (hFind == INVALID_HANDLE_VALUE) return false;
+        directory = ""; // Reset directory se usiamo pattern senza percorso
+    }
+    
     do {
         std::string foundName(findData.cFileName);
         if (foundName != "." && foundName != "..") {
             std::string fullPath = directory + foundName;
+            // Rimuovi .\ iniziale se presente
+            if (fullPath.substr(0, 2) == ".\\") fullPath = fullPath.substr(2);
+            
             if (fs::exists(fullPath)) {
-                if (fs::is_regular_file(fullPath)) out.push_back(fullPath);
-                else if (fs::is_directory(fullPath)) {
-                    for (auto& p : fs::recursive_directory_iterator(fullPath))
-                        if (p.is_regular_file()) out.push_back(p.path().string());
+                if (fs::is_regular_file(fullPath)) {
+                    out.push_back(fullPath);
                 }
+                // Nota: non espandere directory quando si usa wildcard su file
             }
         }
     } while (FindNextFileA(hFind, &findData));
+    
     FindClose(hFind);
-    return true;
+    return !out.empty();
 #else
+    // Unix: la shell espande le wildcard, ma gestiamo comunque
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
             for (auto& p : fs::recursive_directory_iterator(pattern)) 
@@ -54,8 +91,9 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         } else {
             out.push_back(pattern);
         }
+        return true;
     }
-    return !out.empty();
+    return false;
 #endif
 }
 
