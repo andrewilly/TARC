@@ -7,7 +7,7 @@
 #include "types.h"
 
 namespace CodecSelector {
-    Codec select(const std::string& path, size_t size);
+    Codec select(const std::string& path, size_t size, int level = 3);
     bool is_compressible(const std::string& ext);
     void init();
 }
@@ -39,10 +39,12 @@ namespace Engine {
     };
 
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, 
-                       bool append = false, int level = 3);
+                       bool append = false, int level = 3,
+                       const std::vector<std::string>& exclude_patterns = {});
     
     TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {},
-                    bool test_only = false, size_t offset = 0, bool flat_mode = false);
+                    bool test_only = false, size_t offset = 0, bool flat_mode = false,
+                    const std::string& output_dir = "");
     
     TarcResult list(const std::string& arch_path, size_t offset = 0);
     

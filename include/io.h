@@ -13,6 +13,16 @@ namespace IO {
 
     std::string ensure_ext(const std::string& path);
 
+    // Unicode-aware file operations
+    FILE* u8fopen(const std::string& path, const std::string& mode);
+    bool seek64(FILE* f, int64_t offset, int origin);
+    bool validate_header(const Header& h);
+    std::string make_temp_path(const std::string& path);
+    bool safe_remove(const std::string& path);
+bool atomic_rename(const std::string& from, const std::string& to);
+
+    std::string sanitize_path(const std::string& path);
+
     bool expand_path(const std::string& pattern, std::vector<std::string>& out);
 
     bool read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc);
