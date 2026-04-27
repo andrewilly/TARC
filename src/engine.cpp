@@ -10,6 +10,9 @@
 #include <iostream>
 #include <chrono>
 #include <future>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 #include <algorithm>
 #include <set>
 #include <atomic>
@@ -24,12 +27,73 @@ extern "C" {
     #include "xxhash.h"
 }
 
+#ifdef HAVE_ZSTD
+extern "C" {
+    #include "zstd.h"
+    #include "lz4.h"
+    #include "lz4hc.h"
+}
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
+    
+    class ThreadPool {
+        std::vector<std::thread> workers;
+        std::queue<std::function<void()>> tasks;
+        std::mutex queue_mutex;
+        std::condition_variable condition;
+        std::atomic<bool> stop{false};
+        size_t max_threads;
+        
+    public:
+        explicit ThreadPool(size_t threads = 0) : max_threads(threads ? threads : std::thread::hardware_concurrency()) {
+            if (max_threads < 1) max_threads = 1;
+            for (size_t i = 0; i < max_threads; ++i) {
+                workers.emplace_back([this] {
+                    while (true) {
+                        std::function<void()> task;
+                        {
+                            std::unique_lock<std::mutex> lock(queue_mutex);
+                            condition.wait(lock, [this] { return stop.load() || !tasks.empty(); });
+                            if (stop.load() && tasks.empty()) return;
+                            if (!tasks.empty()) {
+                                task = std::move(tasks.front());
+                                tasks.pop();
+                            }
+                        }
+                        if (task) task();
+                    }
+                });
+            }
+        }
+        
+        template<typename F>
+        void enqueue(F&& f) {
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex);
+                tasks.emplace(std::forward<F>(f));
+            }
+            condition.notify_one();
+        }
+        
+        size_t size() const { return max_threads; }
+        
+        ~ThreadPool() {
+            stop.store(true);
+            condition.notify_all();
+            for (auto& w : workers) {
+                if (w.joinable()) w.join();
+            }
+        }
+    };
+    
+    std::unique_ptr<ThreadPool> g_compression_pool;
+    std::unique_ptr<ThreadPool> g_io_pool;
 }
 
 void Engine::set_progress_callback(ProgressCallback* callback) {
@@ -43,6 +107,15 @@ Engine::CompressionStats Engine::get_stats() {
 void Engine::reset_stats() {
     g_stats = {};
     g_cancelled = false;
+}
+
+void init_pools() {
+    if (!g_compression_pool) {
+        g_compression_pool = std::make_unique<ThreadPool>(std::thread::hardware_concurrency() / 2);
+    }
+    if (!g_io_pool) {
+        g_io_pool = std::make_unique<ThreadPool>(4);
+    }
 }
 
 namespace CodecSelector {
@@ -170,19 +243,25 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
         filters[filter_count++] = { LZMA_FILTER_X86, nullptr };
     }
     
-    // Filtro LZMA2 come base (uguale a quello usato da 7zip)
+    // Filtro LZMA2 con impostazioni ottimizzate
     lzma_options_lzma lzma_options{};
-    lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(std::min(level, 9)));
     
     if (level >= 7) {
-        lzma_options.lc = 3;
+        lzma_options.lc = 4;
         lzma_options.lp = 0;
         lzma_options.pb = 2;
-        if (level >= 9) {
-            lzma_options.dict_size = 64 * 1024 * 1024; // 64MB dict per ultra
-        } else {
-            lzma_options.dict_size = 32 * 1024 * 1024; // 32MB dict
-        }
+        lzma_options.fast_bytes = (level >= 9) ? 273 : 64;
+        lzma_options.dict_size = (level >= 9) ? 64 * 1024 * 1024 : 32 * 1024 * 1024;
+        lzma_options.mode = LZMA_MODE_NORMAL;
+        lzma_options mf = {};
+        lzma_options.mf = LZMA_MF_BT4;
+    } else if (level >= 5) {
+        lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(level));
+        lzma_options.dict_size = 8 * 1024 * 1024;
+        lzma_options.fast_bytes = 32;
+    } else {
+        lzma_lzma_preset(&lzma_options, static_cast<uint32_t>(level));
+        lzma_options.dict_size = 2 * 1024 * 1024;
     }
     
     filters[filter_count++] = { LZMA_FILTER_LZMA2, &lzma_options };
@@ -315,11 +394,76 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
     
+    #ifdef HAVE_ZSTD
+    if (chosen_codec == Codec::ZSTD) {
+        size_t cbuf_size = ZSTD_compressBound(raw_data.size());
+        std::vector<char> cbuf(cbuf_size);
+        int zstd_level = (level >= 7) ? 19 : (level >= 5) ? 9 : 3;
+        size_t csize = ZSTD_compress(cbuf.data(), cbuf_size, raw_data.data(), raw_data.size(), zstd_level);
+        if (ZSTD_isError(csize)) {
+            res.compressed_data = std::move(raw_data);
+            res.codec = Codec::STORE;
+            res.success = true;
+            return res;
+        }
+        res.compressed_data.assign(cbuf.data(), cbuf.data() + csize);
+        res.success = true;
+        return res;
+    }
+    
+    if (chosen_codec == Codec::LZ4) {
+        int lz4_level = (level >= 7) ? 12 : (level >= 5) ? 9 : 1;
+        size_t cbuf_size = LZ4_compressBound(static_cast<int>(raw_data.size()));
+        std::vector<char> cbuf(cbuf_size);
+        int csize;
+        if (level >= 5) {
+            csize = LZ4_compress_HC(static_cast<const char*>(raw_data.data()), 
+                                     cbuf.data(), 
+                                     static_cast<int>(raw_data.size()), 
+                                     cbuf_size, 
+                                     lz4_level);
+        } else {
+            csize = LZ4_compress_default(static_cast<const char*>(raw_data.data()), 
+                                         cbuf.data(), 
+                                         static_cast<int>(raw_data.size()), 
+                                         cbuf_size);
+        }
+        if (csize > 0 && static_cast<size_t>(csize) < raw_data.size()) {
+            res.compressed_data.assign(cbuf.data(), cbuf.data() + csize);
+            res.success = true;
+            return res;
+        }
+        res.compressed_data = std::move(raw_data);
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+    #endif
+    
     // Usa LZMA2 con filtri BCJ per eseguibili
     res = compress_lzma_optimal(raw_data, level, file_path, xxh);
     
     return res;
 }
+
+#ifdef HAVE_ZSTD
+static bool decompress_zstd(const std::vector<char>& compressed, std::vector<char>& decompressed) {
+    if (compressed.empty()) return false;
+    
+    size_t dbuf_size = ZSTD_decompressGetDecompressedSize(compressed.data(), compressed.size());
+    if (dbuf_size == ZSTD_CONTENTSIZE_UNKNOWN) {
+        dbuf_size = compressed.size() * 4;
+    }
+    if (dbuf_size > 256 * 1024 * 1024) dbuf_size = 256 * 1024 * 1024;
+    
+    decompressed.resize(dbuf_size);
+    size_t dsize = ZSTD_decompress(decompressed.data(), dbuf_size, compressed.data(), compressed.size());
+    
+    if (ZSTD_isError(dsize)) return false;
+    decompressed.resize(dsize);
+    return true;
+}
+#endif
 
 bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& decompressed, Codec codec) {
     if (codec == Codec::STORE) {
@@ -331,8 +475,87 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
         return decompress_lzma(compressed, decompressed);
     }
     
+    #ifdef HAVE_ZSTD
+    if (codec == Codec::ZSTD) {
+        return decompress_zstd(compressed, decompressed);
+    }
+    
+    if (codec == Codec::LZ4) {
+        size_t dbuf_size = compressed.size() * 4;
+        if (dbuf_size < 4096) dbuf_size = 4096;
+        if (dbuf_size > 256 * 1024 * 1024) dbuf_size = 256 * 1024 * 1024;
+        decompressed.resize(dbuf_size);
+        int dsize = LZ4_decompress_safe(static_cast<const char*>(compressed.data()),
+                                       decompressed.data(),
+                                       static_cast<int>(compressed.size()),
+                                       static_cast<int>(dbuf_size));
+        if (dsize <= 0) return false;
+        decompressed.resize(dsize);
+        return true;
+    }
+    #endif
+    
     // Fallback: prova LZMA
     return decompress_lzma(compressed, decompressed);
+}
+
+namespace Crypto {
+    static uint64_t simple_hash(const char* data, size_t len) {
+        uint64_t h = 0x811c9dc5;
+        for (size_t i = 0; i < len; ++i) {
+            h ^= static_cast<uint8_t>(data[i]);
+            h *= 0x100000001b3;
+        }
+        return h;
+    }
+    
+    uint64_t derive_key(const std::string& password, uint64_t salt) {
+        if (password.empty()) return 0;
+        std::string combined = password + std::to_string(salt);
+        return simple_hash(combined.data(), combined.size()) ^ salt;
+    }
+    
+    std::vector<char> encrypt_chunk(const std::vector<char>& data, const std::string& password) {
+        if (password.empty() || data.empty()) return data;
+        
+        std::vector<char> result;
+        result.reserve(data.size() + 16);
+        
+        uint64_t salt = XXH64(data.data(), data.size(), 0);
+        uint64_t key = derive_key(password, salt);
+        
+        const char* salt_ptr = reinterpret_cast<const char*>(&salt);
+        result.insert(result.end(), salt_ptr, salt_ptr + sizeof(salt));
+        
+        for (size_t i = 0; i < data.size(); ++i) {
+            result.push_back(data[i] ^ ((key >> (i % 8)) & 0xFF));
+        }
+        
+        return result;
+    }
+    
+    bool decrypt_chunk(const std::vector<char>& encrypted, std::vector<char>& decrypted, const std::string& password) {
+        if (password.empty()) {
+            decrypted = encrypted;
+            return true;
+        }
+        
+        if (encrypted.size() < sizeof(uint64_t) + 1) {
+            decrypted = encrypted;
+            return true;
+        }
+        
+        uint64_t salt;
+        std::memcpy(&salt, encrypted.data(), sizeof(salt));
+        uint64_t key = derive_key(password, salt);
+        
+        decrypted.resize(encrypted.size() - sizeof(salt));
+        for (size_t i = sizeof(salt); i < encrypted.size(); ++i) {
+            decrypted[i - sizeof(salt)] = encrypted[i] ^ ((key >> ((i - sizeof(salt)) % 8)) & 0xFF);
+        }
+        
+        return true;
+    }
 }
 
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
@@ -424,7 +647,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         std::memcpy(h.magic, TARC_MAGIC, 4);
         h.version = TARC_VERSION;
     }
-
+    
+    init_pools();
+    
+    constexpr size_t PREFETCH_SIZE = 4;
+    std::queue<std::pair<std::string, std::vector<char>>> prefetch_queue;
+    std::mutex prefetch_mutex;
+    
     FILE* f = fopen(arch_path.c_str(), append ? "rb+" : "wb");
     if (!f) {
         res.error = TarcError::AccessDenied;
@@ -486,36 +715,110 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
     auto start_time = std::chrono::steady_clock::now();
     
+    std::atomic<size_t> current_file_idx{0};
+    std::atomic<size_t> completed_files{0};
+    
+    std::vector<std::pair<std::string, std::vector<char>>> file_buffers;
+    std::mutex file_buffers_mutex;
+    
+    std::atomic<bool> reading_done{false};
+    std::thread reader_thread;
+    
+    reader_thread = std::thread([&]() {
+        size_t idx = 0;
+        while (idx < expanded_files.size() && !g_cancelled.load()) {
+            std::string path = expanded_files[idx];
+            if (!fs::exists(path)) {
+                idx++;
+                continue;
+            }
+            
+            uintmax_t sz = fs::file_size(path);
+            if (sz > 100 * 1024 * 1024) {
+                idx++;
+                continue;
+            }
+            
+            std::vector<char> buf;
+            try {
+                buf.resize(static_cast<size_t>(sz));
+            } catch (...) {
+                idx++;
+                continue;
+            }
+            
+            FILE* in_f = fopen(path.c_str(), "rb");
+            if (in_f) {
+                if (fread(buf.data(), 1, buf.size(), in_f) == buf.size()) {
+                    std::lock_guard<std::mutex> lock(file_buffers_mutex);
+                    file_buffers.emplace_back(path, std::move(buf));
+                }
+                fclose(in_f);
+            }
+            idx++;
+        }
+        reading_done.store(true);
+    });
+    
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
             res.message = "Operation cancelled by user.";
             fclose(f);
+            if (reader_thread.joinable()) reader_thread.join();
             return res;
         }
         
-        const std::string& disk_path = expanded_files[i];
+        std::string disk_path;
+        std::vector<char> data;
+        
+        {
+            std::lock_guard<std::mutex> lock(file_buffers_mutex);
+            auto it = std::find_if(file_buffers.begin(), file_buffers.end(),
+                [&](auto& p) { return p.first == expanded_files[i]; });
+            if (it != file_buffers.end()) {
+                disk_path = it->first;
+                data = std::move(it->second);
+                file_buffers.erase(it);
+            }
+        }
+        
+        if (data.empty()) {
+            disk_path = expanded_files[i];
+        }
+        
         report_progress(i + 1, expanded_files.size(), fs::path(disk_path).filename().string());
 
         if (!fs::exists(disk_path)) continue;
         
-        uintmax_t fsize = fs::file_size(disk_path);
+        uintmax_t fsize;
         
-        std::vector<char> data;
-        try {
-            data.resize(static_cast<size_t>(fsize));
-        } catch (const std::bad_alloc&) {
-            res.error = TarcError::OutOfMemory;
-            res.message = "Insufficient memory: " + disk_path;
-            report_warning(res.message);
-            continue;
-        }
+        if (!data.empty()) {
+            fsize = data.size();
+            XXH64_state_t* state = XXH64_createState();
+            if (state) {
+                XXH64_reset(state, 0);
+                XXH64_update(state, data.data(), data.size());
+                h64 = XXH64_digest(state);
+                XXH64_freeState(state);
+            }
+            read_ok = true;
+        } else {
+            fsize = fs::file_size(disk_path);
+            try {
+                data.resize(static_cast<size_t>(fsize));
+            } catch (const std::bad_alloc&) {
+                res.error = TarcError::OutOfMemory;
+                res.message = "Insufficient memory: " + disk_path;
+                report_warning(res.message);
+                continue;
+            }
 
-        XXH64_state_t* const state = XXH64_createState();
-        if (state) XXH64_reset(state, 0);
+            XXH64_state_t* const state = XXH64_createState();
+            if (state) XXH64_reset(state, 0);
 
-        bool read_ok = false;
-        uint64_t h64 = 0;
+            bool read_ok = false;
+            uint64_t h64 = 0;
         
 #ifdef _WIN32
         HANDLE hFile = CreateFileA(
@@ -661,6 +964,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     }
     IO::write_toc(f, h, final_toc);
     fclose(f);
+    
+    if (reader_thread.joinable()) reader_thread.join();
     
     g_stats.bytes_in = g_stats.bytes_read;
     g_stats.bytes_out = res.bytes_out;

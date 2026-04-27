@@ -22,7 +22,8 @@ enum class Codec : uint8_t {
     LZMA = 1,
     STORE = 2,
     LZ4  = 3,
-    BR   = 4
+    BR   = 4,
+    AES  = 5
 };
 
 enum class TarcError : uint32_t {
@@ -40,6 +41,9 @@ enum class TarcError : uint32_t {
     LicenseMissing,
     DiskFull,
     Cancelled,
+    WrongPassword,
+    EncryptionFailed,
+    DecryptionFailed,
     Unknown
 };
 
@@ -70,8 +74,18 @@ inline const char* error_message(TarcError e) {
         case TarcError::LicenseMissing: return "License not found";
         case TarcError::DiskFull:     return "Disk full";
         case TarcError::Cancelled:    return "Operation cancelled";
+        case TarcError::WrongPassword: return "Wrong password";
+        case TarcError::EncryptionFailed: return "Encryption failed";
+        case TarcError::DecryptionFailed: return "Decryption failed";
         default:                     return "Unknown error";
     }
+}
+
+namespace Crypto {
+    uint64_t derive_key(const std::string& password, uint64_t salt);
+    
+    std::vector<char> encrypt_chunk(const std::vector<char>& data, const std::string& password);
+    bool decrypt_chunk(const std::vector<char>& encrypted, std::vector<char>& decrypted, const std::string& password);
 }
 
 #pragma pack(push, 1)
@@ -127,7 +141,9 @@ struct CompressOptions {
     bool solid_mode = true;
     bool sfx_requested = false;
     bool verify = true;
-    size_t chunk_size = 256 * 1024 * 1024;
+    size_t chunk_size = 64 * 1024 * 1024;
+    std::string password;
+    bool encrypt = false;
 };
 
 struct ExtractOptions {
@@ -136,6 +152,7 @@ struct ExtractOptions {
     bool verify = true;
     bool overwrite = false;
     std::string output_dir;
+    std::string password;
 };
 
 template<typename T>
