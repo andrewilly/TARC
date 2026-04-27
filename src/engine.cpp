@@ -252,7 +252,10 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level, 
     
     lzma_end(&stream);
     
-    if (output.size() < raw_data.size()) {
+    if (ret == LZMA_STREAM_END && output.size() < raw_data.size()) {
+        res.compressed_data.assign(output.begin(), output.end());
+        res.success = true;
+    } else if (output.size() < raw_data.size()) {
         res.compressed_data.assign(output.begin(), output.end());
         res.success = true;
     } else {
@@ -425,18 +428,31 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
     if (append) {
         if (final_toc.empty()) {
+            std::memcpy(h.magic, TARC_MAGIC, 4);
+            h.version = TARC_VERSION;
             fwrite(&h, sizeof(h), 1, f);
         } else {
             fseek(f, 0, SEEK_END);
+            ChunkHeader end_mark = {0, 0, 0, 0};
+            fwrite(&end_mark, sizeof(end_mark), 1, f);
+            uint32_t old_chunk_count = 0;
+            for (size_t i = 0; i < final_toc.size(); ++i) {
+                if (!final_toc[i].meta.is_duplicate) {
+                    old_chunk_count++;
+                }
+            }
+            fwrite(&old_chunk_count, sizeof(old_chunk_count), 1, f);
         }
     } else {
+        std::memcpy(h.magic, TARC_MAGIC, 4);
+        h.version = TARC_VERSION;
         fwrite(&h, sizeof(h), 1, f);
     }
 
-    // Solid block: 1GB per massima compressione solid
-    constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
+    // Solid block: 64MB default, grows as needed
+    constexpr size_t CHUNK_THRESHOLD = 64 * 1024 * 1024;
     std::vector<char> solid_buf;
-    solid_buf.reserve(CHUNK_THRESHOLD);
+    solid_buf.reserve(16 * 1024 * 1024); // Start with 16MB
     
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
@@ -590,10 +606,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 );
                 worker_active = true;
                 solid_buf.clear();
-                solid_buf.reserve(CHUNK_THRESHOLD);
+                solid_buf.reserve(16 * 1024 * 1024);
             }
             
             solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+            if (solid_buf.size() > CHUNK_THRESHOLD) {
+                solid_buf.reserve(solid_buf.size() * 3 / 2);
+            }
             g_stats.bytes_read += fsize;
         }
         
@@ -616,12 +635,22 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             static_cast<uint32_t>(last.compressed_data.size()),
             0
         };
-        fwrite(&ch, sizeof(ch), 1, f);
-        fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f);
+        if (fwrite(&ch, sizeof(ch), 1, f) != 1 || fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f) != last.compressed_data.size()) {
+            fclose(f);
+            res.error = TarcError::CompressionFailed;
+            res.message = "Failed to write final chunk.";
+            return res;
+        }
+        res.bytes_out += last.compressed_data.size();
     }
 
     ChunkHeader end_mark = {0, 0, 0, 0};
-    fwrite(&end_mark, sizeof(end_mark), 1, f);
+    if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
+        fclose(f);
+        res.error = TarcError::CompressionFailed;
+        res.message = "Failed to write end mark.";
+        return res;
+    }
     IO::write_toc(f, h, final_toc);
     fclose(f);
     
@@ -703,7 +732,32 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     std::vector<char> current_block;
     size_t block_pos = 0;
     std::map<std::string, int> flat_names_counter;
+    
+    long data_start = static_cast<long>(offset + sizeof(Header));
+    uint32_t old_chunk_count = 0;
+    bool has_append = false;
+    
+    ChunkHeader ch_test;
+    fseek(f, data_start, SEEK_SET);
+    if (fread(&ch_test, sizeof(ch_test), 1, f) == 1 && ch_test.raw_size == 0) {
+        if (fread(&old_chunk_count, sizeof(old_chunk_count), 1, f) == 1) {
+            has_append = true;
+            data_start = ftell(f);
+        }
+    }
+    
+    fseek(f, data_start, SEEK_SET);
 
+    if (has_append) {
+        for (uint32_t i = 0; i < old_chunk_count; ++i) {
+            ChunkHeader chk;
+            if (fread(&chk, sizeof(chk), 1, f) != 1) break;
+            if (chk.raw_size == 0) break;
+            if (fseek(f, static_cast<long>(chk.comp_size), SEEK_CUR) != 0) break;
+        }
+        has_append = false;
+    }
+    
     for (size_t i = 0; i < toc.size(); ++i) {
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
@@ -713,6 +767,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
         
         auto& fe = toc[i];
+        
         report_progress(i + 1, toc.size(), fe.name);
         
         bool should_extract = patterns.empty();
