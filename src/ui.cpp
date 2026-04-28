@@ -66,11 +66,9 @@ void show_help() {
     
     std::cout << Color::BOLD << "Commands:" << Color::RESET << "\n";
     std::cout << "  " << Color::GREEN << "-c" << Color::RESET << " [level]  Create archive (level 1-9, default 3)\n";
-    std::cout << "  " << Color::GREEN << "-a" << Color::RESET << " [level]  Add files to existing archive\n";
     std::cout << "  " << Color::YELLOW << "-x" << Color::RESET << " [filt]  Extract files (supports wildcards)\n";
     std::cout << "  " << Color::CYAN << "-l" << Color::RESET << "          List archive contents\n";
     std::cout << "  " << Color::MAGENTA << "-t" << Color::RESET << "          Test archive integrity\n";
-    std::cout << "  " << Color::RED << "-d" << Color::RESET << " [files]  Delete files from archive\n";
     
     std::cout << "\n" << Color::BOLD << "Compression Levels:" << Color::RESET << "\n";
     std::cout << "  " << Color::GREEN << "-cbest" << Color::RESET << "    Maximum compression (LZMA level 9)\n";

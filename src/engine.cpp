@@ -256,7 +256,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     return res;
 }
 
-TarcResult compress(const std::string& arch_path, const std::vector<std::string>& inputs, bool append, int level) {
+TarcResult compress(const std::string& arch_path, const std::vector<std::string>& inputs, int level) {
     TarcResult res;
     res.ok = false;
     reset_stats();
@@ -274,37 +274,18 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     std::vector<FileEntry> final_toc;
     std::map<uint64_t, uint32_t> hash_map;
     Header h{};
+    
+    std::memcpy(h.magic, TARC_MAGIC, 4);
+    h.version = TARC_VERSION;
 
-    if (append && fs::exists(arch_path)) {
-        FILE* f_old = fopen(arch_path.c_str(), "rb");
-        if (f_old) {
-            if (fread(&h, sizeof(h), 1, f_old) == 1) {
-                IO::read_toc(f_old, h, final_toc);
-                for (size_t k = 0; k < final_toc.size(); ++k) {
-                    if (!final_toc[k].meta.is_duplicate) {
-                        hash_map[final_toc[k].meta.xxhash] = static_cast<uint32_t>(k);
-                    }
-                }
-            }
-            fclose(f_old);
-        }
-    } else {
-        std::memcpy(h.magic, TARC_MAGIC, 4);
-        h.version = TARC_VERSION;
-    }
-
-    FILE* f = fopen(arch_path.c_str(), append ? "rb+" : "wb");
+    FILE* f = fopen(arch_path.c_str(), "wb");
     if (!f) {
         res.error = TarcError::AccessDenied;
         res.message = "Cannot write archive.";
         return res;
     }
 
-    if (append) {
-        fseek(f, static_cast<long>(h.toc_offset), SEEK_SET);
-    } else {
-        fwrite(&h, sizeof(h), 1, f);
-    }
+    fwrite(&h, sizeof(h), 1, f);
 
     constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;

@@ -44,22 +44,18 @@ struct Command {
     enum Type {
         None,
         Create,
-        Add,
         Extract,
         List,
         Test,
-        Delete,
         Help,
         License,
         Version
     } type = None;
     
     int level = 3;
-    bool append = false;
     bool sfx = false;
     bool flat = false;
     bool force = false;
-    bool test_only = false;
     std::string archive;
     std::vector<std::string> files;
     std::vector<std::string> filters;
@@ -110,29 +106,12 @@ static Command parse_args(int argc, char* argv[]) {
                 }
             }
         }
-    } else if (prefix == "-a") {
-        cmd.type = Command::Add;
-        cmd.append = true;
-        cmd.level = 3;
-        
-        if (arg.length() > 2) {
-            std::string level_str = arg.substr(2);
-            if (!level_str.empty() && std::all_of(level_str.begin(), level_str.end(), ::isdigit)) {
-                try {
-                    cmd.level = std::stoi(level_str);
-                    cmd.level = std::clamp(cmd.level, 1, 9);
-                } catch (...) {
-                }
-            }
-        }
     } else if (prefix == "-x") {
         cmd.type = Command::Extract;
     } else if (prefix == "-l") {
         cmd.type = Command::List;
     } else if (prefix == "-t") {
         cmd.type = Command::Test;
-    } else if (prefix == "-d") {
-        cmd.type = Command::Delete;
     } else {
         cmd.type = Command::None;
         return cmd;
@@ -182,8 +161,7 @@ static int run_command(const Command& cmd) {
             UI::show_license();
             return 0;
             
-        case Command::Create:
-        case Command::Add: {
+        case Command::Create: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
                 return 1;
@@ -200,13 +178,13 @@ static int run_command(const Command& cmd) {
             Engine::set_progress_callback(&reporter);
             
             auto start = std::chrono::steady_clock::now();
-            auto res = Engine::compress(arch, cmd.files, cmd.append, cmd.level);
+            auto res = Engine::compress(arch, cmd.files, cmd.level);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start
             );
             
             UI::print_progress_end();
-            UI::print_summary(res, cmd.append ? "Add" : "Create", elapsed);
+            UI::print_summary(res, "Create", elapsed);
             
             if (res.ok && cmd.sfx) {
                 std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
@@ -283,11 +261,6 @@ static int run_command(const Command& cmd) {
             auto res = Engine::list(arch);
             result = res.ok ? 0 : 1;
             break;
-        }
-            
-        case Command::Delete: {
-            UI::print_error("Delete operation not supported.");
-            return 1;
         }
             
         case Command::None: {
