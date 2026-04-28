@@ -280,25 +280,6 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
         pos = static_cast<int>(bar_width * current / total_);
     }
     
-    // Calcola velocità e ETA se abbiamo statistiche
-    static auto start_time = std::chrono::steady_clock::now();
-    static bool start_set = false;
-    if (!start_set) { start_time = std::chrono::steady_clock::now(); start_set = true; }
-    
-    std::string speed_info = "";
-    if (current > 0 && current < total_) {
-        auto now = std::chrono::steady_clock::now();
-        double elapsed = std::chrono::duration<double>(now - start_time).count();
-        if (elapsed > 0.5) { // Dopo 0.5s calcola velocità
-            double mbps = (current / (1024.0 * 1024.0)) / elapsed;
-            double remaining = (total_ - current) / (current / elapsed);
-            
-            char buf[64];
-            snprintf(buf, sizeof(buf), " %.1f MB/s ETA: %.0fs", mbps, remaining);
-            speed_info = buf;
-        }
-    }
-    
     std::lock_guard<std::mutex> lock(cout_mutex);
     // Pulisce l'intera riga prima di stampare per evitare caratteri residui
     std::cout << "\r\x1b[2K" << Color::CYAN << label_ << " [";

@@ -47,13 +47,6 @@ void Engine::reset_stats() {
 
 namespace CodecSelector {
     static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip", ".strk" };
-    static bool initialized = false;
-    
-    void init() {
-        if (!initialized) {
-            initialized = true;
-        }
-    }
     
     bool is_compressible(const std::string& ext) {
         std::string e = ext;
@@ -267,8 +260,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     TarcResult res;
     res.ok = false;
     reset_stats();
-    
-    CodecSelector::init();
     
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) {
