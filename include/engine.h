@@ -9,7 +9,6 @@
 namespace CodecSelector {
     Codec select(const std::string& path, size_t size);
     bool is_compressible(const std::string& ext);
-    void init();
 }
 
 class ProgressCallback {
@@ -39,14 +38,12 @@ namespace Engine {
     };
 
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, 
-                       bool append = false, int level = 3);
+                       int level = 3);
     
     TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {},
                     bool test_only = false, size_t offset = 0, bool flat_mode = false);
     
     TarcResult list(const std::string& arch_path, size_t offset = 0);
-    
-    TarcResult remove_files(const std::string& arch_path, const std::vector<std::string>& patterns);
     
     TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_path);
 
