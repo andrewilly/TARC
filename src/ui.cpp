@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <thread>
 #include <mutex>
+#include <memory>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -162,8 +163,11 @@ void print_success(const std::string& msg) {
 }
 
 void print_progress(size_t current, size_t total, const std::string& current_file) {
-    static ProgressBar bar(total, "Compressing");
-    bar.update(current, current_file.substr(current_file.find_last_of("/\\") + 1));
+    static std::unique_ptr<ProgressBar> bar;
+    if (!bar || bar->get_total() != total) {
+        bar = std::make_unique<ProgressBar>(total, "Compressing");
+    }
+    bar->update(current, current_file.substr(current_file.find_last_of("/\\") + 1));
 }
 
 void print_progress_end() {

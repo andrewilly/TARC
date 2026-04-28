@@ -359,6 +359,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         
         uintmax_t fsize = fs::file_size(disk_path);
         
+        // Controllo overflow: su piattaforme a 32-bit, size_t potrebbe non contenere fsize
+        if (fsize > static_cast<uintmax_t>(SIZE_MAX)) {
+            report_warning("File too large (overflow): " + disk_path);
+            continue;
+        }
+        
         std::vector<char> data;
         try {
             data.resize(static_cast<size_t>(fsize));

@@ -79,6 +79,7 @@ namespace UI {
         void set_label(const std::string& label);
         void update(size_t current, const std::string& status = "");
         void finish();
+        size_t get_total() const { return total_; }
         
     private:
         size_t total_;
