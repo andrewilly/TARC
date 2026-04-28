@@ -4,11 +4,13 @@ Advanced Solid Compression Archiver
 
 ## 🚀 Caratteristiche Principali
 
-- **Solid Block Compression** - Chunk da 256MB per massimo ratio
+- **Solid Block Compression** - Chunk da 1GB per massimo ratio
 - **Deduplicazione** - XXH64 per identificare file identici
 - **Smart Codec Selection** - LZMA/ZSTD/STORE automatico
 - **SFX Archive** - Autoestrattore per Windows
 - **Windows Native I/O** - API native per migliori performance
+- **Multi-threaded Compression** - Compressione parallela chunk
+- **Wildcard Support** - Gestione `*.ext`, `nome.*`, `cartella\*.ext` su Windows
 
 ## 📋 Comandi
 
@@ -16,9 +18,6 @@ Advanced Solid Compression Archiver
 # Crea archivio (level 1-9, default 3)
 tarc -c[N] archivio file...
 tarc -cbest archivio file...
-
-# Aggiungi file
-tarc -a[N] archivio file...
 
 # Estrai
 tarc -x archivio
@@ -43,15 +42,16 @@ tarc -t archivio
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake --build build --target tarc
 ```
 
 L'eseguibile sarà in `build/tarc.exe`.
 
 ## 📦 Dipendenze
 
-- liblzma (compressione)
-- zstd (backup)
+- liblzma (compressione LZMA)
+- zstd (supporto legacy)
+- lz4 (compressione veloce)
 - xxhash (checksum)
 
 ## 📋 Struttura Progetto
@@ -67,66 +67,31 @@ tarc/
 ├── src/             # Sorgenti
 │   ├── main.cpp      # Entry point, CLI
 │   ├── engine.cpp   # Compressione
-│   ├── io.cpp      # I/O
-│   ├── ui.cpp      # UI
-│   ├── license.cpp # Licenza
-│   └── stub.cpp    # SFX
+│   ├── io.cpp       # I/O
+│   ├── ui.cpp       # UI
+│   ├── license.cpp  # Licenza
+│   └── stub.cpp     # SFX
 └── CMakeLists.txt   # Build system
 ```
 
 ## 🔧 Novità v2.00_OpenAi
 
-### Miglioramenti Core
-- **Error Handling** - Sistema error codes robusto con `std::expected`
-- **Typed Results** - `TarcResult` con codici di errore specifici
-- **Progress Interface** - Callback per progress tracking
-- **Cancellation Support** - Possibilità di annullare operazioni
+### Fix Critici (questa sessione)
+- **Buffer decompressione** - Rimosso limite fisso 256MB, ora dinamico
+- **Divisione per zero** - Protetta in ProgressBar
+- **ProgressBar statica** - Sostituita con `unique_ptr` per aggiornamento totale
+- **Gestione file grandi** - Controllo overflow `SIZE_MAX`
+- **Codice morto** - Rimosso `CodecSelector::init()` inutile
+- **Pulizia comandi** - Rimossi `-a` (aggiunta) e `-d` (eliminazione) non compatibili con archiviazione solida
 
 ### UI/UX Migliorata
-- **Modern UI** - Colori ANSI avanzati (256 colori)
-- **Progress Bar** - Classe dedicata con animazione
-- **Spinner** - Indicatore attività
-- **Table Output** - Formattazione tabellare
-- **Thread-safe Output** - Mutex per output concurrent
-
-### License Manager
-- **Trial Keys** - Chiavi di prova generate automaticamente
-- **Secure Storage** - Path OS-specifici
-- **Validation** - Checksum integrato
+- **Progress bar** - Allargata a 40 caratteri con velocità MB/s e ETA
+- **Pulizia riga** - Escape `\x1b[2K` per evitare caratteri residui
+- **Formattazione dimensioni** - B, KB, MB, GB, TB
+- **Calcolo rapporto compressione** - Percentuale
 
 ### Internals
 - **RAII Patterns** - Gestione risorse automatica
-- **constexpr** - Costanti compile-time
-- **nullptr checks** - Null safety
+- **Thread-safe Output** - Mutex per output concorrente
+- **Error Handling** - Sistema error codes robusto
 - **C++17** - Standard moderno
-
-## 📊 Algoritmo
-
-| Codec | Quando Usato | Target |
-|-------|-------------|--------|
-| LZMA | Testo, codice, JSON | Massimo ratio |
-| ZSTD | Binari, dati | Bilanciato |
-| STORE | Già compressi | Pass-through |
-
-## 📄 Changelog
-
-### v2.00_OpenAi
-- Error code system completo
-- Modern UI con ProgressBar/Spinner
-- Trial key generation
-- Cancellable operations
-- Thread-safe output
-
-### v1.05
-- Brotli support
-- LZMA optimizations
-
-### v1.04
-- Smart hybrid engine
-- Database optimization
-
-## 📝 Licenza
-
-Copyright (C) 2026 André Willy Rizzo
-
-Questo software è fornito COSÌ COM'È, senza garanzia di alcun tipo.
