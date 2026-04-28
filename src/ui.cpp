@@ -270,7 +270,7 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     if (!active_) return;
     
     float pct = total_ > 0 ? static_cast<float>(current) / total_ * 100.0f : 100.0f;
-    int bar_width = 20;
+    int bar_width = 40;
     int pos = static_cast<int>(bar_width * current / total_);
     
     // Calcola velocità e ETA se abbiamo statistiche
@@ -293,7 +293,8 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     }
     
     std::lock_guard<std::mutex> lock(cout_mutex);
-    std::cout << "\r" << Color::CYAN << label_ << " [";
+    // Pulisce l'intera riga prima di stampare per evitare caratteri residui
+    std::cout << "\r\x1b[2K" << Color::CYAN << label_ << " [";
     for (int i = 0; i < bar_width; ++i) {
         std::cout << (i < pos ? "█" : "░");
     }
