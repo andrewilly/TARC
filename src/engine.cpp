@@ -177,7 +177,9 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
 }
 
 bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& decompressed) {
-    decompressed.resize(256 * 1024 * 1024);
+    if (decompressed.empty()) {
+        decompressed.resize(1024 * 1024); // Default 1MB se il buffer è vuoto
+    }
     size_t src_pos = 0, dst_pos = 0;
     uint64_t limit = UINT64_MAX;
     

@@ -271,7 +271,10 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     
     float pct = total_ > 0 ? static_cast<float>(current) / total_ * 100.0f : 100.0f;
     int bar_width = 40;
-    int pos = static_cast<int>(bar_width * current / total_);
+    int pos = 0;
+    if (total_ > 0) {
+        pos = static_cast<int>(bar_width * current / total_);
+    }
     
     // Calcola velocità e ETA se abbiamo statistiche
     static auto start_time = std::chrono::steady_clock::now();
