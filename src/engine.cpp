@@ -30,6 +30,14 @@ namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
+    
+    inline std::chrono::steady_clock::time_point safe_now() {
+        try {
+            return std::chrono::steady_clock::now();
+        } catch (...) {
+            return std::chrono::steady_clock::time_point{};
+        }
+    }
 }
 
 void Engine::set_progress_callback(ProgressCallback* callback) {
@@ -314,7 +322,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         return true;
     };
 
-    auto start_time = std::chrono::steady_clock::now();
+    auto start_time = safe_now();
     
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         if (check_cancelled()) {
@@ -486,7 +494,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     g_stats.bytes_in = g_stats.bytes_read;
     g_stats.bytes_out = res.bytes_out;
     g_stats.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start_time
+        safe_now() - start_time
     );
     
     res.ok = true;

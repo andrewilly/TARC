@@ -17,6 +17,14 @@ namespace {
 
 std::mutex cout_mutex;
 
+inline std::chrono::steady_clock::time_point safe_now() {
+    try {
+        return std::chrono::steady_clock::now();
+    } catch (...) {
+        return std::chrono::steady_clock::time_point{};
+    }
+}
+
 void safe_print(const std::string& s) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << s << std::flush;
@@ -279,13 +287,13 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     }
     
     // Calcola velocità e ETA se abbiamo statistiche
-    static auto start_time = std::chrono::steady_clock::now();
+    static auto start_time = safe_now();
     static bool start_set = false;
-    if (!start_set) { start_time = std::chrono::steady_clock::now(); start_set = true; }
+    if (!start_set) { start_time = safe_now(); start_set = true; }
     
     std::string speed_info = "";
     if (current > 0 && current < total_) {
-        auto now = std::chrono::steady_clock::now();
+        auto now = safe_now();
         double elapsed = std::chrono::duration<double>(now - start_time).count();
         if (elapsed > 0.5) {
             double mbps = (current / (1024.0 * 1024.0)) / elapsed;
