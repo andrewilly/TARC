@@ -419,16 +419,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     std::memcpy(h.magic, TARC_MAGIC, 4);
     h.version = TARC_VERSION;
 
-    AsyncWriter writer;
-    if (!writer.start(arch_path)) {
+    FILE* f = fopen(arch_path.c_str(), "wb");
+    if (!f) {
         res.error = TarcError::AccessDenied;
         res.message = "Cannot write archive.";
         return res;
     }
 
-    std::vector<char> header_data(sizeof(h));
-    std::memcpy(header_data.data(), &h, sizeof(h));
-    writer.write_async(std::move(header_data));
+    fwrite(&h, sizeof(h), 1, f);
 
     constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;
@@ -450,12 +448,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             0
         };
         
-        std::vector<char> write_buf;
-        write_buf.reserve(sizeof(ch) + cr.compressed_data.size());
-        write_buf.assign(reinterpret_cast<const char*>(&ch), reinterpret_cast<const char*>(&ch) + sizeof(ch));
-        write_buf.insert(write_buf.end(), cr.compressed_data.begin(), cr.compressed_data.end());
-        
-        writer.write_async(std::move(write_buf));
+        if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
+        if (fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f) != cr.compressed_data.size()) return false;
         
         res.bytes_out += cr.compressed_data.size();
         return true;
@@ -467,7 +461,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
             res.message = "Cancelled.";
-            writer.close();
+            fclose(f);
             return res;
         }
         
@@ -603,19 +597,15 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     0
                 };
                 
-                std::vector<char> write_buf;
-                write_buf.reserve(sizeof(ch) + cr.compressed_data.size());
-                write_buf.assign(reinterpret_cast<const char*>(&ch), reinterpret_cast<const char*>(&ch) + sizeof(ch));
-                write_buf.insert(write_buf.end(), cr.compressed_data.begin(), cr.compressed_data.end());
-                
-                writer.write_async(std::move(write_buf));
+                fwrite(&ch, sizeof(ch), 1, f);
+                fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f);
                 res.bytes_out += cr.compressed_data.size();
                 g_stats.bytes_read += fsize;
             } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 if (worker_active && !write_worker(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
-                    writer.close();
+                    fclose(f);
                     return res;
                 }
                 future_chunk = std::async(
@@ -641,7 +631,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     if (worker_active && !write_worker(future_chunk)) {
         res.error = TarcError::CompressionFailed;
         res.message = "Final chunk failed.";
-        writer.close();
+        fclose(f);
         return res;
     }
     
@@ -653,26 +643,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             static_cast<uint32_t>(last.compressed_data.size()),
             0
         };
-        std::vector<char> last_buf;
-        last_buf.reserve(sizeof(ch) + last.compressed_data.size());
-        last_buf.assign(reinterpret_cast<const char*>(&ch), reinterpret_cast<const char*>(&ch) + sizeof(ch));
-        last_buf.insert(last_buf.end(), last.compressed_data.begin(), last.compressed_data.end());
-        writer.write_async(std::move(last_buf));
+        fwrite(&ch, sizeof(ch), 1, f);
+        fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f);
         res.bytes_out += last.compressed_data.size();
-    }
-
-    FILE* f = writer.drain_and_get_file();
-    if (!f) {
-        res.error = TarcError::WriteFailed;
-        res.message = "Failed to drain writer.";
-        return res;
-    }
-
-    if (writer.has_error()) {
-        fclose(f);
-        res.error = TarcError::WriteFailed;
-        res.message = "Write error during compression: " + writer.get_error();
-        return res;
     }
 
     ChunkHeader end_mark = {0, 0, 0, 0};
