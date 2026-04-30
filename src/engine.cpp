@@ -47,8 +47,9 @@ namespace {
         FILE* file_;
         std::atomic<bool> running_;
         std::atomic<bool> error_;
+        std::atomic<size_t> bytes_written_;
+        std::mutex error_mutex_;
         std::string error_msg_;
-        size_t bytes_written_;
 
     public:
         AsyncWriter() : file_(nullptr), running_(true), error_(false), bytes_written_(0) {}
@@ -71,7 +72,10 @@ namespace {
                             size_t written = fwrite(req.data.data(), 1, req.data.size(), file_);
                             if (written != req.data.size()) {
                                 error_ = true;
-                                error_msg_ = "Write error: partial write";
+                                {
+                                    std::lock_guard<std::mutex> em(error_mutex_);
+                                    error_msg_ = "Write error: partial write";
+                                }
                             } else {
                                 bytes_written_ += written;
                             }
@@ -118,10 +122,8 @@ namespace {
         FILE* drain_and_get_file() {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (queue_.empty() && running_) {
-                    running_ = false;
-                    cv_.notify_all();
-                }
+                running_ = false;
+                cv_.notify_all();
             }
 
             if (thread_.joinable()) {
@@ -135,7 +137,10 @@ namespace {
         }
 
         bool has_error() const { return error_; }
-        std::string get_error() const { return error_msg_; }
+        std::string get_error() const {
+            std::lock_guard<std::mutex> em(error_mutex_);
+            return error_msg_;
+        }
 
         void close() {
             {
@@ -549,6 +554,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         } else {
             report_warning("Cannot open file: " + disk_path);
         }
+        } else {
+            report_warning("Cannot convert path to Unicode: " + disk_path);
+        }
         } // end if wpath_len > 0
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
@@ -766,6 +774,13 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             if (block_pos >= current_block.size()) {
                 ChunkHeader ch;
                 if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
+                
+                if (ch.comp_size > SIZE_MAX || ch.raw_size > SIZE_MAX) {
+                    fclose(f);
+                    res.error = TarcError::CorruptedArchive;
+                    res.message = "Chunk too large.";
+                    return res;
+                }
                 
                 std::vector<char> comp(ch.comp_size);
                 if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {

@@ -56,7 +56,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     std::string searchPath = directory + filePattern;
     int wsearch_len = MultiByteToWideChar(CP_UTF8, 0, searchPath.c_str(), -1, NULL, 0);
     std::wstring wsearchPath;
-    if (wsearch_len > 0) {
+    if (wsearch_len > 1) {
         wsearchPath.resize(wsearch_len - 1);
         MultiByteToWideChar(CP_UTF8, 0, searchPath.c_str(), -1, &wsearchPath[0], wsearch_len);
     }
@@ -67,7 +67,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         // Se fallisce con tutto il percorso, prova solo con il pattern
         int wpattern_len = MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, NULL, 0);
         std::wstring wpattern;
-        if (wpattern_len > 0) {
+        if (wpattern_len > 1) {
             wpattern.resize(wpattern_len - 1);
             MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, &wpattern[0], wpattern_len);
         }
@@ -78,7 +78,12 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     
     do {
         std::wstring wname(findData.cFileName);
-        std::string foundName(wname.begin(), wname.end());
+        int narrow_len = WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, NULL, 0, NULL, NULL);
+        std::string foundName;
+        if (narrow_len > 0) {
+            foundName.resize(narrow_len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, &foundName[0], narrow_len, NULL, NULL);
+        }
         if (foundName != "." && foundName != "..") {
             std::string fullPath = directory + foundName;
             // Rimuovi .\ iniziale se presente
