@@ -24,7 +24,7 @@ std::string IO::ensure_ext(const std::string& path) {
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
 #ifdef _WIN32
     // Windows: la shell NON espande le wildcard (*, ?)
-    // FindFirstFileA gestisce *.ext, nome.*, *.*, ma non * da solo
+    // FindFirstFileW gestisce Unicode e long path
     std::string directory = "";
     std::string filePattern = pattern;
     
@@ -52,20 +52,23 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         return false;
     }
     
-    // Pattern con wildcard: usa FindFirstFileA
+    // Pattern con wildcard: usa FindFirstFileW per Unicode
     std::string searchPath = directory + filePattern;
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
+    std::wstring wsearchPath = std::wstring(searchPath.begin(), searchPath.end());
+    WIN32_FIND_DATAW findData;
+    HANDLE hFind = FindFirstFileW(wsearchPath.c_str(), &findData);
     
     if (hFind == INVALID_HANDLE_VALUE) {
         // Se fallisce con tutto il percorso, prova solo con il pattern
-        hFind = FindFirstFileA(pattern.c_str(), &findData);
+        std::wstring wpattern = std::wstring(pattern.begin(), pattern.end());
+        hFind = FindFirstFileW(wpattern.c_str(), &findData);
         if (hFind == INVALID_HANDLE_VALUE) return false;
         directory = ""; // Reset directory se usiamo pattern senza percorso
     }
     
     do {
-        std::string foundName(findData.cFileName);
+        std::wstring wname(findData.cFileName);
+        std::string foundName(wname.begin(), wname.end());
         if (foundName != "." && foundName != "..") {
             std::string fullPath = directory + foundName;
             // Rimuovi .\ iniziale se presente
@@ -75,10 +78,9 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
                 if (fs::is_regular_file(fullPath)) {
                     out.push_back(fullPath);
                 }
-                // Nota: non espandere directory quando si usa wildcard su file
             }
         }
-    } while (FindNextFileA(hFind, &findData));
+    } while (FindNextFileW(hFind, &findData));
     
     FindClose(hFind);
     return !out.empty();

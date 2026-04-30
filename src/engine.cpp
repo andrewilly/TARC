@@ -335,7 +335,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         const std::string& disk_path = expanded_files[i];
         report_progress(i + 1, expanded_files.size(), fs::path(disk_path).filename().string());
 
-        if (!fs::exists(disk_path)) continue;
+        if (!fs::exists(disk_path)) {
+            report_warning("File not found: " + disk_path);
+            continue;
+        }
         
         uintmax_t fsize = fs::file_size(disk_path);
         
@@ -362,8 +365,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         uint64_t h64 = 0;
         
 #ifdef _WIN32
-        HANDLE hFile = CreateFileA(
-            disk_path.c_str(), 
+        // Convert to wide string for Unicode support
+        std::wstring wpath = std::wstring(disk_path.begin(), disk_path.end());
+        HANDLE hFile = CreateFileW(
+            wpath.c_str(), 
             GENERIC_READ, 
             FILE_SHARE_READ | FILE_SHARE_WRITE, 
             nullptr, 
@@ -373,34 +378,38 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         );
         
         if (hFile != INVALID_HANDLE_VALUE) {
+            ULARGE_INTEGER fileSize;
+            fileSize.QuadPart = fsize;
+            
             DWORD bytesReadTotal = 0;
             DWORD bytesRead = 0;
             constexpr DWORD BUF_STEP = 1024 * 1024;
             char* ptr = data.data();
             
-            while (bytesReadTotal < static_cast<DWORD>(fsize)) {
+            // Loop di lettura - supporta file > 4GB con ULARGE_INTEGER
+            while (fileSize.QuadPart > 0) {
                 if (check_cancelled()) {
                     CloseHandle(hFile);
                     break;
                 }
                 
-                DWORD toRead = (static_cast<DWORD>(fsize) - bytesReadTotal > BUF_STEP) 
-                    ? BUF_STEP 
-                    : (static_cast<DWORD>(fsize) - bytesReadTotal);
+                DWORD toRead = (fileSize.QuadPart > BUF_STEP) ? BUF_STEP : static_cast<DWORD>(fileSize.QuadPart);
                     
                 if (ReadFile(hFile, ptr + bytesReadTotal, toRead, &bytesRead, nullptr)) {
                     if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
                     bytesReadTotal += bytesRead;
+                    fileSize.QuadPart -= bytesRead;
+                    if (bytesRead == 0) break; // EOF
                 } else {
                     report_warning("Read error: " + disk_path);
                     break;
                 }
             }
             
-            if (bytesReadTotal == static_cast<DWORD>(fsize)) read_ok = true;
+            read_ok = (bytesReadTotal > 0);
             CloseHandle(hFile);
         } else {
-            report_warning("Access denied: " + disk_path);
+            report_warning("Cannot open file: " + disk_path);
         }
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
@@ -419,7 +428,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             XXH64_freeState(state);
         }
 
-        if (!read_ok) continue;
+        if (!read_ok) {
+            report_warning("Failed to read file: " + disk_path);
+            continue;
+        }
 
         FileEntry fe;
         fe.name = normalize_path(disk_path);
