@@ -553,10 +553,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         } else {
             report_warning("Cannot open file: " + disk_path);
         }
-        } else {
-            report_warning("Cannot convert path to Unicode: " + disk_path);
-        }
-        } // end if wpath_len > 0
+    } else {
+        report_warning("Cannot convert path to Unicode: " + disk_path);
+    }
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
