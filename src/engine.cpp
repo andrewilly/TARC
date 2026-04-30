@@ -496,51 +496,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         XXH64_state_t* const state = XXH64_createState();
         if (state) XXH64_reset(state, 0);
         
-#ifdef _WIN32
-        HANDLE hFile = CreateFileA(
-            disk_path.c_str(), 
-            GENERIC_READ, 
-            FILE_SHARE_READ | FILE_SHARE_WRITE, 
-            nullptr, 
-            OPEN_EXISTING, 
-            FILE_ATTRIBUTE_NORMAL, 
-            nullptr
-        );
-        
-        if (hFile != INVALID_HANDLE_VALUE) {
-            ULARGE_INTEGER fileSize;
-            fileSize.QuadPart = fsize;
-            
-            DWORD bytesReadTotal = 0;
-            DWORD bytesRead = 0;
-            constexpr DWORD BUF_STEP = 1024 * 1024;
-            char* ptr = data.data();
-            
-            while (fileSize.QuadPart > 0) {
-                if (check_cancelled()) {
-                    CloseHandle(hFile);
-                    break;
-                }
-                
-                DWORD toRead = (fileSize.QuadPart > BUF_STEP) ? BUF_STEP : static_cast<DWORD>(fileSize.QuadPart);
-                    
-                if (ReadFile(hFile, ptr + bytesReadTotal, toRead, &bytesRead, nullptr)) {
-                    if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
-                    bytesReadTotal += bytesRead;
-                    fileSize.QuadPart -= bytesRead;
-                    if (bytesRead == 0) break;
-                } else {
-                    report_warning("Read error: " + disk_path);
-                    break;
-                }
-            }
-            
-            read_ok = (bytesReadTotal > 0) || (fsize == 0);
-            CloseHandle(hFile);
-        } else {
-            report_warning("Cannot open file: " + disk_path);
-        }
-#else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
             size_t read_res = fread(data.data(), 1, static_cast<size_t>(fsize), in_f);
@@ -549,8 +504,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (state) XXH64_update(state, data.data(), static_cast<size_t>(fsize));
             }
             fclose(in_f);
+        } else {
+            report_warning("Cannot open file: " + disk_path);
         }
-#endif
 
         if (state) {
             h64 = XXH64_digest(state);
