@@ -14,6 +14,8 @@
 #include <set>
 #include <atomic>
 #include <thread>
+#include <queue>
+#include <functional>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -30,6 +32,132 @@ namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
+
+    struct WriteRequest {
+        std::vector<char> data;
+        std::function<void(bool)> callback;
+    };
+
+    class AsyncWriter {
+    private:
+        std::queue<WriteRequest> queue_;
+        std::mutex mutex_;
+        std::condition_variable cv_;
+        std::thread thread_;
+        FILE* file_;
+        std::atomic<bool> running_;
+        std::atomic<bool> error_;
+        std::string error_msg_;
+        size_t bytes_written_;
+
+    public:
+        AsyncWriter() : file_(nullptr), running_(true), error_(false), bytes_written_(0) {}
+
+        bool start(const std::string& path) {
+            file_ = fopen(path.c_str(), "wb");
+            if (!file_) return false;
+
+            thread_ = std::thread([this]() {
+                while (running_ || !queue_.empty()) {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [this] { return !queue_.empty() || !running_; });
+
+                    if (!queue_.empty()) {
+                        WriteRequest req = std::move(queue_.front());
+                        queue_.pop();
+                        lock.unlock();
+
+                        if (file_ && !req.data.empty()) {
+                            size_t written = fwrite(req.data.data(), 1, req.data.size(), file_);
+                            if (written != req.data.size()) {
+                                error_ = true;
+                                error_msg_ = "Write error: partial write";
+                            } else {
+                                bytes_written_ += written;
+                            }
+                        }
+
+                        if (req.callback) {
+                            req.callback(error_ ? false : true);
+                        }
+                    }
+                }
+
+                if (file_) {
+                    fflush(file_);
+                }
+            });
+
+            return true;
+        }
+
+        void write_async(std::vector<char> data, std::function<void(bool)> callback = nullptr) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                queue_.push({std::move(data), std::move(callback)});
+            }
+            cv_.notify_one();
+        }
+
+        size_t drain() {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (queue_.empty() && running_) {
+                    running_ = false;
+                    cv_.notify_all();
+                }
+            }
+
+            if (thread_.joinable()) {
+                thread_.join();
+            }
+
+            return bytes_written_;
+        }
+
+        FILE* drain_and_get_file() {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (queue_.empty() && running_) {
+                    running_ = false;
+                    cv_.notify_all();
+                }
+            }
+
+            if (thread_.joinable()) {
+                thread_.join();
+            }
+
+            if (file_) {
+                fflush(file_);
+            }
+            return file_;
+        }
+
+        bool has_error() const { return error_; }
+        std::string get_error() const { return error_msg_; }
+
+        void close() {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                running_ = false;
+                cv_.notify_all();
+            }
+
+            if (thread_.joinable()) {
+                thread_.join();
+            }
+
+            if (file_) {
+                fclose(file_);
+                file_ = nullptr;
+            }
+        }
+
+        ~AsyncWriter() {
+            close();
+        }
+    };
     
     inline std::chrono::steady_clock::time_point safe_now() {
         try {
@@ -286,14 +414,16 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     std::memcpy(h.magic, TARC_MAGIC, 4);
     h.version = TARC_VERSION;
 
-    FILE* f = fopen(arch_path.c_str(), "wb");
-    if (!f) {
+    AsyncWriter writer;
+    if (!writer.start(arch_path)) {
         res.error = TarcError::AccessDenied;
         res.message = "Cannot write archive.";
         return res;
     }
 
-    fwrite(&h, sizeof(h), 1, f);
+    std::vector<char> header_data(sizeof(h));
+    std::memcpy(header_data.data(), &h, sizeof(h));
+    writer.write_async(std::move(header_data));
 
     constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;
@@ -315,8 +445,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             0
         };
         
-        if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
-        if (fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f) != cr.compressed_data.size()) return false;
+        std::vector<char> write_buf;
+        write_buf.reserve(sizeof(ch) + cr.compressed_data.size());
+        write_buf.assign(reinterpret_cast<const char*>(&ch), reinterpret_cast<const char*>(&ch) + sizeof(ch));
+        write_buf.insert(write_buf.end(), cr.compressed_data.begin(), cr.compressed_data.end());
+        
+        writer.write_async(std::move(write_buf));
         
         res.bytes_out += cr.compressed_data.size();
         return true;
@@ -328,7 +462,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
             res.message = "Cancelled.";
-            fclose(f);
+            writer.close();
             return res;
         }
         
@@ -365,10 +499,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         uint64_t h64 = 0;
         
 #ifdef _WIN32
-        // Convert to wide string for Unicode support
-        std::wstring wpath = std::wstring(disk_path.begin(), disk_path.end());
-        HANDLE hFile = CreateFileW(
-            wpath.c_str(), 
+        // Convert UTF-8 to UTF-16 for proper Unicode support
+        int wpath_len = MultiByteToWideChar(CP_UTF8, 0, disk_path.c_str(), -1, NULL, 0);
+        if (wpath_len > 0) {
+            std::wstring wpath(wpath_len, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, disk_path.c_str(), -1, &wpath[0], wpath_len);
+            
+            HANDLE hFile = CreateFileW(
+                wpath.c_str(), 
             GENERIC_READ, 
             FILE_SHARE_READ | FILE_SHARE_WRITE, 
             nullptr, 
@@ -411,6 +549,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         } else {
             report_warning("Cannot open file: " + disk_path);
         }
+        } // end if wpath_len > 0
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
@@ -456,7 +595,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (worker_active && !write_worker(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
-                    fclose(f);
+                    writer.close();
                     return res;
                 }
                 future_chunk = std::async(
@@ -482,7 +621,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     if (worker_active && !write_worker(future_chunk)) {
         res.error = TarcError::CompressionFailed;
         res.message = "Final chunk failed.";
-        fclose(f);
+        writer.close();
         return res;
     }
     
@@ -494,8 +633,26 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             static_cast<uint32_t>(last.compressed_data.size()),
             0
         };
-        fwrite(&ch, sizeof(ch), 1, f);
-        fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f);
+        std::vector<char> last_buf;
+        last_buf.reserve(sizeof(ch) + last.compressed_data.size());
+        last_buf.assign(reinterpret_cast<const char*>(&ch), reinterpret_cast<const char*>(&ch) + sizeof(ch));
+        last_buf.insert(last_buf.end(), last.compressed_data.begin(), last.compressed_data.end());
+        writer.write_async(std::move(last_buf));
+        res.bytes_out += last.compressed_data.size();
+    }
+
+    FILE* f = writer.drain_and_get_file();
+    if (!f) {
+        res.error = TarcError::WriteFailed;
+        res.message = "Failed to drain writer.";
+        return res;
+    }
+
+    if (writer.has_error()) {
+        fclose(f);
+        res.error = TarcError::WriteFailed;
+        res.message = "Write error during compression: " + writer.get_error();
+        return res;
     }
 
     ChunkHeader end_mark = {0, 0, 0, 0};

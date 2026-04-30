@@ -52,16 +52,26 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         return false;
     }
     
-    // Pattern con wildcard: usa FindFirstFileW per Unicode
+    // Pattern con wildcard: usa FindFirstFileW per Unicode (conversione UTF-8 corretta)
     std::string searchPath = directory + filePattern;
-    std::wstring wsearchPath = std::wstring(searchPath.begin(), searchPath.end());
+    int wsearch_len = MultiByteToWideChar(CP_UTF8, 0, searchPath.c_str(), -1, NULL, 0);
+    std::wstring wsearchPath;
+    if (wsearch_len > 0) {
+        wsearchPath.resize(wsearch_len - 1);
+        MultiByteToWideChar(CP_UTF8, 0, searchPath.c_str(), -1, &wsearchPath[0], wsearch_len);
+    }
     WIN32_FIND_DATAW findData;
-    HANDLE hFind = FindFirstFileW(wsearchPath.c_str(), &findData);
+    HANDLE hFind = wsearchPath.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW(wsearchPath.c_str(), &findData);
     
     if (hFind == INVALID_HANDLE_VALUE) {
         // Se fallisce con tutto il percorso, prova solo con il pattern
-        std::wstring wpattern = std::wstring(pattern.begin(), pattern.end());
-        hFind = FindFirstFileW(wpattern.c_str(), &findData);
+        int wpattern_len = MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, NULL, 0);
+        std::wstring wpattern;
+        if (wpattern_len > 0) {
+            wpattern.resize(wpattern_len - 1);
+            MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, &wpattern[0], wpattern_len);
+        }
+        hFind = wpattern.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW(wpattern.c_str(), &findData);
         if (hFind == INVALID_HANDLE_VALUE) return false;
         directory = ""; // Reset directory se usiamo pattern senza percorso
     }

@@ -40,6 +40,7 @@ enum class TarcError : uint32_t {
     LicenseMissing,
     DiskFull,
     Cancelled,
+    WriteFailed,
     Unknown
 };
 
@@ -70,6 +71,7 @@ inline const char* error_message(TarcError e) {
         case TarcError::LicenseMissing: return "License not found";
         case TarcError::DiskFull:     return "Disk full";
         case TarcError::Cancelled:    return "Operation cancelled";
+        case TarcError::WriteFailed:    return "Write failed";
         default:                     return "Unknown error";
     }
 }
