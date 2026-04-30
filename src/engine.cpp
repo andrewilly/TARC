@@ -497,11 +497,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             continue;
         }
 
-        XXH64_state_t* const state = XXH64_createState();
-        if (state) XXH64_reset(state, 0);
-
         bool read_ok = false;
         uint64_t h64 = 0;
+        XXH64_state_t* const state = XXH64_createState();
+        if (state) XXH64_reset(state, 0);
         
 #ifdef _WIN32
         // Convert UTF-8 to UTF-16 for proper Unicode support
