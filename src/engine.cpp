@@ -256,6 +256,10 @@ namespace Engine {
 
 std::string normalize_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
+    // BUG FIX #7: rimuovi prefisso ./ iniziale
+    while (path.size() >= 2 && path[0] == '.' && path[1] == '/') {
+        path = path.substr(2);
+    }
     return path;
 }
 
@@ -337,21 +341,34 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     res.raw_size = static_cast<uint32_t>(raw_data.size());
     res.codec = chosen_codec;
     res.success = false;
-    
+
+    if (raw_data.empty()) {
+        res.compressed_data = std::move(raw_data);
+        res.success = true;
+        return res;
+    }
+
     if (raw_data.size() < 4096) {
         res.compressed_data = std::move(raw_data);
         res.codec = Codec::STORE;
         res.success = true;
         return res;
     }
-    
+
     if (chosen_codec == Codec::STORE) {
         res.compressed_data = std::move(raw_data);
         res.success = true;
         return res;
     }
-    
+
+    // Per ora solo LZMA e' implementato; gli altri codec sono placeholder
+    // TODO: implementare LZ4, ZSTD, Brotli quando disponibili
+    uint32_t saved_raw_size = res.raw_size;
     res = compress_lzma_optimal(raw_data, level);
+    res.raw_size = saved_raw_size; // preserva il raw_size corretto
+
+    // Allinea il codec nel risultato con quello realmente usato
+    res.codec = Codec::LZMA;
     return res;
 }
 
@@ -426,7 +443,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         return res;
     }
 
-    fwrite(&h, sizeof(h), 1, f);
+    if (fwrite(&h, sizeof(h), 1, f) != 1) {
+        fclose(f);
+        res.error = TarcError::WriteFailed;
+        res.message = "Failed to write header.";
+        return res;
+    }
 
     constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
     std::vector<char> solid_buf;
@@ -522,7 +544,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         fe.name = normalize_path(disk_path);
         fe.meta.orig_size = fsize;
         fe.meta.xxhash = h64;
-        fe.meta.codec = static_cast<uint8_t>(CodecSelector::select(disk_path, fsize));
+        // BUG FIX #4: il codec nel TOC deve riflettere il codec REALMENTE usato
+        Codec selected_codec = CodecSelector::select(disk_path, fsize);
+        if (selected_codec != Codec::STORE && fsize > STORE_THRESHOLD) {
+            fe.meta.codec = static_cast<uint8_t>(Codec::LZMA);
+        } else {
+            fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+        }
         fe.meta.timestamp = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
                 fs::last_write_time(disk_path).time_since_epoch()
@@ -539,25 +567,28 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             
             constexpr size_t STORE_THRESHOLD = 2048;
             
-            if (fsize > 0 && fsize <= STORE_THRESHOLD) {
+            if (fsize <= STORE_THRESHOLD) {
+                // BUG FIX #1: file STORE scritti direttamente, NON accodati nel solid_buf
                 ChunkResult cr;
-                cr.compressed_data = std::move(data);
+                cr.compressed_data = data; // copia esplicita, non move
                 cr.raw_size = static_cast<uint32_t>(fsize);
                 cr.codec = Codec::STORE;
                 cr.success = true;
-                
+
                 ChunkHeader ch = {
                     static_cast<uint32_t>(cr.codec),
                     cr.raw_size,
                     static_cast<uint32_t>(cr.compressed_data.size()),
                     0
                 };
-                
+
                 fwrite(&ch, sizeof(ch), 1, f);
                 fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f);
                 res.bytes_out += cr.compressed_data.size();
                 g_stats.bytes_read += fsize;
+                // IMPORTANTE: NON inserire data nel solid_buf
             } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
+                // Il solid buffer e' pieno: scarica il blocco corrente
                 if (worker_active && !write_worker(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
@@ -565,19 +596,23 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     return res;
                 }
                 future_chunk = std::async(
-                    std::launch::async, 
-                    compress_worker, 
-                    std::move(solid_buf), 
-                    level, 
+                    std::launch::async,
+                    compress_worker,
+                    std::move(solid_buf),
+                    level,
                     Codec::LZMA
                 );
                 worker_active = true;
                 solid_buf.clear();
                 solid_buf.reserve(CHUNK_THRESHOLD);
+                // Accoda il file corrente nel nuovo solid buffer
+                solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+                g_stats.bytes_read += fsize;
+            } else {
+                // Il file sta nel solid buffer corrente
+                solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+                g_stats.bytes_read += fsize;
             }
-            
-            solid_buf.insert(solid_buf.end(), data.begin(), data.end());
-            g_stats.bytes_read += fsize;
         }
         
         final_toc.push_back(fe);
@@ -607,6 +642,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     ChunkHeader end_mark = {0, 0, 0, 0};
     fwrite(&end_mark, sizeof(end_mark), 1, f);
     IO::write_toc(f, h, final_toc);
+    fflush(f);
     fclose(f);
     
     g_stats.bytes_in = g_stats.bytes_read;
@@ -622,31 +658,59 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     return res;
 }
 
+static bool match_pattern_impl(const std::string& target, const std::string& pattern, size_t ti, size_t pi) {
+    while (ti < target.size() && pi < pattern.size()) {
+        if (pattern[pi] == '*') {
+            // Salta stelle consecutive
+            while (pi < pattern.size() && pattern[pi] == '*') pi++;
+            if (pi == pattern.size()) return true; // '*' finale corrisponde a tutto
+
+            // Prova a far combaciare il resto del pattern dopo '*' in ogni posizione
+            for (size_t k = ti; k <= target.size(); ++k) {
+                if (match_pattern_impl(target, pattern, k, pi)) return true;
+            }
+            return false;
+        } else if (pattern[pi] == '?') {
+            // '?' corrisponde a esattamente un carattere
+            ti++;
+            pi++;
+        } else {
+            if (target[ti] != pattern[pi]) return false;
+            ti++;
+            pi++;
+        }
+    }
+
+    // Consuma eventuali '*' rimasti nel pattern
+    while (pi < pattern.size() && pattern[pi] == '*') pi++;
+
+    return ti == target.size() && pi == pattern.size();
+}
+
 static bool match_pattern(const std::string& full_path, const std::string& pattern) {
     if (pattern.empty()) return true;
-    
+
     std::string target = full_path;
     if (pattern.find('/') == std::string::npos && pattern.find('\\') == std::string::npos) {
         target = fs::path(full_path).filename().string();
     }
 
-    size_t star_pos = pattern.find('*');
-    
-    if (star_pos == std::string::npos) {
-        return target.find(pattern) != std::string::npos;
+    // Controlla se contiene wildcard
+    bool has_wildcard = (pattern.find('*') != std::string::npos || pattern.find('?') != std::string::npos);
+
+    if (!has_wildcard) {
+        // Senza wildcard: match esatto
+        return target == pattern;
     }
 
-    std::string prefix = pattern.substr(0, star_pos);
-    std::string suffix = pattern.substr(star_pos + 1);
-
-    if (!prefix.empty() && target.find(prefix) != 0) return false;
-
-    if (!suffix.empty()) {
-        if (suffix.length() > target.length()) return false;
-        if (target.compare(target.length() - suffix.length(), suffix.length(), suffix) != 0) return false;
+    // Caso speciale: pattern "**/" per ricerca ricorsiva nelle sottocartelle
+    if (pattern.find("**/") == 0) {
+        std::string sub_pattern = pattern.substr(3);
+        // Cerca in qualsiasi posizione del percorso
+        return match_pattern_impl(full_path, sub_pattern, 0, 0);
     }
 
-    return true;
+    return match_pattern_impl(target, pattern, 0, 0);
 }
 
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset, bool flat_mode) {
@@ -848,10 +912,11 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     }
     
     for (const auto& fe : toc) {
+        // BUG FIX #6: passa dimensione corretta per list_entry
         UI::print_list_entry(
-            fe.name, 
-            fe.meta.orig_size, 
-            fe.meta.is_duplicate ? 0 : 1, 
+            fe.name,
+            fe.meta.orig_size,
+            fe.meta.is_duplicate ? 0 : fe.meta.orig_size,
             static_cast<Codec>(fe.meta.codec)
         );
     }

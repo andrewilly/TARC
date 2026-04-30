@@ -86,6 +86,8 @@ namespace UI {
         size_t current_;
         std::string label_;
         bool active_;
+        std::chrono::steady_clock::time_point start_time;
+        bool start_set;
     };
     
     class Spinner {

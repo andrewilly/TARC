@@ -7,12 +7,43 @@
 #include <cstring>
 #include <system_error>
 #include <ctime>
+#include <regex>
 
 #ifdef _WIN32
     #include <windows.h>
 #endif
 
 namespace fs = std::filesystem;
+
+// BUG FIX #3: helper glob matching per Unix
+static bool glob_match(const std::string& name, const std::string& pattern) {
+    if (pattern.empty()) return name.empty();
+
+    // Converti pattern glob in regex
+    std::string regex_str;
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        char c = pattern[i];
+        if (c == '*') {
+            regex_str += ".*";
+        } else if (c == '?') {
+            regex_str += ".";
+        } else if (c == '.' || c == '(' || c == ')' || c == '[' || c == ']' ||
+                   c == '{' || c == '}' || c == '+' || c == '^' || c == '$' ||
+                   c == '|' || c == '\\') {
+            regex_str += '\\';
+            regex_str += c;
+        } else {
+            regex_str += c;
+        }
+    }
+
+    try {
+        std::regex re("^" + regex_str + "$", std::regex::icase);
+        return std::regex_match(name, re);
+    } catch (...) {
+        return name == pattern;
+    }
+}
 
 std::string IO::ensure_ext(const std::string& path) {
     if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {
@@ -29,7 +60,9 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
             return true;
         }
         if (fs::is_directory(pattern)) {
-            for (auto& p : fs::recursive_directory_iterator(pattern)) {
+            // BUG FIX #8: skip_permission_denied per evitare crash
+            for (auto& p : fs::recursive_directory_iterator(
+                    pattern, fs::directory_options::skip_permission_denied)) {
                 if (p.is_regular_file()) {
                     out.push_back(p.path().string());
                 }
@@ -104,15 +137,54 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     FindClose(hFind);
     return !out.empty();
 #else
-    // Unix: la shell espande le wildcard, ma gestiamo comunque
+    // Unix: la shell espande le wildcard, ma gestiamo comunque con glob
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
-            for (auto& p : fs::recursive_directory_iterator(pattern)) 
-                if (p.is_regular_file()) out.push_back(p.path().string());
+            // BUG FIX #8: protezione symlink circolari
+            for (auto& p : fs::recursive_directory_iterator(
+                    pattern, fs::directory_options::skip_permission_denied)) {
+                if (p.is_regular_file() && !p.is_symlink()) {
+                    out.push_back(p.path().string());
+                }
+            }
         } else {
             out.push_back(pattern);
         }
         return true;
+    }
+
+    // BUG FIX #3: fallback glob matching su Unix se il pattern contiene wildcard
+    // e la shell non le ha espanse (es. pattern quotato)
+    bool has_glob = (pattern.find('*') != std::string::npos ||
+                     pattern.find('?') != std::string::npos);
+    if (has_glob) {
+        fs::path parent_dir = fs::path(pattern).parent_path();
+        std::string file_pat = fs::path(pattern).filename().string();
+
+        if (parent_dir.empty() || !fs::exists(parent_dir)) {
+            parent_dir = fs::current_path();
+        }
+
+        if (fs::is_directory(parent_dir)) {
+            for (auto& p : fs::directory_iterator(parent_dir)) {
+                std::string name = p.path().filename().string();
+                bool match = false;
+
+                // Match semplice: '*' = qualsiasi cosa, '?' = un char
+                if (file_pat.find('*') != std::string::npos ||
+                    file_pat.find('?') != std::string::npos) {
+                    // Converti il pattern glob in regex semplificato
+                    match = glob_match(name, file_pat);
+                } else {
+                    match = (name == file_pat);
+                }
+
+                if (match && p.is_regular_file()) {
+                    out.push_back(p.path().string());
+                }
+            }
+            return !out.empty();
+        }
     }
     return false;
 #endif

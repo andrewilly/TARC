@@ -263,7 +263,8 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 }
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
-    : total_(total), current_(0), label_(label), active_(true) {
+    : total_(total), current_(0), label_(label), active_(true),
+      start_time(safe_now()), start_set(false) {
     update(0);
 }
 
@@ -287,9 +288,16 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     }
     
     // Calcola velocità e ETA se abbiamo statistiche
-    static auto start_time = safe_now();
-    static bool start_set = false;
-    if (!start_set) { start_time = safe_now(); start_set = true; }
+    // BUG FIX #5: usa variabili di istanza, non statiche
+    if (current_ == 0 && current > 0) {
+        // Primo aggiornamento con dati reali: reset timer
+        start_time = safe_now();
+        start_set = true;
+    }
+    if (!start_set && current > 0) {
+        start_time = safe_now();
+        start_set = true;
+    }
     
     std::string speed_info = "";
     if (current > 0 && current < total_) {
