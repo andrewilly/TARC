@@ -48,7 +48,7 @@ namespace {
         std::atomic<bool> running_;
         std::atomic<bool> error_;
         std::atomic<size_t> bytes_written_;
-        std::mutex error_mutex_;
+        mutable std::mutex error_mutex_;
         std::string error_msg_;
 
     public:
@@ -775,7 +775,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 ChunkHeader ch;
                 if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
                 
-                if (ch.comp_size > SIZE_MAX || ch.raw_size > SIZE_MAX) {
+                if (ch.comp_size > 0x7FFFFFFF || ch.raw_size > 0x7FFFFFFF) {
                     fclose(f);
                     res.error = TarcError::CorruptedArchive;
                     res.message = "Chunk too large.";
