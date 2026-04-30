@@ -22,6 +22,23 @@ std::string IO::ensure_ext(const std::string& path) {
 }
 
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
+    // Prima gestisci direttamente come percorso file/directory
+    if (fs::exists(pattern)) {
+        if (fs::is_regular_file(pattern)) {
+            out.push_back(pattern);
+            return true;
+        }
+        if (fs::is_directory(pattern)) {
+            for (auto& p : fs::recursive_directory_iterator(pattern)) {
+                if (p.is_regular_file()) {
+                    out.push_back(p.path().string());
+                }
+            }
+            return !out.empty();
+        }
+    }
+    
+    // Se non esiste direttamente, prova come pattern con wildcard
 #ifdef _WIN32
     // Windows: la shell NON espande le wildcard (*, ?)
     // FindFirstFileW gestisce Unicode e long path
@@ -34,25 +51,12 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         directory = pattern.substr(0, last_slash + 1);
         filePattern = pattern.substr(last_slash + 1);
     } else {
-        directory = ".\\";
+        directory = "";
     }
     
-    // Se non ci sono wildcard, prova come percorso diretto
     if (filePattern.find('*') == std::string::npos && filePattern.find('?') == std::string::npos) {
-        if (fs::exists(pattern)) {
-            if (fs::is_regular_file(pattern)) {
-                out.push_back(pattern);
-                return true;
-            } else if (fs::is_directory(pattern)) {
-                for (auto& p : fs::recursive_directory_iterator(pattern))
-                    if (p.is_regular_file()) out.push_back(p.path().string());
-                return true;
-            }
-        }
         return false;
     }
-    
-    // Pattern con wildcard: usa FindFirstFileW per Unicode (conversione UTF-8 corretta)
     std::string searchPath = directory + filePattern;
     int wsearch_len = MultiByteToWideChar(CP_UTF8, 0, searchPath.c_str(), -1, NULL, 0);
     std::wstring wsearchPath;
