@@ -541,7 +541,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 }
             }
             
-            read_ok = (bytesReadTotal > 0);
+            read_ok = (bytesReadTotal > 0) || (fsize == 0);
             CloseHandle(hFile);
         } else {
             report_warning("Cannot open file: " + disk_path);
@@ -587,7 +587,31 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
             
-            if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
+            constexpr size_t STORE_THRESHOLD = 2048;
+            
+            if (fsize > 0 && fsize <= STORE_THRESHOLD) {
+                ChunkResult cr;
+                cr.compressed_data = std::move(data);
+                cr.raw_size = static_cast<uint32_t>(fsize);
+                cr.codec = Codec::STORE;
+                cr.success = true;
+                
+                ChunkHeader ch = {
+                    static_cast<uint32_t>(cr.codec),
+                    cr.raw_size,
+                    static_cast<uint32_t>(cr.compressed_data.size()),
+                    0
+                };
+                
+                std::vector<char> write_buf;
+                write_buf.reserve(sizeof(ch) + cr.compressed_data.size());
+                write_buf.assign(reinterpret_cast<const char*>(&ch), reinterpret_cast<const char*>(&ch) + sizeof(ch));
+                write_buf.insert(write_buf.end(), cr.compressed_data.begin(), cr.compressed_data.end());
+                
+                writer.write_async(std::move(write_buf));
+                res.bytes_out += cr.compressed_data.size();
+                g_stats.bytes_read += fsize;
+            } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 if (worker_active && !write_worker(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
