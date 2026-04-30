@@ -503,14 +503,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (state) XXH64_reset(state, 0);
         
 #ifdef _WIN32
-        // Convert UTF-8 to UTF-16 for proper Unicode support
-        int wpath_len = MultiByteToWideChar(CP_UTF8, 0, disk_path.c_str(), -1, NULL, 0);
-        if (wpath_len > 0) {
-            std::wstring wpath(wpath_len, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, disk_path.c_str(), -1, &wpath[0], wpath_len);
-            
-            HANDLE hFile = CreateFileW(
-                wpath.c_str(), 
+        HANDLE hFile = CreateFileA(
+            disk_path.c_str(), 
             GENERIC_READ, 
             FILE_SHARE_READ | FILE_SHARE_WRITE, 
             nullptr, 
@@ -528,7 +522,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             constexpr DWORD BUF_STEP = 1024 * 1024;
             char* ptr = data.data();
             
-            // Loop di lettura - supporta file > 4GB con ULARGE_INTEGER
             while (fileSize.QuadPart > 0) {
                 if (check_cancelled()) {
                     CloseHandle(hFile);
@@ -541,7 +534,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (state) XXH64_update(state, ptr + bytesReadTotal, bytesRead);
                     bytesReadTotal += bytesRead;
                     fileSize.QuadPart -= bytesRead;
-                    if (bytesRead == 0) break; // EOF
+                    if (bytesRead == 0) break;
                 } else {
                     report_warning("Read error: " + disk_path);
                     break;
@@ -553,9 +546,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         } else {
             report_warning("Cannot open file: " + disk_path);
         }
-    } else {
-        report_warning("Cannot convert path to Unicode: " + disk_path);
-    }
 #else
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
