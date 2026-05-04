@@ -47,6 +47,30 @@ void Engine::reset_stats() {
     g_cancelled = false;
 }
 
+static void report_progress(size_t current, size_t total, const std::string& current_file) {
+    if (g_progress_callback) {
+        g_progress_callback->on_progress(current, total, current_file);
+    }
+}
+
+static void report_warning(const std::string& msg) {
+    if (g_progress_callback) {
+        g_progress_callback->on_warning(msg);
+    }
+}
+
+static bool check_cancelled() {
+    if (g_cancelled) return true;
+    if (g_progress_callback && g_progress_callback->is_cancelled()) {
+        g_cancelled = true;
+        return true;
+    }
+    return false;
+}
+
+namespace Engine {
+
+// ARCH-013: CodecSelector moved inside Engine namespace (was at file scope)
 namespace CodecSelector {
     static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip", ".strk" };
 
@@ -90,30 +114,7 @@ namespace CodecSelector {
 
         return Codec::LZMA;
     }
-}
-
-static void report_progress(size_t current, size_t total, const std::string& current_file) {
-    if (g_progress_callback) {
-        g_progress_callback->on_progress(current, total, current_file);
-    }
-}
-
-static void report_warning(const std::string& msg) {
-    if (g_progress_callback) {
-        g_progress_callback->on_warning(msg);
-    }
-}
-
-static bool check_cancelled() {
-    if (g_cancelled) return true;
-    if (g_progress_callback && g_progress_callback->is_cancelled()) {
-        g_cancelled = true;
-        return true;
-    }
-    return false;
-}
-
-namespace Engine {
+} // namespace CodecSelector
 
 std::string normalize_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
@@ -259,16 +260,22 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     return res;
 }
 
+// FIX 5 (ARCH-014): decompress_chunk dispatch — proper codec routing with fallback
 bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& decompressed, Codec codec) {
     if (codec == Codec::STORE) {
         decompressed = compressed;
         return true;
     }
 
-    if (codec == Codec::LZMA || codec == Codec::LZ4 || codec == Codec::BR) {
+    // Currently only LZMA is implemented; other codecs fall back to LZMA
+    // TODO: implement native ZSTD, LZ4, Brotli decompression
+    if (codec == Codec::LZMA) {
         return decompress_lzma(compressed, decompressed);
     }
 
+    // For unimplemented codecs (ZSTD, LZ4, BR), try LZMA as fallback
+    // This handles archives created before codec diversification
+    report_warning("Codec " + std::string(codec_name(codec)) + " not natively supported, falling back to LZMA");
     return decompress_lzma(compressed, decompressed);
 }
 
@@ -308,6 +315,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     res.ok = false;
     reset_stats();
 
+    // FIX 4b: TODO — verify option not yet implemented
+    // TODO: verify option — re-read and hash-check after write
+    (void)opts.verify;
+
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) {
         IO::expand_path(in, expanded_files);
@@ -339,9 +350,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         return res;
     }
 
-    constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
+    // FIX 3: Use opts.chunk_size instead of hardcoded 1GB threshold
+    const size_t chunk_threshold = opts.chunk_size;
     std::vector<char> solid_buf;
-    solid_buf.reserve(CHUNK_THRESHOLD);
+    solid_buf.reserve(chunk_threshold);
 
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
@@ -459,27 +471,42 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
                 write_chunk(fg.get(), cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out);
                 g_stats.bytes_read += fsize;
-            } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
-                if (worker_active && !write_worker(future_chunk)) {
-                    res.error = TarcError::CompressionFailed;
-                    res.message = "Chunk compression failed.";
-                    return res;
+            } else if (!opts.solid_mode) {
+                // FIX 4a: Non-solid mode — compress each file individually
+                // NOTE: data is moved into compress_worker when possible to avoid copies
+                ChunkResult cr = compress_worker(std::move(data), level, selected_codec);
+                if (!cr.success) {
+                    report_warning("Compression failed: " + disk_path);
+                    continue;
                 }
-                future_chunk = std::async(
-                    std::launch::async,
-                    compress_worker,
-                    std::move(solid_buf),
-                    level,
-                    Codec::LZMA
-                );
-                worker_active = true;
-                solid_buf.clear();
-                solid_buf.reserve(CHUNK_THRESHOLD);
-                solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+                write_chunk(fg.get(), cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out);
                 g_stats.bytes_read += fsize;
             } else {
-                solid_buf.insert(solid_buf.end(), data.begin(), data.end());
-                g_stats.bytes_read += fsize;
+                // Solid mode: accumulate files into solid_buf until threshold
+                if (solid_buf.size() + fsize > chunk_threshold && !solid_buf.empty()) {
+                    // Flush current solid buffer asynchronously
+                    if (worker_active && !write_worker(future_chunk)) {
+                        res.error = TarcError::CompressionFailed;
+                        res.message = "Chunk compression failed.";
+                        return res;
+                    }
+                    // NOTE: solid_buf is moved into std::async — ownership transferred
+                    future_chunk = std::async(
+                        std::launch::async,
+                        compress_worker,
+                        std::move(solid_buf),
+                        level,
+                        Codec::LZMA
+                    );
+                    worker_active = true;
+                    solid_buf.clear();
+                    solid_buf.reserve(chunk_threshold);
+                    solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+                    g_stats.bytes_read += fsize;
+                } else {
+                    solid_buf.insert(solid_buf.end(), data.begin(), data.end());
+                    g_stats.bytes_read += fsize;
+                }
             }
         }
 
@@ -487,12 +514,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         g_stats.files_processed++;
     }
 
+    // Wait for any pending async compression worker
     if (worker_active && !write_worker(future_chunk)) {
         res.error = TarcError::CompressionFailed;
         res.message = "Final chunk failed.";
         return res;
     }
 
+    // Flush remaining solid buffer (only exists in solid mode)
     if (!solid_buf.empty()) {
         ChunkResult last = compress_worker(std::move(solid_buf), level, Codec::LZMA);
         write_chunk(fg.get(), last.codec, last.raw_size, last.compressed_data, res.bytes_out);
@@ -504,8 +533,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     fflush(fg.get());
     // ARCH-010: FileGuard destructor handles fclose
 
-    g_stats.bytes_in = g_stats.bytes_read;
+    // FIX 6: bytes_in accuracy — use g_stats.bytes_read directly, set bytes_compressed
     g_stats.bytes_out = res.bytes_out;
+    g_stats.bytes_compressed = res.bytes_out;
     g_stats.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         safe_now() - start_time
     );
@@ -854,12 +884,6 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     return res;
 }
 
-TarcResult remove_files(const std::string&, const std::vector<std::string>&) {
-    TarcResult res;
-    res.ok = false;
-    res.error = TarcError::Unknown;
-    res.message = "Remove not supported.";
-    return res;
-}
+// FIX 2 (ARCH-014): remove_files stub removed — it was a non-functional stub
 
 } // namespace Engine

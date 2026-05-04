@@ -6,11 +6,6 @@
 #include <optional>
 #include "types.h"
 
-namespace CodecSelector {
-    Codec select(const std::string& path, size_t size);
-    bool is_compressible(const std::string& ext);
-}
-
 class ProgressCallback {
 public:
     virtual ~ProgressCallback() = default;
@@ -20,6 +15,12 @@ public:
 };
 
 namespace Engine {
+
+    // ARCH-013: CodecSelector moved inside Engine namespace
+    namespace CodecSelector {
+        Codec select(const std::string& path, size_t size);
+        bool is_compressible(const std::string& ext);
+    }
 
     struct CompressionStats {
         uint64_t files_processed = 0;
