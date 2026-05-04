@@ -614,10 +614,13 @@ struct SolidChunkFiles {
 // COMPRESS — con Feature #1 (codec nativi), Feature #5 (Entry.offset)
 // ============================================================================
 
-TarcResult compress(const std::string& arch_path, const std::vector<std::string>& inputs, int level) {
+TarcResult compress(const std::string& arch_path, const std::vector<std::string>& inputs, CompressOptions opts) {
     TarcResult res;
     res.ok = false;
     reset_stats();
+    
+    int level = opts.level;
+    bool has_codec_override = (opts.codec != Codec::LZMA);  // LZMA = auto/default
     
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) {
@@ -762,8 +765,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
         constexpr size_t STORE_THRESHOLD = 2048;
 
-        // FEATURE #1: il codec nel TOC riflette il codec REALMENTE usato
-        Codec selected_codec = CodecSelector::select(disk_path, fsize);
+        // FEATURE #1 / #6: il codec nel TOC riflette il codec REALMENTE usato
+        Codec selected_codec;
+        if (has_codec_override) {
+            selected_codec = opts.codec;  // override CLI: --zstd, --lz4, etc.
+        } else {
+            selected_codec = CodecSelector::select(disk_path, fsize);  // auto
+        }
 
         fe.meta.timestamp = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(

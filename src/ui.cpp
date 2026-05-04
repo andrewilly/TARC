@@ -76,18 +76,28 @@ void show_help() {
     std::cout << "  " << Color::GREEN << "-c[N]" << Color::RESET << "       Level N (1=speed, 9=ratio)\n";
     
     std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
-    std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "       Create self-extracting archive\n";
-    std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "      Flat extraction (no paths)\n";
-    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "    Overwrite existing files\n";
-    std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "    Verify integrity after operation\n";
-    std::cout << "  " << Color::WHITE << "--threads N" << Color::RESET << " Set compression threads (default: auto)\n";
+    std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "           Create self-extracting archive\n";
+    std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "          Flat extraction (no paths)\n";
+    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "         Overwrite existing files\n";
+    std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "        Verify integrity after operation\n";
+    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "     Skip integrity verification\n";
+    std::cout << "  " << Color::WHITE << "--output-dir" << Color::RESET << " <path>  Extract to directory\n";
+    std::cout << "  " << Color::WHITE << "--threads" << Color::RESET << " N     Set compression threads (default: auto)\n";
+    
+    std::cout << "\n" << Color::BOLD << "Codec Override (create):" << Color::RESET << "\n";
+    std::cout << "  " << Color::WHITE << "--zstd" << Color::RESET << "          Force ZSTD compression\n";
+    std::cout << "  " << Color::WHITE << "--lzma" << Color::RESET << "          Force LZMA compression (default)\n";
+    std::cout << "  " << Color::WHITE << "--lz4" << Color::RESET << "           Force LZ4 compression (fast)\n";
+    std::cout << "  " << Color::WHITE << "--brotli" << Color::RESET << "        Force Brotli compression\n";
+    std::cout << "  " << Color::WHITE << "--store" << Color::RESET << "         No compression (store only)\n";
     
     std::cout << "\n" << Color::BOLD << "Features:" << Color::RESET << "\n";
-    std::cout << "  • Solid blocks (256MB) for maximum ratio\n";
+    std::cout << "  • Solid blocks (1GB) for maximum ratio\n";
     std::cout << "  • Deduplication via XXH64 checksums\n";
-    std::cout << "  • Smart codec selection (LZMA/ZSTD/STORE)\n";
-    std::cout << "  • Windows native I/O for best performance\n";
-    std::cout << "  • Multi-threaded LZMA compression\n";
+    std::cout << "  • Smart codec selection (LZMA/ZSTD/LZ4/Brotli/STORE)\n";
+    std::cout << "  • Native ZSTD, LZ4, LZMA, Brotli codec support\n";
+    std::cout << "  • Path traversal protection (Zip Slip safe)\n";
+    std::cout << "  • xxHash integrity verification on extract";
     
     std::cout << "\n" << Color::DIM << "Type 'tarc --license' for license information.\n" << Color::RESET;
 }
@@ -149,7 +159,7 @@ void print_info(const std::string& msg) {
 }
 
 void print_warning(const std::string& msg) {
-    std::cout << Color::YELLOW << "⚠ " << Color::RESET << msg << "\n";
+    safe_print(Color::YELLOW + "⚠ " + Color::RESET + msg + "\n");
 }
 
 void print_error(const std::string& msg) {

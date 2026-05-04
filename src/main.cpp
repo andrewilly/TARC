@@ -54,6 +54,11 @@ struct Command {
     bool sfx = false;
     bool flat = false;
     bool force = false;
+    bool verify = true;  // default: verify integrity
+    int threads = 0;     // 0 = auto
+    std::string output_dir;  // FEATURE #4: --output-dir
+    Codec codec_override = Codec::LZMA;  // FEATURE #6: codec override
+    bool has_codec_override = false;      // true se l'utente ha specificato --zstd/--lz4/etc.
     std::string archive;
     std::vector<std::string> files;
     std::vector<std::string> filters;
@@ -124,6 +129,33 @@ static Command parse_args(int argc, char* argv[]) {
             cmd.flat = true;
         } else if (val == "--force") {
             cmd.force = true;
+        } else if (val == "--verify") {
+            cmd.verify = true;
+        } else if (val == "--no-verify") {
+            cmd.verify = false;
+        } else if (val == "--output-dir" && i + 1 < argc) {
+            cmd.output_dir = argv[++i];
+        } else if (val == "--threads" && i + 1 < argc) {
+            try {
+                cmd.threads = std::clamp(std::stoi(argv[++i]), 1, 64);
+            } catch (...) {
+                cmd.threads = 0;
+            }
+        } else if (val == "--zstd") {
+            cmd.codec_override = Codec::ZSTD;
+            cmd.has_codec_override = true;
+        } else if (val == "--lzma") {
+            cmd.codec_override = Codec::LZMA;
+            cmd.has_codec_override = true;
+        } else if (val == "--lz4") {
+            cmd.codec_override = Codec::LZ4;
+            cmd.has_codec_override = true;
+        } else if (val == "--brotli") {
+            cmd.codec_override = Codec::BR;
+            cmd.has_codec_override = true;
+        } else if (val == "--store") {
+            cmd.codec_override = Codec::STORE;
+            cmd.has_codec_override = true;
         } else if (cmd.archive.empty()) {
             cmd.archive = val;
         } else {
@@ -176,7 +208,12 @@ static int run_command(const Command& cmd) {
             Engine::set_progress_callback(&reporter);
             
             auto start = TarcUtil::safe_now();
-            auto res = Engine::compress(arch, cmd.files, cmd.level);
+            CompressOptions copts;
+            copts.level = cmd.level;
+            if (cmd.has_codec_override) {
+                copts.codec = cmd.codec_override;
+            }
+            auto res = Engine::compress(arch, cmd.files, copts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 TarcUtil::safe_now() - start
             );
@@ -213,8 +250,9 @@ static int run_command(const Command& cmd) {
             ExtractOptions xopts;
             xopts.test_only = false;
             xopts.flat_mode = cmd.flat;
-            xopts.verify = true;
+            xopts.verify = cmd.verify;
             xopts.overwrite = cmd.force;
+            xopts.output_dir = cmd.output_dir;
             auto res = Engine::extract(arch, cmd.filters, xopts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 TarcUtil::safe_now() - start
@@ -240,7 +278,7 @@ static int run_command(const Command& cmd) {
             auto start = TarcUtil::safe_now();
             ExtractOptions topts;
             topts.test_only = true;
-            topts.verify = true;
+            topts.verify = cmd.verify;
             auto res = Engine::extract(arch, {}, topts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 TarcUtil::safe_now() - start

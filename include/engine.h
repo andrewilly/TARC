@@ -33,7 +33,7 @@ namespace Engine {
     };
 
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, 
-                       int level = 3);
+                       CompressOptions opts = {});
     
     TarcResult extract(const std::string& arch_path,
                        const std::vector<std::string>& patterns = {},
