@@ -544,6 +544,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         fe.name = normalize_path(disk_path);
         fe.meta.orig_size = fsize;
         fe.meta.xxhash = h64;
+
+        constexpr size_t STORE_THRESHOLD = 2048;
+
         // BUG FIX #4: il codec nel TOC deve riflettere il codec REALMENTE usato
         Codec selected_codec = CodecSelector::select(disk_path, fsize);
         if (selected_codec != Codec::STORE && fsize > STORE_THRESHOLD) {
@@ -564,9 +567,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         } else {
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
-            
-            constexpr size_t STORE_THRESHOLD = 2048;
-            
+
             if (fsize <= STORE_THRESHOLD) {
                 // BUG FIX #1: file STORE scritti direttamente, NON accodati nel solid_buf
                 ChunkResult cr;
