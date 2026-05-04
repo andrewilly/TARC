@@ -790,6 +790,56 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             fe.meta.is_duplicate = 0;
 
             if (fsize <= STORE_THRESHOLD) {
+                // ============================================================
+                // BUG FIX: flush pending solid buffer BEFORE writing STORE chunk
+                // Senza questo, i chunk solid vengono scritti DOPO i chunk STORE,
+                // causando ordinamento errato sul disco e fallimento dell'estrazione.
+                // ============================================================
+                if (solid_has_files && !solid_buf.empty()) {
+                    // Attendiamo eventuale compressione async pending
+                    if (worker_active && !write_pending_chunk(future_chunk)) {
+                        res.error = TarcError::CompressionFailed;
+                        res.message = "Chunk compression failed.";
+                        fclose(f);
+                        return res;
+                    }
+                    worker_active = false;
+
+                    // Comprimi e scrivi il solid buffer accumulato
+                    ChunkResult solid_cr = compress_worker(std::move(solid_buf), level, solid_codec);
+                    if (!solid_cr.success) {
+                        res.error = TarcError::CompressionFailed;
+                        res.message = "Solid chunk compression failed.";
+                        fclose(f);
+                        return res;
+                    }
+
+                    uint64_t solid_offset = static_cast<uint64_t>(ftell(f));
+                    if (!write_chunk(f, solid_cr.codec, solid_cr.raw_size, solid_cr.compressed_data, res.bytes_out)) {
+                        res.error = TarcError::WriteFailed;
+                        res.message = "Failed to write solid chunk.";
+                        fclose(f);
+                        return res;
+                    }
+
+                    // Aggiorna Entry.offset per tutti i file in questo gruppo solid
+                    for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
+                        final_toc[j].meta.offset = solid_offset;
+                    }
+                    // Aggiorna il codec nel TOC al codec REALMENTE usato
+                    // (compress_worker puo' cambiare codec a STORE per buffer < 4096)
+                    Codec actual_codec = solid_cr.codec;
+                    for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
+                        final_toc[j].meta.codec = static_cast<uint8_t>(actual_codec);
+                    }
+
+                    solid_buf.clear();
+                    solid_buf.reserve(CHUNK_THRESHOLD);
+                    solid_has_files = false;
+                    // Sincronizza data_offset con la posizione reale sul file
+                    data_offset = static_cast<uint64_t>(ftell(f));
+                }
+
                 // File STORE: scritti direttamente, NON nel solid_buf
                 ChunkResult cr;
                 cr.compressed_data = data;

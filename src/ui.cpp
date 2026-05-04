@@ -11,6 +11,9 @@
 
 #ifdef _WIN32
     #include <windows.h>
+#else
+    #include <sys/ioctl.h>
+    #include <unistd.h>
 #endif
 
 namespace {
@@ -20,6 +23,24 @@ std::mutex cout_mutex;
 void safe_print(const std::string& s) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << s << std::flush;
+}
+
+static int get_terminal_width() {
+#ifdef _WIN32
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+            return static_cast<int>(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+        }
+    }
+#else
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        return static_cast<int>(ws.ws_col);
+    }
+#endif
+    return 80;
 }
 
 }
@@ -159,7 +180,7 @@ void print_info(const std::string& msg) {
 }
 
 void print_warning(const std::string& msg) {
-    safe_print(Color::YELLOW + "⚠ " + Color::RESET + msg + "\n");
+    safe_print(std::string(Color::YELLOW) + "⚠ " + Color::RESET + msg + "\n");
 }
 
 void print_error(const std::string& msg) {
@@ -172,8 +193,11 @@ void print_success(const std::string& msg) {
 
 void print_progress(size_t current, size_t total, const std::string& current_file) {
     static std::unique_ptr<ProgressBar> bar;
-    if (!bar || bar->get_total() != total) {
-        bar = std::make_unique<ProgressBar>(total, "Compressing");
+    static size_t last_total = 0;
+
+    if (!bar || last_total != total) {
+        bar = std::make_unique<ProgressBar>(total, "");
+        last_total = total;
     }
     bar->update(current, current_file.substr(current_file.find_last_of("/\\") + 1));
 }
@@ -266,8 +290,8 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
     : total_(total), current_(0), label_(label), active_(true),
-      start_time(TarcUtil::safe_now()), start_set(false) {
-    update(0);
+      needs_clear_(false), start_time(TarcUtil::safe_now()), start_set(false) {
+    if (total > 0) update(0);
 }
 
 UI::ProgressBar::~ProgressBar() {
@@ -280,60 +304,80 @@ void UI::ProgressBar::set_label(const std::string& label) {
 
 void UI::ProgressBar::update(size_t current, const std::string& status) {
     current_ = current;
-    if (!active_) return;
-    
-    float pct = total_ > 0 ? static_cast<float>(current) / total_ * 100.0f : 100.0f;
-    int bar_width = 40;
-    int pos = 0;
-    if (total_ > 0) {
-        pos = static_cast<int>(bar_width * current / total_);
-    }
-    
-    // Calcola velocità e ETA se abbiamo statistiche
-    // BUG FIX #5: usa variabili di istanza, non statiche
-    if (current_ == 0 && current > 0) {
-        // Primo aggiornamento con dati reali: reset timer
-        start_time = TarcUtil::safe_now();
-        start_set = true;
-    }
+    if (!active_ || total_ == 0) return;
+
+    float pct = static_cast<float>(current) / static_cast<float>(total_) * 100.0f;
+
+    // Calcola velocità
     if (!start_set && current > 0) {
         start_time = TarcUtil::safe_now();
         start_set = true;
     }
-    
-    std::string speed_info = "";
-    if (current > 0 && current < total_) {
+
+    std::string speed_text;
+    if (current > 0 && current < total_ && start_set) {
         auto now = TarcUtil::safe_now();
         double elapsed = std::chrono::duration<double>(now - start_time).count();
         if (elapsed > 0.5) {
             double mbps = (current / (1024.0 * 1024.0)) / elapsed;
-            double remaining = (total_ - current) / (current / elapsed);
-            
-            char buf[64];
-            snprintf(buf, sizeof(buf), " %.1f MB/s ETA: %.0fs", mbps, remaining);
-            speed_info = buf;
+            char buf[48];
+            snprintf(buf, sizeof(buf), "  %.1f MB/s", mbps);
+            speed_text = buf;
         }
     }
-    
+
+    int term_w = get_terminal_width();
+    int bar_width = std::clamp(term_w - 10, 20, 50);
+    int pos = static_cast<int>(bar_width * current / total_);
+
+    // Tronca nome file se troppo lungo per il terminale
+    std::string display_name = status;
+    int max_name = std::clamp(term_w - 4, 20, 120);
+    if (static_cast<int>(display_name.size()) > max_name) {
+        display_name = display_name.substr(0, max_name - 3) + "...";
+    }
+
+    // Colore: cyan durante, green al completamento
+    const char* bar_color = (current >= total_) ? Color::GREEN : Color::CYAN;
+
     std::lock_guard<std::mutex> lock(cout_mutex);
-    // Pulisce l'intera riga prima di stampare per evitare caratteri residui
-    std::cout << "\r\x1b[2K" << Color::CYAN << label_ << " [";
+
+    if (needs_clear_) {
+        // Risale di 2 righe per sovrascrivere il frame precedente
+        std::cout << "\x1b[2A";
+    }
+
+    // Riga 1: nome file
+    std::cout << "\x1b[2K\r"
+              << "  " << Color::BRIGHT_WHITE << display_name << Color::RESET << "\n";
+
+    // Riga 2: contatore file + velocità
+    std::cout << "\x1b[2K\r"
+              << Color::DIM << "  " << current << " / " << total_
+              << Color::RESET;
+    if (!speed_text.empty()) {
+        std::cout << Color::DIM << speed_text << Color::RESET;
+    }
+    std::cout << "\n";
+
+    // Riga 3: barra di progressione
+    std::cout << "\x1b[2K\r"
+              << "  " << bar_color << "[";
     for (int i = 0; i < bar_width; ++i) {
         std::cout << (i < pos ? "█" : "░");
     }
-    std::cout << Color::RESET << "] " << std::fixed << std::setprecision(1) << pct << "%";
-    if (!speed_info.empty()) {
-        std::cout << Color::DIM << speed_info << Color::RESET;
-    } else if (!status.empty()) {
-        std::cout << " " << Color::DIM << status << Color::RESET;
-    }
-    std::cout << std::flush;
+    std::cout << "] " << std::fixed << std::setprecision(1) << pct << "%"
+              << Color::RESET << std::flush;
+
+    needs_clear_ = true;
 }
 
 void UI::ProgressBar::finish() {
     if (!active_) return;
     active_ = false;
-    update(total_);
+    if (total_ > 0) {
+        update(total_);
+    }
     std::cout << "\n" << Color::RESET;
 }
 
