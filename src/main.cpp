@@ -207,7 +207,7 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto start = TarcUtil::safe_now();
+            auto cmd_start = TarcUtil::safe_now();
             CompressOptions copts;
             copts.level = cmd.level;
             if (cmd.has_codec_override) {
@@ -215,7 +215,7 @@ static int run_command(const Command& cmd) {
             }
             auto res = Engine::compress(arch, cmd.files, copts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                TarcUtil::safe_now() - start
+                TarcUtil::safe_now() - cmd_start
             );
             
             UI::print_progress_end();
@@ -246,7 +246,7 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto start = TarcUtil::safe_now();
+            auto cmd_start = TarcUtil::safe_now();
             ExtractOptions xopts;
             xopts.test_only = false;
             xopts.flat_mode = cmd.flat;
@@ -255,7 +255,7 @@ static int run_command(const Command& cmd) {
             xopts.output_dir = cmd.output_dir;
             auto res = Engine::extract(arch, cmd.filters, xopts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                TarcUtil::safe_now() - start
+                TarcUtil::safe_now() - cmd_start
             );
             
             UI::print_progress_end();
@@ -275,13 +275,13 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto start = TarcUtil::safe_now();
+            auto cmd_start = TarcUtil::safe_now();
             ExtractOptions topts;
             topts.test_only = true;
             topts.verify = cmd.verify;
             auto res = Engine::extract(arch, {}, topts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                TarcUtil::safe_now() - start
+                TarcUtil::safe_now() - cmd_start
             );
             
             UI::print_progress_end();

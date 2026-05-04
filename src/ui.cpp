@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include <memory>
+#include <algorithm>
 
 #ifdef _WIN32
     #include <windows.h>
