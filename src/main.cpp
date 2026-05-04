@@ -14,16 +14,6 @@
 
 namespace fs = std::filesystem;
 
-namespace {
-    inline std::chrono::steady_clock::time_point safe_now() {
-        try {
-            return std::chrono::steady_clock::now();
-        } catch (...) {
-            return std::chrono::steady_clock::time_point{};
-        }
-    }
-}
-
 class ProgressReporter : public ProgressCallback {
 public:
     size_t current = 0;
@@ -152,7 +142,7 @@ static Command parse_args(int argc, char* argv[]) {
 static int run_command(const Command& cmd) {
     using namespace std::chrono;
     
-    auto start = safe_now();
+    auto start = TarcUtil::safe_now();
     int result = 0;
     
     switch (cmd.type) {
@@ -185,10 +175,10 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto start = safe_now();
+            auto start = TarcUtil::safe_now();
             auto res = Engine::compress(arch, cmd.files, cmd.level);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
             
             UI::print_progress_end();
@@ -219,11 +209,11 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto start = safe_now();
+            auto start = TarcUtil::safe_now();
             auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat);
             // TODO: passare cmd.force come overwrite quando Engine::extract lo supportera'
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
             
             UI::print_progress_end();
@@ -243,10 +233,10 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            auto start = safe_now();
+            auto start = TarcUtil::safe_now();
             auto res = Engine::extract(arch, {}, true, 0, false);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
             
             UI::print_progress_end();
@@ -279,7 +269,7 @@ static int run_command(const Command& cmd) {
         }
     }
     
-    auto elapsed = duration_cast<milliseconds>(safe_now() - start);
+    auto elapsed = duration_cast<milliseconds>(TarcUtil::safe_now() - start);
     if (result == 0) {
         std::cout << Color::DIM << "Completed in " << UI::format_duration(elapsed) << Color::RESET << "\n";
     }

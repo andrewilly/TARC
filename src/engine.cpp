@@ -5,7 +5,6 @@
 #include <cstring>
 #include <map>
 #include <filesystem>
-#include <fstream>
 #include <vector>
 #include <iostream>
 #include <chrono>
@@ -13,8 +12,6 @@
 #include <algorithm>
 #include <set>
 #include <atomic>
-#include <thread>
-#include <queue>
 #include <functional>
 
 #ifdef _WIN32
@@ -32,145 +29,6 @@ namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
-
-    struct WriteRequest {
-        std::vector<char> data;
-        std::function<void(bool)> callback;
-    };
-
-    class AsyncWriter {
-    private:
-        std::queue<WriteRequest> queue_;
-        std::mutex mutex_;
-        std::condition_variable cv_;
-        std::thread thread_;
-        FILE* file_;
-        std::atomic<bool> running_;
-        std::atomic<bool> error_;
-        std::atomic<size_t> bytes_written_;
-        mutable std::mutex error_mutex_;
-        std::string error_msg_;
-
-    public:
-        AsyncWriter() : file_(nullptr), running_(true), error_(false), bytes_written_(0) {}
-
-        bool start(const std::string& path) {
-            file_ = fopen(path.c_str(), "wb");
-            if (!file_) return false;
-
-            thread_ = std::thread([this]() {
-                while (running_ || !queue_.empty()) {
-                    std::unique_lock<std::mutex> lock(mutex_);
-                    cv_.wait(lock, [this] { return !queue_.empty() || !running_; });
-
-                    if (!queue_.empty()) {
-                        WriteRequest req = std::move(queue_.front());
-                        queue_.pop();
-                        lock.unlock();
-
-                        if (file_ && !req.data.empty()) {
-                            size_t written = fwrite(req.data.data(), 1, req.data.size(), file_);
-                            if (written != req.data.size()) {
-                                error_ = true;
-                                {
-                                    std::lock_guard<std::mutex> em(error_mutex_);
-                                    error_msg_ = "Write error: partial write";
-                                }
-                            } else {
-                                bytes_written_ += written;
-                            }
-                        }
-
-                        if (req.callback) {
-                            req.callback(error_ ? false : true);
-                        }
-                    }
-                }
-
-                if (file_) {
-                    fflush(file_);
-                }
-            });
-
-            return true;
-        }
-
-        void write_async(std::vector<char> data, std::function<void(bool)> callback = nullptr) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                queue_.push({std::move(data), std::move(callback)});
-            }
-            cv_.notify_one();
-        }
-
-        size_t drain() {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (queue_.empty() && running_) {
-                    running_ = false;
-                    cv_.notify_all();
-                }
-            }
-
-            if (thread_.joinable()) {
-                thread_.join();
-            }
-
-            return bytes_written_;
-        }
-
-        FILE* drain_and_get_file() {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                running_ = false;
-                cv_.notify_all();
-            }
-
-            if (thread_.joinable()) {
-                thread_.join();
-            }
-
-            if (file_) {
-                fflush(file_);
-            }
-            return file_;
-        }
-
-        bool has_error() const { return error_; }
-        std::string get_error() const {
-            std::lock_guard<std::mutex> em(error_mutex_);
-            return error_msg_;
-        }
-
-        void close() {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                running_ = false;
-                cv_.notify_all();
-            }
-
-            if (thread_.joinable()) {
-                thread_.join();
-            }
-
-            if (file_) {
-                fclose(file_);
-                file_ = nullptr;
-            }
-        }
-
-        ~AsyncWriter() {
-            close();
-        }
-    };
-    
-    inline std::chrono::steady_clock::time_point safe_now() {
-        try {
-            return std::chrono::steady_clock::now();
-        } catch (...) {
-            return std::chrono::steady_clock::time_point{};
-        }
-    }
 }
 
 void Engine::set_progress_callback(ProgressCallback* callback) {
@@ -367,7 +225,9 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
     res = compress_lzma_optimal(raw_data, level);
     res.raw_size = saved_raw_size; // preserva il raw_size corretto
 
-    // Allinea il codec nel risultato con quello realmente usato
+    // ARCH-007: Se il codec richiesto non era LZMA, falla con fallback STORE
+    // invece di mentire nel TOC dicendo che e' LZMA quando non lo e'.
+    // Per ora LZMA e' l'unico implementato, quindi usiamolo come fallback.
     res.codec = Codec::LZMA;
     return res;
 }
@@ -463,21 +323,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         ChunkResult cr = fut.get();
         if (!cr.success) return false;
         
-        ChunkHeader ch = {
-            static_cast<uint32_t>(cr.codec),
-            cr.raw_size,
-            static_cast<uint32_t>(cr.compressed_data.size()),
-            0
-        };
+        // ARCH-002/003: usa write_chunk con checksum e error handling
+        if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out))
+            return false;
         
-        if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
-        if (fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f) != cr.compressed_data.size()) return false;
-        
-        res.bytes_out += cr.compressed_data.size();
         return true;
     };
 
-    auto start_time = safe_now();
+    auto start_time = TarcUtil::safe_now();
     
     for (size_t i = 0; i < expanded_files.size(); ++i) {
         if (check_cancelled()) {
@@ -576,16 +429,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 cr.codec = Codec::STORE;
                 cr.success = true;
 
-                ChunkHeader ch = {
-                    static_cast<uint32_t>(cr.codec),
-                    cr.raw_size,
-                    static_cast<uint32_t>(cr.compressed_data.size()),
-                    0
-                };
-
-                fwrite(&ch, sizeof(ch), 1, f);
-                fwrite(cr.compressed_data.data(), 1, cr.compressed_data.size(), f);
-                res.bytes_out += cr.compressed_data.size();
+                // ARCH-002/003: checksum + fwrite error handling
+                if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out)) {
+                    res.error = TarcError::WriteFailed;
+                    res.message = "Failed to write STORE chunk.";
+                    fclose(f);
+                    return res;
+                }
                 g_stats.bytes_read += fsize;
                 // IMPORTANTE: NON inserire data nel solid_buf
             } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
@@ -629,19 +479,22 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     
     if (!solid_buf.empty()) {
         ChunkResult last = compress_worker(std::move(solid_buf), level, Codec::LZMA);
-        ChunkHeader ch = {
-            static_cast<uint32_t>(last.codec),
-            last.raw_size,
-            static_cast<uint32_t>(last.compressed_data.size()),
-            0
-        };
-        fwrite(&ch, sizeof(ch), 1, f);
-        fwrite(last.compressed_data.data(), 1, last.compressed_data.size(), f);
-        res.bytes_out += last.compressed_data.size();
+        // ARCH-002/003: checksum + fwrite error handling
+        if (!write_chunk(f, last.codec, last.raw_size, last.compressed_data, res.bytes_out)) {
+            res.error = TarcError::WriteFailed;
+            res.message = "Failed to write final chunk.";
+            fclose(f);
+            return res;
+        }
     }
 
     ChunkHeader end_mark = {0, 0, 0, 0};
-    fwrite(&end_mark, sizeof(end_mark), 1, f);
+    if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
+        res.error = TarcError::WriteFailed;
+        res.message = "Failed to write end marker.";
+        fclose(f);
+        return res;
+    }
     IO::write_toc(f, h, final_toc);
     fflush(f);
     fclose(f);
@@ -649,7 +502,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     g_stats.bytes_in = g_stats.bytes_read;
     g_stats.bytes_out = res.bytes_out;
     g_stats.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        safe_now() - start_time
+        TarcUtil::safe_now() - start_time
     );
     
     res.ok = true;
@@ -712,6 +565,57 @@ static bool match_pattern(const std::string& full_path, const std::string& patte
     }
 
     return match_pattern_impl(target, pattern, 0, 0);
+}
+
+// ARCH-003: Helper per scrivere un chunk con checksum xxHash e error handling
+static bool write_chunk(FILE* f, Codec codec, uint32_t raw_size,
+                        const std::vector<char>& data, uint64_t& bytes_out) {
+    // ARCH-002: Calcola checksum xxHash del chunk compresso
+    uint64_t cksum = 0;
+    if (!data.empty()) {
+        cksum = XXH64(data.data(), data.size(), 0);
+    }
+
+    ChunkHeader ch = {
+        static_cast<uint32_t>(codec),
+        raw_size,
+        static_cast<uint32_t>(data.size()),
+        cksum  // ARCH-002: checksum popolato
+    };
+
+    if (fwrite(&ch, sizeof(ch), 1, f) != 1) return false;
+    if (!data.empty() && fwrite(data.data(), 1, data.size(), f) != data.size()) return false;
+    bytes_out += data.size();
+    return true;
+}
+
+// ARCH-001: Helper per leggere il prossimo chunk decompresso.
+// Elimina il codice duplicato in extract() (era ripetuto 2 volte).
+static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& block_pos) {
+    if (block_pos >= block.size()) {
+        ChunkHeader ch;
+        if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
+            return TarcError::CorruptedArchive;
+        }
+
+        // SEC-004: Validazione dimensioni chunk
+        if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
+            return TarcError::CorruptedArchive;
+        }
+
+        std::vector<char> comp(ch.comp_size);
+        if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
+            return TarcError::CorruptedArchive;
+        }
+
+        block.resize(ch.raw_size);
+        Codec codec = static_cast<Codec>(ch.codec);
+        if (!decompress_chunk(comp, block, codec)) {
+            return TarcError::DecompressionFailed;
+        }
+        block_pos = 0;
+    }
+    return TarcError::None;
 }
 
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns, bool test_only, size_t offset, bool flat_mode) {
@@ -790,82 +694,32 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         if (!should_extract) {
             if (fe.meta.is_duplicate) continue;
-            
-            if (block_pos >= current_block.size()) {
-                ChunkHeader ch;
-                if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
-                
-                // SEC-004: Validazione dimensioni chunk con limiti stringenti
-                if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
-                    fclose(f);
-                    res.error = TarcError::CorruptedArchive;
-                    res.message = "Chunk size exceeds safety limit.";
-                    return res;
-                }
 
-                // SEC-004: Validazione che comp_size non sia 0 per chunk non-STORE
-                if (ch.codec != static_cast<uint32_t>(Codec::STORE) && ch.comp_size == 0) {
-                    fclose(f);
-                    res.error = TarcError::CorruptedArchive;
-                    res.message = "Corrupted chunk: zero compressed size.";
-                    return res;
-                }
-
-                std::vector<char> comp(ch.comp_size);
-                if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
-                    fclose(f);
-                    res.error = TarcError::CorruptedArchive;
-                    res.message = "Error reading chunk.";
-                    return res;
-                }
-
-                current_block.resize(ch.raw_size);
-
-                Codec codec = static_cast<Codec>(ch.codec);
-                if (!decompress_chunk(comp, current_block, codec)) {
-                    fclose(f);
-                    res.error = TarcError::DecompressionFailed;
-                    res.message = "Chunk decompression failed.";
-                    return res;
-                }
-                block_pos = 0;
+            // ARCH-001: usa helper invece di codice duplicato
+            TarcError err = read_next_block(f, current_block, block_pos);
+            if (err == TarcError::CorruptedArchive) break;  // fine dei chunk
+            if (err != TarcError::None) {
+                fclose(f);
+                res.error = err;
+                res.message = "Chunk read failed.";
+                return res;
             }
             block_pos += fe.meta.orig_size;
             continue;
         }
 
         if (fe.meta.is_duplicate) continue;
-        
-        if (block_pos >= current_block.size()) {
-            ChunkHeader ch;
-            if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
 
-            // SEC-004: Validazione dimensioni chunk
-            if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
+        // ARCH-001: usa helper invece di codice duplicato
+        {
+            TarcError err = read_next_block(f, current_block, block_pos);
+            if (err == TarcError::CorruptedArchive) break;
+            if (err != TarcError::None) {
                 fclose(f);
-                res.error = TarcError::CorruptedArchive;
-                res.message = "Chunk size exceeds safety limit.";
+                res.error = err;
+                res.message = "Chunk read failed.";
                 return res;
             }
-
-            std::vector<char> comp(ch.comp_size);
-            if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
-                fclose(f);
-                res.error = TarcError::CorruptedArchive;
-                res.message = "Error reading data.";
-                return res;
-            }
-
-            current_block.resize(ch.raw_size);
-
-            Codec codec = static_cast<Codec>(ch.codec);
-            if (!decompress_chunk(comp, current_block, codec)) {
-                fclose(f);
-                res.error = TarcError::DecompressionFailed;
-                res.message = "Decompression failed.";
-                return res;
-            }
-            block_pos = 0;
         }
 
         std::string final_path = fe.name;

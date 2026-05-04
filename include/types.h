@@ -15,6 +15,18 @@
 #define TARC_MAX_FILE_SIZE   (8UL * 1024 * 1024 * 1024)  // SEC-004: max 8GB per singolo file
 #define TARC_MAX_NAME_LEN    4096  // SEC-005: max filename length nel TOC (cross-platform)
 
+// ARCH-006: safe_now() centralizzato — evita duplicazione in engine.cpp, ui.cpp, main.cpp
+#include <chrono>
+namespace TarcUtil {
+    inline std::chrono::steady_clock::time_point safe_now() {
+        try {
+            return std::chrono::steady_clock::now();
+        } catch (...) {
+            return std::chrono::steady_clock::time_point{};
+        }
+    }
+}
+
 enum class Codec : uint8_t {
     ZSTD = 0,
     LZMA = 1,
