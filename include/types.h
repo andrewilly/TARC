@@ -131,22 +131,6 @@ struct TarcResult {
     }
 };
 
-struct CompressOptions {
-    int level = 3;
-    bool solid_mode = true;
-    bool sfx_requested = false;
-    bool verify = true;
-    size_t chunk_size = 256 * 1024 * 1024;
-};
-
-struct ExtractOptions {
-    bool test_only = false;
-    bool flat_mode = false;
-    bool verify = true;
-    bool overwrite = false;
-    std::string output_dir;
-};
-
 template<typename T>
 struct Result {
     TarcError err = TarcError::None;
@@ -157,3 +141,14 @@ struct Result {
     const T& operator*() const { return *value; }
     explicit operator bool() const { return value.has_value(); }
 };
+
+// ARCH-006: shared utility — avoids duplicating safe_now() in 3 files
+namespace TarcUtil {
+    inline std::chrono::steady_clock::time_point safe_now() {
+        try {
+            return std::chrono::steady_clock::now();
+        } catch (...) {
+            return std::chrono::steady_clock::time_point{};
+        }
+    }
+}

@@ -32,17 +32,12 @@ namespace Engine {
         std::chrono::milliseconds elapsed{};
     };
 
-    struct FileEntryInternal {
-        std::string name;
-        std::string extension;
-    };
-
     TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files,
                        int level = 3);
 
     TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {},
                     bool test_only = false, size_t offset = 0, bool flat_mode = false,
-                    bool overwrite = false);
+                    bool overwrite = false, const std::string& output_dir = "");
 
     TarcResult list(const std::string& arch_path, size_t offset = 0);
 

@@ -42,9 +42,10 @@ namespace IO {
 
     bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc);
 
-    // SEC-007: overwrite parameter added
+    // SEC-007: overwrite + ARCH-008: output_dir support
     bool write_file_to_disk(const std::string& path, const char* data, size_t size,
-                            uint64_t timestamp, bool overwrite = false);
+                            uint64_t timestamp, bool overwrite = false,
+                            const std::string& output_dir = "");
 
     bool read_bytes(FILE* f, void* buf, size_t size);
 
@@ -56,17 +57,9 @@ namespace IO {
 
     // === Security functions ===
 
-    // SEC-001: Validate archive header (magic, version, toc_offset)
     bool validate_archive_header(const Header& h);
-
-    // SEC-002: Sanitize extraction path, reject traversal attacks
-    // Returns sanitized path or empty string on rejection
     std::string sanitize_extract_path(const std::string& entry_name);
-
-    // SEC-005: Check if filename contains dangerous characters
     bool is_safe_filename(const std::string& name);
-
-    // SEC-007: Check if file already exists
     bool file_exists(const std::string& path);
 
 }

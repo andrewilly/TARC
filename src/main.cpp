@@ -14,15 +14,7 @@
 
 namespace fs = std::filesystem;
 
-namespace {
-    inline std::chrono::steady_clock::time_point safe_now() {
-        try {
-            return std::chrono::steady_clock::now();
-        } catch (...) {
-            return std::chrono::steady_clock::time_point{};
-        }
-    }
-}
+// ARCH-006: use shared TarcUtil::safe_now()
 
 class ProgressReporter : public ProgressCallback {
 public:
@@ -59,47 +51,48 @@ struct Command {
         License,
         Version
     } type = None;
-    
+
     int level = 3;
     bool sfx = false;
     bool flat = false;
     bool force = false;
     std::string archive;
+    std::string output_dir;       // ARCH-008: --output-dir support
     std::vector<std::string> files;
     std::vector<std::string> filters;
 };
 
 static Command parse_args(int argc, char* argv[]) {
     Command cmd;
-    
+
     if (argc < 2) {
         cmd.type = Command::Help;
         return cmd;
     }
-    
+
     std::string arg = argv[1];
-    
+
     if (arg == "--help" || arg == "-h") {
         cmd.type = Command::Help;
         return cmd;
     }
-    
+
     if (arg == "--version" || arg == "-v") {
         cmd.type = Command::Version;
         return cmd;
     }
-    
+
     if (arg == "--license") {
         cmd.type = Command::License;
         return cmd;
     }
-    
+
     std::string prefix = arg.substr(0, 2);
-    
+
     if (prefix == "-c") {
         cmd.type = Command::Create;
         cmd.level = 3;
-        
+
         if (arg == "-cbest") {
             cmd.level = 9;
         } else if (arg == "-cfast") {
@@ -124,20 +117,21 @@ static Command parse_args(int argc, char* argv[]) {
         cmd.type = Command::None;
         return cmd;
     }
-    
+
     for (int i = 2; i < argc; ++i) {
         std::string val = argv[i];
-        
+
         if (val == "--sfx") {
             cmd.sfx = true;
         } else if (val == "--flat") {
             cmd.flat = true;
         } else if (val == "--force") {
             cmd.force = true;
+        } else if (val == "--output-dir" && i + 1 < argc) {
+            cmd.output_dir = argv[++i];
         } else if (cmd.archive.empty()) {
             cmd.archive = val;
         } else {
-            // Per estrazione/lista, i parametri sono filtri, non file
             if (cmd.type == Command::Extract || cmd.type == Command::List || cmd.type == Command::Test) {
                 cmd.filters.push_back(val);
             } else {
@@ -145,55 +139,56 @@ static Command parse_args(int argc, char* argv[]) {
             }
         }
     }
-    
+
     return cmd;
 }
 
 static int run_command(const Command& cmd) {
     using namespace std::chrono;
-    
-    auto start = safe_now();
+
+    // ARCH-006: use shared TarcUtil::safe_now()
+    auto start = TarcUtil::safe_now();
     int result = 0;
-    
+
     switch (cmd.type) {
         case Command::Help:
             UI::show_help();
             return 0;
-            
+
         case Command::Version:
             std::cout << "TARC STRIKE v2.00_OpenAi\n";
             std::cout << "Build: " << __DATE__ << " " << __TIME__ << "\n";
             return 0;
-            
+
         case Command::License:
             UI::show_license();
             return 0;
-            
+
         case Command::Create: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
                 return 1;
             }
-            
+
             if (cmd.files.empty()) {
                 UI::print_error("No files or directories specified.");
                 return 1;
             }
-            
+
             std::string arch = IO::ensure_ext(cmd.archive);
-            
+
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
-            
-            auto start = safe_now();
+
+            auto start = TarcUtil::safe_now();
             auto res = Engine::compress(arch, cmd.files, cmd.level);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
-            
+
             UI::print_progress_end();
             UI::print_summary(res, "Create", elapsed);
-            
+
             if (res.ok && cmd.sfx) {
                 std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + ".exe";
                 auto sfx_res = Engine::create_sfx(arch, sfx_exe);
@@ -203,113 +198,113 @@ static int run_command(const Command& cmd) {
                     UI::print_error(sfx_res.message);
                 }
             }
-            
+
             result = res.ok ? 0 : 1;
             break;
         }
-        
+
         case Command::Extract: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
                 return 1;
             }
-            
+
             std::string arch = IO::ensure_ext(cmd.archive);
-            
+
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
-            
-            auto start = safe_now();
-            auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat, cmd.force);
+
+            auto start = TarcUtil::safe_now();
+            auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat, cmd.force, cmd.output_dir);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
-            
+
             UI::print_progress_end();
             UI::print_summary(res, "Extract", elapsed);
             result = res.ok ? 0 : 1;
             break;
         }
-        
+
         case Command::Test: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
                 return 1;
             }
-            
+
             std::string arch = IO::ensure_ext(cmd.archive);
-            
+
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
-            
-            auto start = safe_now();
-            auto res = Engine::extract(arch, {}, true, 0, false);
+
+            auto start = TarcUtil::safe_now();
+            auto res = Engine::extract(arch, {}, true, 0, false, false, "");
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
-            
+
             UI::print_progress_end();
             UI::print_summary(res, "Test", elapsed);
-            
+
             if (!res.ok || res.bytes_out == 0) {
                 UI::print_error("Archive integrity check failed.");
                 result = 1;
             }
             break;
         }
-            
+
         case Command::List: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
                 return 1;
             }
-            
+
             std::string arch = IO::ensure_ext(cmd.archive);
-            
+
             auto res = Engine::list(arch);
             result = res.ok ? 0 : 1;
             break;
         }
-            
+
         case Command::None: {
             UI::print_error("Unknown command.");
             UI::show_help();
             return 1;
         }
     }
-    
-    auto elapsed = duration_cast<milliseconds>(safe_now() - start);
+
+    auto elapsed = duration_cast<milliseconds>(TarcUtil::safe_now() - start);
     if (result == 0) {
         std::cout << Color::DIM << "Completed in " << UI::format_duration(elapsed) << Color::RESET << "\n";
     }
-    
+
     return result;
 }
 
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
-    
+
     bool show_license_full = false;
     Command cmd = parse_args(argc, argv);
-    
+
     if (cmd.type == Command::License) {
         show_license_full = true;
     }
-    
+
     License::check_and_activate(show_license_full);
-    
+
     if (cmd.type == Command::Help && argc < 2) {
         UI::show_banner();
         UI::show_help();
         return 0;
     }
-    
+
     if (cmd.type == Command::License) {
         UI::show_license();
         return 0;
     }
-    
+
     UI::show_banner();
-    
+
     return run_command(cmd);
 }
