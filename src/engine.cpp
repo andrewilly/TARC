@@ -13,6 +13,8 @@
 #include <set>
 #include <atomic>
 #include <functional>
+#include <fstream>
+#include <deque>
 
 #ifdef _WIN32
     #include <windows.h>
