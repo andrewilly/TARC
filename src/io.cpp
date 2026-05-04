@@ -193,7 +193,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
 bool IO::read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (h.toc_offset == 0) return false;
     
-    if (fseek(f, (long)h.toc_offset, SEEK_SET) != 0) return false;
+    if (IO::tarc_fseek(f, static_cast<int64_t>(h.toc_offset), SEEK_SET) != 0) return false;
     
     toc.clear();
     toc.reserve(h.file_count);
@@ -226,7 +226,7 @@ Result<FileEntry> IO::read_entry(FILE* f) {
 
 bool IO::write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     fflush(f);
-    long toc_pos = ftell(f);
+    int64_t toc_pos = IO::tarc_ftell(f);
     if (toc_pos == -1) return false;
     
     h.toc_offset = (uint64_t)toc_pos;
@@ -237,10 +237,10 @@ bool IO::write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
         if (!write_entry(f, fe)) return false;
     }
 
-    if (fseek(f, 0, SEEK_SET) != 0) return false;
+    if (IO::tarc_fseek(f, 0, SEEK_SET) != 0) return false;
     if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
     
-    if (fseek(f, 0, SEEK_END) != 0) return false;
+    if (IO::tarc_fseek(f, 0, SEEK_END) != 0) return false;
     fflush(f);
     return true;
 }

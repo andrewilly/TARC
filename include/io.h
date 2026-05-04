@@ -7,9 +7,34 @@
 #include <optional>
 #include "types.h"
 
-namespace fs = std::filesystem;
+// 64-bit file positioning: cross-platform helpers
+// On Windows MSVC, 'long' is 32-bit even in 64-bit builds,
+// so fseek/ftell truncate offsets to ~2GB. Use 64-bit variants.
+#ifdef _WIN32
+    // _fseeki64 / _ftelli64 are always 64-bit on Windows
+#else
+    #include <unistd.h>  // for off_t (64-bit on 64-bit POSIX)
+#endif
 
 namespace IO {
+
+    // 64-bit file seek: replaces fseek(f, (long)offset, origin)
+    inline int tarc_fseek(FILE* f, int64_t offset, int origin) {
+#ifdef _WIN32
+        return _fseeki64(f, offset, origin);
+#else
+        return fseeko(f, static_cast<off_t>(offset), origin);
+#endif
+    }
+
+    // 64-bit file tell: replaces ftell(f)
+    inline int64_t tarc_ftell(FILE* f) {
+#ifdef _WIN32
+        return _ftelli64(f);
+#else
+        return static_cast<int64_t>(ftello(f));
+#endif
+    }
 
     std::string ensure_ext(const std::string& path);
 

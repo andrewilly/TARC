@@ -48,8 +48,6 @@ public:
     }
 };
 
-namespace fs = std::filesystem;
-
 struct Command {
     enum Type {
         None,

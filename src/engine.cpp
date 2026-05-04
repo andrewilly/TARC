@@ -727,7 +727,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     }
 
     if (offset > 0) {
-        fseek(f, static_cast<long>(offset), SEEK_SET);
+        IO::tarc_fseek(f, static_cast<int64_t>(offset), SEEK_SET);
     }
 
     Header h; 
@@ -747,7 +747,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         return res;
     }
     
-    fseek(f, static_cast<long>(offset + sizeof(Header)), SEEK_SET);
+    IO::tarc_fseek(f, static_cast<int64_t>(offset + sizeof(Header)), SEEK_SET);
     
     std::vector<char> current_block;
     size_t block_pos = 0;
@@ -892,7 +892,7 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     }
     
     if (offset > 0) {
-        fseek(f, static_cast<long>(offset), SEEK_SET);
+        IO::tarc_fseek(f, static_cast<int64_t>(offset), SEEK_SET);
     }
     
     Header h; 
