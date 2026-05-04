@@ -142,6 +142,7 @@ struct CompressOptions {
     bool sfx_requested = false;
     bool verify = true;
     size_t chunk_size = 256 * 1024 * 1024;
+    int threads = 0;  // 0 = auto-detect (use hardware_concurrency)
 };
 
 struct ExtractOptions {

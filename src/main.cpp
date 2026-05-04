@@ -56,6 +56,7 @@ struct Command {
     bool sfx = false;
     bool flat = false;
     bool force = false;
+    int threads = 0;
     std::string archive;
     std::vector<std::string> files;
     std::vector<std::string> filters;
@@ -126,6 +127,15 @@ static Command parse_args(int argc, char* argv[]) {
             cmd.flat = true;
         } else if (val == "--force") {
             cmd.force = true;
+        } else if (val == "--threads") {
+            if (i + 1 < argc) {
+                try {
+                    cmd.threads = std::stoi(argv[++i]);
+                    cmd.threads = std::clamp(cmd.threads, 1, 64);
+                } catch (...) {
+                    cmd.threads = 0;
+                }
+            }
         } else if (cmd.archive.empty()) {
             cmd.archive = val;
         } else {
@@ -182,7 +192,7 @@ static int run_command(const Command& cmd) {
             
             auto start = safe_now();
             // ARCH-006: Use CompressOptions struct
-            auto res = Engine::compress(arch, cmd.files, {cmd.level, true, cmd.sfx, true});
+            auto res = Engine::compress(arch, cmd.files, {cmd.level, true, cmd.sfx, true, 256 * 1024 * 1024, cmd.threads});
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 safe_now() - start
             );

@@ -19,6 +19,10 @@
 #endif
 
 #include "lzma.h"
+#include <zstd.h>
+#include <lz4.h>
+#include <brotli/encode.h>
+#include <brotli/decode.h>
 extern "C" {
     #include "xxhash.h"
 }
@@ -203,6 +207,158 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     return res;
 }
 
+// ============================================================
+// Native ZSTD compression
+// ============================================================
+static ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = Codec::ZSTD;
+    res.success = false;
+
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+
+    size_t max_out = ZSTD_compressBound(raw_data.size());
+    res.compressed_data.resize(max_out);
+
+    int zstd_level = std::clamp(level, 1, 22);
+    size_t compressed_size = ZSTD_compress(
+        res.compressed_data.data(), max_out,
+        raw_data.data(), raw_data.size(),
+        zstd_level
+    );
+
+    if (ZSTD_isError(compressed_size)) {
+        // Fallback to STORE on compression error
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    // If compressed is larger than original, use STORE
+    if (compressed_size >= raw_data.size()) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    res.compressed_data.resize(compressed_size);
+    res.success = true;
+    return res;
+}
+
+// ============================================================
+// Native LZ4 compression (block format)
+// ============================================================
+static ChunkResult compress_lz4(const std::vector<char>& raw_data, int level) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = Codec::LZ4;
+    res.success = false;
+
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+
+    int max_out = LZ4_compressBound(static_cast<int>(raw_data.size()));
+    if (max_out <= 0) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    res.compressed_data.resize(max_out);
+
+    // LZ4 acceleration: higher level -> lower acceleration -> better ratio but slower
+    int acceleration = 1 + (10 - std::clamp(level, 1, 9)); // level 1->accel 10, level 9->accel 2
+    int compressed_size = LZ4_compress_fast(
+        raw_data.data(),
+        res.compressed_data.data(),
+        static_cast<int>(raw_data.size()),
+        max_out,
+        acceleration
+    );
+
+    if (compressed_size <= 0) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    // If compressed is larger than original, use STORE
+    if (static_cast<size_t>(compressed_size) >= raw_data.size()) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    res.compressed_data.resize(compressed_size);
+    res.success = true;
+    return res;
+}
+
+// ============================================================
+// Native Brotli compression
+// ============================================================
+static ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
+    ChunkResult res;
+    res.raw_size = static_cast<uint32_t>(raw_data.size());
+    res.codec = Codec::BR;
+    res.success = false;
+
+    if (raw_data.empty()) {
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+
+    size_t max_out = BrotliEncoderMaxCompressedSize(raw_data.size());
+    res.compressed_data.resize(max_out);
+
+    int brotli_level = std::clamp(level, 0, 11);
+    size_t available_in = raw_data.size();
+    const uint8_t* next_in = reinterpret_cast<const uint8_t*>(raw_data.data());
+    size_t available_out = max_out;
+    uint8_t* next_out = reinterpret_cast<uint8_t*>(res.compressed_data.data());
+
+    BROTLI_BOOL ok = BrotliEncoderCompress(
+        brotli_level, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC,
+        &available_in, next_in, &available_out, next_out
+    );
+
+    if (!ok) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    size_t compressed_size = max_out - available_out;
+
+    // If compressed is larger than original, use STORE
+    if (compressed_size >= raw_data.size()) {
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+
+    res.compressed_data.resize(compressed_size);
+    res.success = true;
+    return res;
+}
+
 bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& decompressed) {
     if (decompressed.empty()) {
         decompressed.resize(1024 * 1024);
@@ -223,6 +379,76 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
         return true;
     }
     return false;
+}
+
+// ============================================================
+// Native ZSTD decompression
+// ============================================================
+static bool decompress_zstd(const std::vector<char>& compressed, std::vector<char>& decompressed) {
+    size_t decompressed_size = ZSTD_getFrameContentSize(compressed.data(), compressed.size());
+    if (decompressed_size == ZSTD_CONTENTSIZE_ERROR || decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN) {
+        // Fall back to the pre-sized buffer
+        decompressed_size = decompressed.size();
+    }
+    if (decompressed_size == 0) return false;
+
+    if (decompressed.size() < decompressed_size) {
+        decompressed.resize(decompressed_size);
+    }
+
+    size_t result = ZSTD_decompress(
+        decompressed.data(), decompressed.size(),
+        compressed.data(), compressed.size()
+    );
+
+    if (ZSTD_isError(result)) return false;
+
+    decompressed.resize(result);
+    return true;
+}
+
+// ============================================================
+// Native LZ4 decompression (block format)
+// ============================================================
+static bool decompress_lz4(const std::vector<char>& compressed, std::vector<char>& decompressed) {
+    if (decompressed.empty()) {
+        return false;
+    }
+
+    int result = LZ4_decompress_safe(
+        compressed.data(),
+        decompressed.data(),
+        static_cast<int>(compressed.size()),
+        static_cast<int>(decompressed.size())
+    );
+
+    if (result < 0) return false;
+
+    decompressed.resize(result);
+    return true;
+}
+
+// ============================================================
+// Native Brotli decompression
+// ============================================================
+static bool decompress_brotli(const std::vector<char>& compressed, std::vector<char>& decompressed) {
+    if (decompressed.empty()) {
+        return false;
+    }
+
+    size_t available_in = compressed.size();
+    const uint8_t* next_in = reinterpret_cast<const uint8_t*>(compressed.data());
+    size_t available_out = decompressed.size();
+    uint8_t* next_out = reinterpret_cast<uint8_t*>(decompressed.data());
+
+    BrotliDecoderResult result = BrotliDecoderDecompress(
+        &available_in, next_in, &available_out, next_out
+    );
+
+    if (result != BROTLI_DECODER_RESULT_SUCCESS) return false;
+
+    decompressed.resize(available_out);
+    return true;
 }
 
 ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
@@ -250,13 +476,26 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
         return res;
     }
 
-    // Per ora solo LZMA e' implementato; gli altri codec sono placeholder
-    // TODO: implementare LZ4, ZSTD, Brotli quando disponibili
+    // Dispatch to the correct codec
     uint32_t saved_raw_size = res.raw_size;
-    res = compress_lzma_optimal(raw_data, level);
+    
+    switch (chosen_codec) {
+        case Codec::ZSTD:
+            res = compress_zstd(raw_data, level);
+            break;
+        case Codec::LZ4:
+            res = compress_lz4(raw_data, level);
+            break;
+        case Codec::BR:
+            res = compress_brotli(raw_data, level);
+            break;
+        case Codec::LZMA:
+        default:
+            res = compress_lzma_optimal(raw_data, level);
+            break;
+    }
+    
     res.raw_size = saved_raw_size;
-
-    res.codec = Codec::LZMA;
     return res;
 }
 
@@ -267,16 +506,19 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
         return true;
     }
 
-    // Currently only LZMA is implemented; other codecs fall back to LZMA
-    // TODO: implement native ZSTD, LZ4, Brotli decompression
-    if (codec == Codec::LZMA) {
-        return decompress_lzma(compressed, decompressed);
+    switch (codec) {
+        case Codec::LZMA:
+            return decompress_lzma(compressed, decompressed);
+        case Codec::ZSTD:
+            return decompress_zstd(compressed, decompressed);
+        case Codec::LZ4:
+            return decompress_lz4(compressed, decompressed);
+        case Codec::BR:
+            return decompress_brotli(compressed, decompressed);
+        default:
+            // Unknown codec — try LZMA as last resort for backward compatibility
+            return decompress_lzma(compressed, decompressed);
     }
-
-    // For unimplemented codecs (ZSTD, LZ4, BR), try LZMA as fallback
-    // This handles archives created before codec diversification
-    report_warning("Codec " + std::string(codec_name(codec)) + " not natively supported, falling back to LZMA");
-    return decompress_lzma(compressed, decompressed);
 }
 
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
@@ -315,9 +557,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     res.ok = false;
     reset_stats();
 
-    // FIX 4b: TODO — verify option not yet implemented
-    // TODO: verify option — re-read and hash-check after write
-    (void)opts.verify;
+    // TODO: opts.threads — use lzma_stream_encoder_mt for multi-threaded LZMA
+    // Currently only single-threaded LZMA is supported via lzma_easy_buffer_encode
+    (void)opts.threads;
 
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) {
@@ -357,6 +599,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
+
+    // Track file indices in the current solid block for offset backpatching
+    std::vector<size_t> solid_block_indices;
 
     auto write_worker = [&](std::future<ChunkResult>& fut) -> bool {
         if (check_cancelled()) return false;
@@ -440,13 +685,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
         constexpr size_t STORE_THRESHOLD = 2048;
 
-        // BUG FIX #4: il codec nel TOC deve riflettere il codec REALMENTE usato
+        // BUG FIX #4: codec will be set per-branch below
         Codec selected_codec = CodecSelector::select(disk_path, fsize);
-        if (selected_codec != Codec::STORE && fsize > STORE_THRESHOLD) {
-            fe.meta.codec = static_cast<uint8_t>(Codec::LZMA);
-        } else {
-            fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
-        }
+
         fe.meta.timestamp = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
                 fs::last_write_time(disk_path).time_since_epoch()
@@ -456,6 +697,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
+            fe.meta.offset = final_toc[hash_map[h64]].meta.offset;  // copy original's offset
+            fe.meta.codec = final_toc[hash_map[h64]].meta.codec;    // copy original's codec
             g_stats.duplicates_skipped++;
         } else {
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
@@ -463,6 +706,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
             if (fsize <= STORE_THRESHOLD) {
                 // BUG FIX #1: file STORE scritti direttamente, NON accodati nel solid_buf
+                fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+                fe.meta.offset = sizeof(Header) + res.bytes_out;
+
                 ChunkResult cr;
                 cr.compressed_data = data;
                 cr.raw_size = static_cast<uint32_t>(fsize);
@@ -474,15 +720,22 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             } else if (!opts.solid_mode) {
                 // FIX 4a: Non-solid mode — compress each file individually
                 // NOTE: data is moved into compress_worker when possible to avoid copies
+                fe.meta.offset = sizeof(Header) + res.bytes_out;
+
                 ChunkResult cr = compress_worker(std::move(data), level, selected_codec);
                 if (!cr.success) {
                     report_warning("Compression failed: " + disk_path);
                     continue;
                 }
+                fe.meta.codec = static_cast<uint8_t>(cr.codec);
                 write_chunk(fg.get(), cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out);
                 g_stats.bytes_read += fsize;
             } else {
                 // Solid mode: accumulate files into solid_buf until threshold
+                fe.meta.codec = static_cast<uint8_t>(Codec::LZMA);
+                size_t current_idx = final_toc.size();
+                solid_block_indices.push_back(current_idx);
+
                 if (solid_buf.size() + fsize > chunk_threshold && !solid_buf.empty()) {
                     // Flush current solid buffer asynchronously
                     if (worker_active && !write_worker(future_chunk)) {
@@ -490,6 +743,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         res.message = "Chunk compression failed.";
                         return res;
                     }
+                    // After write_worker: bytes_out includes previous chunk's write
+                    // Current buffer will be written at:
+                    uint64_t chunk_offset = sizeof(Header) + res.bytes_out;
+                    for (size_t idx : solid_block_indices) {
+                        final_toc[idx].meta.offset = chunk_offset;
+                    }
+                    solid_block_indices.clear();
+
                     // NOTE: solid_buf is moved into std::async — ownership transferred
                     future_chunk = std::async(
                         std::launch::async,
@@ -523,6 +784,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
     // Flush remaining solid buffer (only exists in solid mode)
     if (!solid_buf.empty()) {
+        // Backpatch offsets for remaining solid buffer files
+        uint64_t chunk_offset = sizeof(Header) + res.bytes_out;
+        for (size_t idx : solid_block_indices) {
+            final_toc[idx].meta.offset = chunk_offset;
+        }
+        solid_block_indices.clear();
+
         ChunkResult last = compress_worker(std::move(solid_buf), level, Codec::LZMA);
         write_chunk(fg.get(), last.codec, last.raw_size, last.compressed_data, res.bytes_out);
     }
@@ -532,6 +800,20 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     IO::write_toc(fg.get(), h, final_toc);
     fflush(fg.get());
     // ARCH-010: FileGuard destructor handles fclose
+
+    // --verify: test archive integrity after creation
+    if (opts.verify) {
+        fg.close();  // close the file before re-opening for read
+        auto saved_stats = g_stats;
+        TarcResult verify_res = extract(arch_path, {}, ExtractOptions{true, false, false, false, ""});
+        if (!verify_res.ok) {
+            res.ok = false;
+            res.error = verify_res.error;
+            res.message = "Verification failed: " + verify_res.message;
+            return res;
+        }
+        g_stats = saved_stats;
+    }
 
     // FIX 6: bytes_in accuracy — use g_stats.bytes_read directly, set bytes_compressed
     g_stats.bytes_out = res.bytes_out;
@@ -786,6 +1068,11 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 flat_names_counter[filename] = 0;
             }
             final_path = filename;
+        }
+
+        // output_dir: prepend to extraction path
+        if (!opts.output_dir.empty()) {
+            final_path = opts.output_dir + "/" + final_path;
         }
 
         // SEC-007: Overwrite protection
