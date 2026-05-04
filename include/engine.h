@@ -6,6 +6,11 @@
 #include <optional>
 #include "types.h"
 
+namespace CodecSelector {
+    Codec select(const std::string& path, size_t size);
+    bool is_compressible(const std::string& ext);
+}
+
 class ProgressCallback {
 public:
     virtual ~ProgressCallback() = default;
@@ -15,12 +20,6 @@ public:
 };
 
 namespace Engine {
-
-    // ARCH-013: CodecSelector moved inside Engine namespace
-    namespace CodecSelector {
-        Codec select(const std::string& path, size_t size);
-        bool is_compressible(const std::string& ext);
-    }
 
     struct CompressionStats {
         uint64_t files_processed = 0;
@@ -33,27 +32,21 @@ namespace Engine {
         std::chrono::milliseconds elapsed{};
     };
 
-    struct FileEntryInternal {
-        std::string name;
-        std::string extension;
-    };
-
-    // ARCH-006: Use CompressOptions struct in API
-    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files,
-                       const CompressOptions& opts = {});
-
-    // ARCH-006: Use ExtractOptions struct in API (replaces individual parameters)
-    TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {},
-                       const ExtractOptions& opts = {});
-
+    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, 
+                       int level = 3);
+    
+    TarcResult extract(const std::string& arch_path,
+                       const std::vector<std::string>& patterns = {},
+                       ExtractOptions opts = {});
+    
     TarcResult list(const std::string& arch_path, size_t offset = 0);
-
+    
     TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_path);
 
     void set_progress_callback(ProgressCallback* callback);
 
     CompressionStats get_stats();
-
+    
     void reset_stats();
 
 }

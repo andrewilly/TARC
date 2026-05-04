@@ -14,8 +14,6 @@
 
 namespace fs = std::filesystem;
 
-// ARCH-003: safe_now() removed from here — now centralized in types.h
-
 class ProgressReporter : public ProgressCallback {
 public:
     size_t current = 0;
@@ -56,7 +54,6 @@ struct Command {
     bool sfx = false;
     bool flat = false;
     bool force = false;
-    int threads = 0;
     std::string archive;
     std::vector<std::string> files;
     std::vector<std::string> filters;
@@ -127,15 +124,6 @@ static Command parse_args(int argc, char* argv[]) {
             cmd.flat = true;
         } else if (val == "--force") {
             cmd.force = true;
-        } else if (val == "--threads") {
-            if (i + 1 < argc) {
-                try {
-                    cmd.threads = std::stoi(argv[++i]);
-                    cmd.threads = std::clamp(cmd.threads, 1, 64);
-                } catch (...) {
-                    cmd.threads = 0;
-                }
-            }
         } else if (cmd.archive.empty()) {
             cmd.archive = val;
         } else {
@@ -154,7 +142,7 @@ static Command parse_args(int argc, char* argv[]) {
 static int run_command(const Command& cmd) {
     using namespace std::chrono;
     
-    auto start = safe_now();
+    auto start = TarcUtil::safe_now();
     int result = 0;
     
     switch (cmd.type) {
@@ -187,14 +175,10 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            // ARCH-015: Set dynamic progress label
-            UI::set_progress_label("Compressing");
-            
-            auto start = safe_now();
-            // ARCH-006: Use CompressOptions struct
-            auto res = Engine::compress(arch, cmd.files, {cmd.level, true, cmd.sfx, true, 256 * 1024 * 1024, cmd.threads});
+            auto start = TarcUtil::safe_now();
+            auto res = Engine::compress(arch, cmd.files, cmd.level);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
             
             UI::print_progress_end();
@@ -225,14 +209,15 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            // ARCH-015: Set dynamic progress label
-            UI::set_progress_label("Extracting");
-            
-            auto start = safe_now();
-            // ARCH-006: Use ExtractOptions struct
-            auto res = Engine::extract(arch, cmd.filters, {false, cmd.flat, true, cmd.force});
+            auto start = TarcUtil::safe_now();
+            ExtractOptions xopts;
+            xopts.test_only = false;
+            xopts.flat_mode = cmd.flat;
+            xopts.verify = true;
+            xopts.overwrite = cmd.force;
+            auto res = Engine::extract(arch, cmd.filters, xopts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
             
             UI::print_progress_end();
@@ -252,14 +237,13 @@ static int run_command(const Command& cmd) {
             ProgressReporter reporter;
             Engine::set_progress_callback(&reporter);
             
-            // ARCH-015: Set dynamic progress label
-            UI::set_progress_label("Testing");
-            
-            auto start = safe_now();
-            // ARCH-006: Use ExtractOptions struct (test_only = true)
-            auto res = Engine::extract(arch, {}, {true, false, true, false});
+            auto start = TarcUtil::safe_now();
+            ExtractOptions topts;
+            topts.test_only = true;
+            topts.verify = true;
+            auto res = Engine::extract(arch, {}, topts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                safe_now() - start
+                TarcUtil::safe_now() - start
             );
             
             UI::print_progress_end();
@@ -281,15 +265,6 @@ static int run_command(const Command& cmd) {
             std::string arch = IO::ensure_ext(cmd.archive);
             
             auto res = Engine::list(arch);
-            // ARCH-012: Print list entries here (moved from engine.cpp for UI decoupling)
-            for (const auto& fe : res.entries) {
-                UI::print_list_entry(
-                    fe.name,
-                    fe.meta.orig_size,
-                    fe.meta.is_duplicate ? 0 : fe.meta.orig_size,
-                    static_cast<Codec>(fe.meta.codec)
-                );
-            }
             result = res.ok ? 0 : 1;
             break;
         }
@@ -301,7 +276,7 @@ static int run_command(const Command& cmd) {
         }
     }
     
-    auto elapsed = duration_cast<milliseconds>(safe_now() - start);
+    auto elapsed = duration_cast<milliseconds>(TarcUtil::safe_now() - start);
     if (result == 0) {
         std::cout << Color::DIM << "Completed in " << UI::format_duration(elapsed) << Color::RESET << "\n";
     }
