@@ -718,7 +718,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     TarcResult res;
     res.ok = false;
     reset_stats();
-    
+
     FILE* f = fopen(arch_path.c_str(), "rb");
     if (!f) {
         res.error = TarcError::FileNotFound;
@@ -730,14 +730,28 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         IO::tarc_fseek(f, static_cast<int64_t>(offset), SEEK_SET);
     }
 
-    Header h; 
+    Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
         fclose(f);
         res.error = TarcError::InvalidHeader;
         res.message = "Invalid header.";
         return res;
     }
-    
+
+    // SEC-001: Validazione magic header
+    if (!IO::validate_archive_header(h)) {
+        fclose(f);
+        // Distinzione tra magic errato e versione non supportata
+        if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
+            res.error = TarcError::InvalidHeader;
+            res.message = "Not a valid TARC archive (bad magic).";
+        } else {
+            res.error = TarcError::UnsupportedVersion;
+            res.message = "Unsupported archive version: " + std::to_string(h.version);
+        }
+        return res;
+    }
+
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {
@@ -781,13 +795,22 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 ChunkHeader ch;
                 if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
                 
-                if (ch.comp_size > 0x7FFFFFFF || ch.raw_size > 0x7FFFFFFF) {
+                // SEC-004: Validazione dimensioni chunk con limiti stringenti
+                if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
                     fclose(f);
                     res.error = TarcError::CorruptedArchive;
-                    res.message = "Chunk too large.";
+                    res.message = "Chunk size exceeds safety limit.";
                     return res;
                 }
-                
+
+                // SEC-004: Validazione che comp_size non sia 0 per chunk non-STORE
+                if (ch.codec != static_cast<uint32_t>(Codec::STORE) && ch.comp_size == 0) {
+                    fclose(f);
+                    res.error = TarcError::CorruptedArchive;
+                    res.message = "Corrupted chunk: zero compressed size.";
+                    return res;
+                }
+
                 std::vector<char> comp(ch.comp_size);
                 if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
                     fclose(f);
@@ -795,9 +818,9 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     res.message = "Error reading chunk.";
                     return res;
                 }
-                
+
                 current_block.resize(ch.raw_size);
-                
+
                 Codec codec = static_cast<Codec>(ch.codec);
                 if (!decompress_chunk(comp, current_block, codec)) {
                     fclose(f);
@@ -808,7 +831,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 block_pos = 0;
             }
             block_pos += fe.meta.orig_size;
-            continue; 
+            continue;
         }
 
         if (fe.meta.is_duplicate) continue;
@@ -816,7 +839,15 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         if (block_pos >= current_block.size()) {
             ChunkHeader ch;
             if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) break;
-            
+
+            // SEC-004: Validazione dimensioni chunk
+            if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
+                fclose(f);
+                res.error = TarcError::CorruptedArchive;
+                res.message = "Chunk size exceeds safety limit.";
+                return res;
+            }
+
             std::vector<char> comp(ch.comp_size);
             if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
                 fclose(f);
@@ -824,9 +855,9 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 res.message = "Error reading data.";
                 return res;
             }
-            
+
             current_block.resize(ch.raw_size);
-            
+
             Codec codec = static_cast<Codec>(ch.codec);
             if (!decompress_chunk(comp, current_block, codec)) {
                 fclose(f);
@@ -836,7 +867,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
             block_pos = 0;
         }
-        
+
         std::string final_path = fe.name;
         if (flat_mode) {
             fs::path p(fe.name);
@@ -859,13 +890,68 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
 
         if (!test_only) {
-            if (!IO::write_file_to_disk(final_path, current_block.data() + block_pos, 
-                                   static_cast<size_t>(fe.meta.orig_size), 
-                                   fe.meta.timestamp)) {
-                res.error = TarcError::AccessDenied;
-                res.message = "Failed to write: " + final_path;
+            // SEC-002: Sanitizza il path di estrazione
+            std::string safe_path = IO::sanitize_extract_path(final_path);
+            if (safe_path.empty()) {
+                report_warning("Path traversal blocked: " + fe.name);
+                fclose(f);
+                res.error = TarcError::PathTraversal;
+                res.message = "Unsafe path in archive: " + fe.name;
+                return res;
+            }
+
+            if (!IO::write_file_to_disk(safe_path, current_block.data() + block_pos,
+                                   static_cast<size_t>(fe.meta.orig_size),
+                                   fe.meta.timestamp, false)) {
+                // SEC-007: Verifica se il problema e' sovrascrittura non autorizzata
+                if (IO::file_exists(safe_path)) {
+                    res.error = TarcError::AccessDenied;
+                    res.message = "File exists (use --force): " + safe_path;
+                } else {
+                    res.error = TarcError::AccessDenied;
+                    res.message = "Failed to write: " + safe_path;
+                }
                 fclose(f);
                 return res;
+            }
+
+            // SEC-006: Verifica integrita' xxHash del file estratto
+            if (fe.meta.xxhash != 0) {
+                XXH64_state_t* const vstate = XXH64_createState();
+                if (vstate) {
+                    XXH64_reset(vstate, 0);
+                    XXH64_update(vstate, current_block.data() + block_pos,
+                                 static_cast<size_t>(fe.meta.orig_size));
+                    uint64_t extracted_hash = XXH64_digest(vstate);
+                    XXH64_freeState(vstate);
+
+                    if (extracted_hash != fe.meta.xxhash) {
+                        report_warning("XXH64 mismatch: " + fe.name);
+                        fclose(f);
+                        res.error = TarcError::IntegrityCheckFailed;
+                        res.message = "Checksum mismatch: " + fe.name;
+                        return res;
+                    }
+                }
+            }
+        } else {
+            // SEC-006: Verifica integrita' anche in modalita' test
+            if (fe.meta.xxhash != 0) {
+                XXH64_state_t* const vstate = XXH64_createState();
+                if (vstate) {
+                    XXH64_reset(vstate, 0);
+                    XXH64_update(vstate, current_block.data() + block_pos,
+                                 static_cast<size_t>(fe.meta.orig_size));
+                    uint64_t extracted_hash = XXH64_digest(vstate);
+                    XXH64_freeState(vstate);
+
+                    if (extracted_hash != fe.meta.xxhash) {
+                        fclose(f);
+                        res.error = TarcError::IntegrityCheckFailed;
+                        res.message = "Integrity check failed: " + fe.name;
+                        return res;
+                    }
+                }
             }
         }
         
@@ -895,14 +981,27 @@ TarcResult list(const std::string& arch_path, size_t offset) {
         IO::tarc_fseek(f, static_cast<int64_t>(offset), SEEK_SET);
     }
     
-    Header h; 
+    Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
         fclose(f);
         res.error = TarcError::InvalidHeader;
         res.message = "Invalid header.";
         return res;
     }
-    
+
+    // SEC-001: Validazione magic header
+    if (!IO::validate_archive_header(h)) {
+        fclose(f);
+        if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
+            res.error = TarcError::InvalidHeader;
+            res.message = "Not a valid TARC archive (bad magic).";
+        } else {
+            res.error = TarcError::UnsupportedVersion;
+            res.message = "Unsupported archive version: " + std::to_string(h.version);
+        }
+        return res;
+    }
+
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {

@@ -44,7 +44,21 @@ namespace IO {
 
     bool write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc);
 
-    bool write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp);
+    bool write_file_to_disk(const std::string& path, const char* data, size_t size,
+                               uint64_t timestamp, bool overwrite = false);
+
+    // SEC-001: Validazione magic header dell'archivio
+    bool validate_archive_header(const Header& h);
+
+    // SEC-002: Sanitizzazione path per prevenire Zip Slip (path traversal)
+    // Ritorna il path pulito o vuoto se non sicuro
+    std::string sanitize_extract_path(const std::string& raw_path);
+
+    // SEC-005: Validazione nome file (null bytes, caratteri pericolosi)
+    bool is_safe_filename(const std::string& name);
+
+    // SEC-007: Controllo sovrascrittura file
+    bool file_exists(const std::string& path);
 
     bool read_bytes(FILE* f, void* buf, size_t size);
 

@@ -5,6 +5,7 @@
 #include <vector>
 #include <chrono>
 #include <cstring>
+#include <algorithm>
 #include <system_error>
 #include <ctime>
 #include <regex>
@@ -212,15 +213,28 @@ Result<FileEntry> IO::read_entry(FILE* f) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
     
-    if (fe.meta.name_len > 4096) {
+    // SEC-005: Validazione dimensione nome con TARC_PATH_MAX
+    if (fe.meta.name_len == 0 || fe.meta.name_len > TARC_PATH_MAX) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
-    
+
     std::vector<char> name_buf(fe.meta.name_len + 1, 0);
     if (fread(name_buf.data(), 1, fe.meta.name_len, f) != fe.meta.name_len) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
+    name_buf[fe.meta.name_len] = '\0';  // SEC-005: forza terminazione null
+
+    // SEC-005: Verifica che il nome non contenga null bytes nel mezzo
+    if (std::strlen(name_buf.data()) != fe.meta.name_len) {
+        return Result<FileEntry>{TarcError::UnsafeFilename, std::nullopt};
+    }
+
     fe.name = std::string(name_buf.data());
+
+    // SEC-005: Validazione completa del filename
+    if (!is_safe_filename(fe.name)) {
+        return Result<FileEntry>{TarcError::UnsafeFilename, std::nullopt};
+    }
     return Result<FileEntry>{TarcError::None, fe};
 }
 
@@ -251,17 +265,141 @@ bool IO::write_entry(FILE* f, const FileEntry& entry) {
     return true;
 }
 
-bool IO::write_file_to_disk(const std::string& path, const char* data, size_t size, uint64_t timestamp) {
+// ============================================================================
+// SEC-001: Validazione magic header
+// ============================================================================
+bool IO::validate_archive_header(const Header& h) {
+    // Verifica magic bytes "TRC2"
+    if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
+        return false;
+    }
+    // SEC-003: Validazione versione
+    if (h.version < TARC_VERSION_MIN || h.version > TARC_VERSION) {
+        return false;
+    }
+    // Verifica ragionevolezza del TOC offset
+    if (h.toc_offset < sizeof(Header)) {
+        return false;
+    }
+    return true;
+}
+
+// ============================================================================
+// SEC-002: Sanitizzazione path per prevenire Zip Slip (path traversal)
+// ============================================================================
+std::string IO::sanitize_extract_path(const std::string& raw_path) {
+    // Rifiuta path vuoti
+    if (raw_path.empty()) return "";
+
+    // Rifiuta path che contengono null bytes
+    if (raw_path.find('\0') != std::string::npos) return "";
+
+    // Converti backslash in slash per normalizzazione
+    std::string path = raw_path;
+    std::replace(path.begin(), path.end(), '\\', '/');
+
+    // Rifiuta path assoluti (es. /etc/passwd, C:/Windows)
+    if (!path.empty() && path[0] == '/') return "";
+#ifdef _WIN32
+    if (path.size() >= 2 && path[1] == ':') return "";
+#endif
+
+    // Rifiuta path che contengono ".." (path traversal)
+    // Normalizza il path prima di verificare
+    std::vector<std::string> parts;
+    std::string current;
+    for (size_t i = 0; i < path.size(); ++i) {
+        if (path[i] == '/') {
+            if (!current.empty()) {
+                parts.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += path[i];
+        }
+    }
+    if (!current.empty()) {
+        parts.push_back(current);
+    }
+
+    // Risolvi . e .. nel path
+    std::vector<std::string> resolved;
+    for (const auto& part : parts) {
+        if (part == ".") {
+            continue;
+        } else if (part == ".." || part == "..." || part.find("..") != std::string::npos) {
+            // Path traversal tentato
+            return "";
+        } else {
+            resolved.push_back(part);
+        }
+    }
+
+    // Ricostruisci il path normalizzato
+    std::string result;
+    for (size_t i = 0; i < resolved.size(); ++i) {
+        if (i > 0) result += '/';
+        result += resolved[i];
+    }
+
+    return result;
+}
+
+// ============================================================================
+// SEC-005: Validazione nome file
+// ============================================================================
+bool IO::is_safe_filename(const std::string& name) {
+    if (name.empty()) return false;
+    if (name.size() > TARC_PATH_MAX) return false;
+
+    // Rifiuta null bytes
+    if (name.find('\0') != std::string::npos) return false;
+
+    // Rifiuta caratteri di controllo (0x00-0x1F tranne tab)
+    for (char c : name) {
+        if (static_cast<unsigned char>(c) < 0x20 && c != '\t') return false;
+    }
+
+    // Rifiuta path traversal
+    if (name.find("..") != std::string::npos) return false;
+
+    return true;
+}
+
+// ============================================================================
+// SEC-007: Controllo esistenza file
+// ============================================================================
+bool IO::file_exists(const std::string& path) {
+    std::error_code ec;
+    return fs::exists(path, ec) && !ec;
+}
+
+// ============================================================================
+// write_file_to_disk aggiornato con overwrite protection
+// ============================================================================
+bool IO::write_file_to_disk(const std::string& path, const char* data, size_t size,
+                               uint64_t timestamp, bool overwrite) {
     try {
-        fs::path p(path);
-        
+        // SEC-002: Sanitizza il path prima di scrivere
+        std::string safe_path = sanitize_extract_path(path);
+        if (safe_path.empty()) {
+            return false;
+        }
+
+        fs::path p(safe_path);
+
+        // SEC-007: Controlla se il file esiste gia' (protezione sovrascrittura)
+        if (!overwrite && fs::exists(p)) {
+            return false;
+        }
+
         if (p.has_parent_path()) {
             std::error_code ec;
             fs::create_directories(p.parent_path(), ec);
             if (ec) return false;
         }
 
-        std::ofstream out(path, std::ios::binary);
+        std::ofstream out(safe_path, std::ios::binary);
         if (!out) return false;
 
         if (size > 0 && data != nullptr) {
@@ -273,14 +411,15 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
             try {
 #ifdef _WIN32
                 auto file_time = fs::file_time_type(std::chrono::seconds(timestamp));
-                fs::last_write_time(p, file_time);
+                fs::last_write_time(safe_path, file_time);
 #else
+                // Su POSIX usa utime/utimes per timestamp
                 (void)timestamp;
 #endif
             } catch (...) {
             }
         }
-        
+
         return true;
     } catch (...) {
         return false;

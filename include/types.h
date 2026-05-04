@@ -8,8 +8,11 @@
 
 #define TARC_MAGIC     "TRC2"
 #define TARC_VERSION   200
+#define TARC_VERSION_MIN 100
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
+#define TARC_MAX_CHUNK_SIZE  (512UL * 1024 * 1024)  // SEC-004: max 512MB per chunk
+#define TARC_MAX_FILE_SIZE   (8UL * 1024 * 1024 * 1024)  // SEC-004: max 8GB per singolo file
 
 #ifdef _WIN32
     #define TARC_PATH_MAX 260
@@ -41,6 +44,9 @@ enum class TarcError : uint32_t {
     DiskFull,
     Cancelled,
     WriteFailed,
+    PathTraversal,
+    IntegrityCheckFailed,
+    UnsafeFilename,
     Unknown
 };
 
@@ -72,6 +78,9 @@ inline const char* error_message(TarcError e) {
         case TarcError::DiskFull:     return "Disk full";
         case TarcError::Cancelled:    return "Operation cancelled";
         case TarcError::WriteFailed:    return "Write failed";
+        case TarcError::PathTraversal: return "Path traversal detected";
+        case TarcError::IntegrityCheckFailed: return "Integrity check failed";
+        case TarcError::UnsafeFilename: return "Unsafe filename in archive";
         default:                     return "Unknown error";
     }
 }

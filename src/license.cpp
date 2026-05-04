@@ -16,6 +16,10 @@
     #include <bcrypt.h>
 #endif
 
+extern "C" {
+    #include "xxhash.h"
+}
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -225,52 +229,16 @@ std::string License::generate_trial_key() {
 }
 
 std::string License::hash_key(const std::string& key) {
-#ifdef _WIN32
-    HCRYPTPROV hProv = 0;
-    HCRYPTHASH hHash = 0;
-    BYTE hash[32];
-    DWORD hash_len = 32;
-    
-    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
-        std::string hash_val = key + "TARC_SALT_2024";
-        for (size_t i = 0; i < 5; i++) {
-            hash_val = std::to_string(std::hash<std::string>{}(hash_val));
-        }
-        return hash_val.substr(0, 32);
-    }
-    
-    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
-        CryptReleaseContext(hProv, 0);
-        return "";
-    }
-    
-    if (!CryptHashData(hHash, reinterpret_cast<const BYTE*>(key.c_str()), 
-                       static_cast<DWORD>(key.length()), 0)) {
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return "";
-    }
-    
-    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hash_len, 0)) {
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return "";
-    }
-    
-    CryptDestroyHash(hHash);
-    CryptReleaseContext(hProv, 0);
-    
-    std::stringstream ss;
-    for (DWORD i = 0; i < hash_len; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-    }
-    
-    return ss.str();
-#else
-    std::string hash_val = key + "TARC_SALT_2024";
-    for (size_t i = 0; i < 5; i++) {
-        hash_val = std::to_string(std::hash<std::string>{}(hash_val));
-    }
-    return hash_val.substr(0, 32);
-#endif
+    // SEC-008: Usa xxHash64 invece di std::hash (debole e reversibile)
+    // xxHash e' velocissimo e distribuito uniformemente, disponibile su tutte le piattaforme
+    std::string salted = key + "TARC_SALT_2024_STRIKE";
+    uint64_t h1 = XXH64(salted.c_str(), salted.size(), 0x5A17C1E7B4F2D890ULL);
+    uint64_t h2 = XXH64(salted.c_str(), salted.size(), h1);
+
+    // Combina i due hash per produrre una stringa esadecimale
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%016llx%016llx",
+             static_cast<unsigned long long>(h1),
+             static_cast<unsigned long long>(h2));
+    return std::string(buf, 32);
 }

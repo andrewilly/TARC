@@ -221,6 +221,7 @@ static int run_command(const Command& cmd) {
             
             auto start = safe_now();
             auto res = Engine::extract(arch, cmd.filters, false, 0, cmd.flat);
+            // TODO: passare cmd.force come overwrite quando Engine::extract lo supportera'
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 safe_now() - start
             );
