@@ -17,6 +17,14 @@ namespace {
 
 std::mutex cout_mutex;
 
+inline std::chrono::steady_clock::time_point safe_now() {
+    try {
+        return std::chrono::steady_clock::now();
+    } catch (...) {
+        return std::chrono::steady_clock::time_point{};
+    }
+}
+
 void safe_print(const std::string& s) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << s << std::flush;
@@ -256,7 +264,7 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
     : total_(total), current_(0), label_(label), active_(true),
-      start_time(TarcUtil::safe_now()), start_set(false) {
+      start_time(safe_now()), start_set(false) {
     update(0);
 }
 
@@ -283,17 +291,17 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     // BUG FIX #5: usa variabili di istanza, non statiche
     if (current_ == 0 && current > 0) {
         // Primo aggiornamento con dati reali: reset timer
-        start_time = TarcUtil::safe_now();
+        start_time = safe_now();
         start_set = true;
     }
     if (!start_set && current > 0) {
-        start_time = TarcUtil::safe_now();
+        start_time = safe_now();
         start_set = true;
     }
     
     std::string speed_info = "";
     if (current > 0 && current < total_) {
-        auto now = TarcUtil::safe_now();
+        auto now = safe_now();
         double elapsed = std::chrono::duration<double>(now - start_time).count();
         if (elapsed > 0.5) {
             double mbps = (current / (1024.0 * 1024.0)) / elapsed;

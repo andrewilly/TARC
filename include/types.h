@@ -8,24 +8,13 @@
 
 #define TARC_MAGIC     "TRC2"
 #define TARC_VERSION   200
-#define TARC_VERSION_MIN 100
 #define CHUNK_SIZE     (8 * 1024 * 1024)
 #define TARC_EXT       ".strk"
-#define TARC_MAX_CHUNK_SIZE  (512UL * 1024 * 1024)  // SEC-004: max 512MB per chunk
-#define TARC_MAX_FILE_SIZE   (8UL * 1024 * 1024 * 1024)  // SEC-004: max 8GB per singolo file
-#define TARC_MAX_NAME_LEN    4096  // SEC-005: max filename length nel TOC (cross-platform)
 
-// ARCH-006: safe_now() centralizzato — evita duplicazione in engine.cpp, ui.cpp, main.cpp
-#include <chrono>
-namespace TarcUtil {
-    inline std::chrono::steady_clock::time_point safe_now() {
-        try {
-            return std::chrono::steady_clock::now();
-        } catch (...) {
-            return std::chrono::steady_clock::time_point{};
-        }
-    }
-}
+// Security constants (SEC-004, SEC-005)
+#define TARC_MAX_CHUNK_SIZE    (512ULL * 1024 * 1024)  // 512 MB anti-OOM
+#define TARC_MAX_NAME_LEN      4096                     // cross-platform
+#define TARC_VERSION_MIN       100                      // minimum accepted version
 
 enum class Codec : uint8_t {
     ZSTD = 0,
@@ -51,9 +40,11 @@ enum class TarcError : uint32_t {
     DiskFull,
     Cancelled,
     WriteFailed,
-    PathTraversal,
-    IntegrityCheckFailed,
-    UnsafeFilename,
+    // Security error codes
+    InvalidMagic,           // SEC-001
+    InvalidVersion,         // SEC-003
+    IntegrityCheckFailed,   // SEC-006
+    PathTraversalDetected,  // SEC-002
     Unknown
 };
 
@@ -71,52 +62,53 @@ inline const char* codec_name(Codec c) {
 inline const char* error_message(TarcError e) {
     switch (e) {
         case TarcError::None:                return "Success";
-        case TarcError::FileNotFound:       return "File not found";
-        case TarcError::AccessDenied:      return "Access denied";
-        case TarcError::CorruptedArchive: return "Archive is corrupted";
-        case TarcError::InvalidHeader: return "Invalid archive header";
-        case TarcError::InconsistentToc: return "TOC inconsistent with data";
-        case TarcError::CompressionFailed: return "Compression failed";
+        case TarcError::FileNotFound:        return "File not found";
+        case TarcError::AccessDenied:        return "Access denied";
+        case TarcError::CorruptedArchive:    return "Archive is corrupted";
+        case TarcError::InvalidHeader:       return "Invalid archive header";
+        case TarcError::InconsistentToc:     return "TOC inconsistent with data";
+        case TarcError::CompressionFailed:   return "Compression failed";
         case TarcError::DecompressionFailed: return "Decompression failed";
-        case TarcError::OutOfMemory:   return "Out of memory";
-        case TarcError::UnsupportedVersion: return "Unsupported archive version";
-        case TarcError::InvalidKey:    return "Invalid license key";
-        case TarcError::LicenseMissing: return "License not found";
-        case TarcError::DiskFull:     return "Disk full";
-        case TarcError::Cancelled:    return "Operation cancelled";
-        case TarcError::WriteFailed:    return "Write failed";
-        case TarcError::PathTraversal: return "Path traversal detected";
-        case TarcError::IntegrityCheckFailed: return "Integrity check failed";
-        case TarcError::UnsafeFilename: return "Unsafe filename in archive";
-        default:                     return "Unknown error";
+        case TarcError::OutOfMemory:         return "Out of memory";
+        case TarcError::UnsupportedVersion:  return "Unsupported archive version";
+        case TarcError::InvalidKey:          return "Invalid license key";
+        case TarcError::LicenseMissing:      return "License not found";
+        case TarcError::DiskFull:            return "Disk full";
+        case TarcError::Cancelled:           return "Operation cancelled";
+        case TarcError::WriteFailed:         return "Write failed";
+        case TarcError::InvalidMagic:        return "Invalid archive magic";
+        case TarcError::InvalidVersion:      return "Invalid archive version";
+        case TarcError::IntegrityCheckFailed:return "Integrity check failed";
+        case TarcError::PathTraversalDetected:return "Path traversal detected";
+        default:                             return "Unknown error";
     }
 }
 
 #pragma pack(push, 1)
 struct Header {
-    char     magic[4];   
-    uint32_t version;    
-    uint64_t toc_offset; 
-    uint32_t file_count; 
+    char     magic[4];
+    uint32_t version;
+    uint64_t toc_offset;
+    uint32_t file_count;
 };
 
 struct Entry {
-    uint64_t offset;     
-    uint64_t orig_size;  
-    uint64_t comp_size;  
-    uint64_t xxhash;     
-    uint64_t timestamp;  
-    uint32_t duplicate_of_idx; 
-    uint16_t name_len;   
-    uint8_t  codec;      
-    uint8_t  is_duplicate;     
+    uint64_t offset;
+    uint64_t orig_size;
+    uint64_t comp_size;
+    uint64_t xxhash;
+    uint64_t timestamp;
+    uint32_t duplicate_of_idx;
+    uint16_t name_len;
+    uint8_t  codec;
+    uint8_t  is_duplicate;
 };
 
 struct ChunkHeader {
-    uint32_t codec;      
-    uint32_t raw_size;   
-    uint32_t comp_size;  
-    uint64_t checksum;   
+    uint32_t codec;
+    uint32_t raw_size;
+    uint32_t comp_size;
+    uint64_t checksum;
 };
 #pragma pack(pop)
 
@@ -159,7 +151,7 @@ template<typename T>
 struct Result {
     TarcError err = TarcError::None;
     std::optional<T> value;
-    
+
     bool has_value() const { return value.has_value(); }
     T& operator*() { return *value; }
     const T& operator*() const { return *value; }
