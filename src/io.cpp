@@ -9,10 +9,13 @@
 #include <ctime>
 #include <regex>
 #include <algorithm>
-#include <set>
 
 #ifdef _WIN32
     #include <windows.h>
+#else
+    // ARCH-009: Required for utimensat and AT_FDCWD on Linux/POSIX
+    #include <sys/stat.h>
+    #include <fcntl.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -21,6 +24,7 @@ namespace fs = std::filesystem;
 static bool glob_match(const std::string& name, const std::string& pattern) {
     if (pattern.empty()) return name.empty();
 
+    // Converti pattern glob in regex
     std::string regex_str;
     for (size_t i = 0; i < pattern.size(); ++i) {
         char c = pattern[i];
@@ -61,6 +65,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
             return true;
         }
         if (fs::is_directory(pattern)) {
+            // BUG FIX #8: skip_permission_denied per evitare crash
             for (auto& p : fs::recursive_directory_iterator(
                     pattern, fs::directory_options::skip_permission_denied)) {
                 if (p.is_regular_file()) {
@@ -73,6 +78,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
 
     // Se non esiste direttamente, prova come pattern con wildcard
 #ifdef _WIN32
+    // Windows: la shell NON espande le wildcard (*, ?)
     std::string directory = "";
     std::string filePattern = pattern;
 
@@ -132,8 +138,10 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     FindClose(hFind);
     return !out.empty();
 #else
+    // Unix: la shell espande le wildcard, ma gestiamo comunque con glob
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
+            // BUG FIX #8: protezione symlink circolari
             for (auto& p : fs::recursive_directory_iterator(
                     pattern, fs::directory_options::skip_permission_denied)) {
                 if (p.is_regular_file() && !p.is_symlink()) {
@@ -146,6 +154,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         return true;
     }
 
+    // BUG FIX #3: fallback glob matching su Unix
     bool has_glob = (pattern.find('*') != std::string::npos ||
                      pattern.find('?') != std::string::npos);
     if (has_glob) {
@@ -201,6 +210,7 @@ Result<FileEntry> IO::read_entry(FILE* f) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
 
+    // SEC-005: validate name length with TARC_MAX_NAME_LEN (4096 cross-platform)
     if (fe.meta.name_len > TARC_MAX_NAME_LEN || fe.meta.name_len == 0) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
@@ -210,6 +220,7 @@ Result<FileEntry> IO::read_entry(FILE* f) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
 
+    // SEC-005: verify no embedded null bytes in filename
     if (std::strlen(name_buf.data()) != fe.meta.name_len) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
@@ -245,25 +256,10 @@ bool IO::write_entry(FILE* f, const FileEntry& entry) {
     return true;
 }
 
-// ARCH-008: output_dir support — prepend custom output directory to extraction path
 bool IO::write_file_to_disk(const std::string& path, const char* data, size_t size,
-                            uint64_t timestamp, bool overwrite,
-                            const std::string& output_dir) {
+                            uint64_t timestamp, bool overwrite) {
     try {
-        // Build final path: output_dir + path
-        std::string final_path;
-        if (!output_dir.empty()) {
-            // Ensure trailing slash on output_dir
-            if (output_dir.back() == '/' || output_dir.back() == '\\') {
-                final_path = output_dir + path;
-            } else {
-                final_path = output_dir + "/" + path;
-            }
-        } else {
-            final_path = path;
-        }
-
-        fs::path p(final_path);
+        fs::path p(path);
 
         if (p.has_parent_path()) {
             std::error_code ec;
@@ -271,11 +267,12 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
             if (ec) return false;
         }
 
+        // SEC-007: overwrite protection
         if (!overwrite && fs::exists(p)) {
             return false;
         }
 
-        std::ofstream out(final_path, std::ios::binary);
+        std::ofstream out(path, std::ios::binary);
         if (!out) return false;
 
         if (size > 0 && data != nullptr) {
@@ -285,11 +282,24 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
 
         if (out.good()) {
             try {
-                // ARCH-007: timestamp restoration on all platforms (not just Windows)
+#ifdef _WIN32
                 auto file_time = fs::file_time_type(std::chrono::seconds(timestamp));
                 fs::last_write_time(p, file_time);
+#else
+                // ARCH-009: Restore timestamp on Linux/POSIX using utimensat
+                if (timestamp > 0) {
+                    try {
+                        struct timespec ts[2];
+                        ts[0].tv_sec = static_cast<time_t>(timestamp);
+                        ts[0].tv_nsec = 0;
+                        ts[1].tv_sec = static_cast<time_t>(timestamp);
+                        ts[1].tv_nsec = 0;
+                        utimensat(AT_FDCWD, p.c_str(), ts, 0);
+                    } catch (...) {
+                    }
+                }
+#endif
             } catch (...) {
-                // Silently ignore timestamp restoration failure
             }
         }
 
@@ -311,15 +321,19 @@ bool IO::write_bytes(FILE* f, const void* buf, size_t size) {
 // Security function implementations
 // ============================================================
 
+// SEC-001: Validate archive header
 bool IO::validate_archive_header(const Header& h) {
+    // Check magic bytes
     if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
         return false;
     }
 
+    // SEC-003: Check version range
     if (h.version < TARC_VERSION_MIN || h.version > TARC_VERSION) {
         return false;
     }
 
+    // Basic sanity: toc_offset must not be 0 (would mean no TOC)
     if (h.toc_offset == 0 && h.file_count > 0) {
         return false;
     }
@@ -327,13 +341,16 @@ bool IO::validate_archive_header(const Header& h) {
     return true;
 }
 
+// SEC-002: Sanitize extraction path
 std::string IO::sanitize_extract_path(const std::string& entry_name) {
     if (entry_name.empty()) return "";
 
+    // Reject absolute paths (SEC-002)
     if (entry_name[0] == '/' || entry_name[0] == '\\') {
         return "";
     }
 
+    // On Windows, reject drive-letter paths (e.g. C:\)
 #ifdef _WIN32
     if (entry_name.size() >= 2 && entry_name[1] == ':' &&
         ((entry_name[0] >= 'A' && entry_name[0] <= 'Z') ||
@@ -342,25 +359,35 @@ std::string IO::sanitize_extract_path(const std::string& entry_name) {
     }
 #endif
 
+    // Reject embedded null bytes
     if (entry_name.find('\0') != std::string::npos) {
         return "";
     }
 
+    // Reject path traversal components: ".." as a standalone directory segment
+    // Split by path separators and check each component
     std::string result = entry_name;
+    // Normalize backslashes to forward slashes for consistent checking
     std::replace(result.begin(), result.end(), '\\', '/');
 
     size_t pos = 0;
     while (pos < result.size()) {
+        // Skip leading slashes
         while (pos < result.size() && result[pos] == '/') pos++;
 
+        // Find end of component
         size_t end = result.find('/', pos);
         if (end == std::string::npos) end = result.size();
 
         std::string component = result.substr(pos, end - pos);
 
+        // Reject ".." as a path component (path traversal)
         if (component == "..") {
             return "";
         }
+
+        // Reject empty components (double slashes that could be problematic)
+        // Actually, empty is OK (just skip)
 
         pos = end;
     }
@@ -368,10 +395,15 @@ std::string IO::sanitize_extract_path(const std::string& entry_name) {
     return entry_name;
 }
 
+// SEC-005: Check if filename is safe (no control characters)
 bool IO::is_safe_filename(const std::string& name) {
     if (name.empty()) return false;
 
     for (unsigned char c : name) {
+        // Reject control characters (0x00-0x1F, 0x7F)
+        // NOTE: ".." check is NOT here — path traversal is handled by
+        // sanitize_extract_path(). Filenames like "file_v2..bak.txt"
+        // are legitimate and must be allowed.
         if (c < 0x20 || c == 0x7F) {
             return false;
         }
@@ -380,6 +412,7 @@ bool IO::is_safe_filename(const std::string& name) {
     return true;
 }
 
+// SEC-007: Check if file exists
 bool IO::file_exists(const std::string& path) {
     try {
         return fs::exists(path) && fs::is_regular_file(path);

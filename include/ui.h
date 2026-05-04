@@ -58,6 +58,8 @@ namespace UI {
     void print_error(const std::string& msg);
     void print_success(const std::string& msg);
     
+    // ARCH-015: Set dynamic progress label (was hardcoded "Compressing")
+    void set_progress_label(const std::string& label);
     void print_progress(size_t current, size_t total, const std::string& current_file);
     void print_progress_end();
     

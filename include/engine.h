@@ -32,12 +32,18 @@ namespace Engine {
         std::chrono::milliseconds elapsed{};
     };
 
-    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files,
-                       int level = 3);
+    struct FileEntryInternal {
+        std::string name;
+        std::string extension;
+    };
 
+    // ARCH-006: Use CompressOptions struct in API
+    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files,
+                       const CompressOptions& opts = {});
+
+    // ARCH-006: Use ExtractOptions struct in API (replaces individual parameters)
     TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns = {},
-                    bool test_only = false, size_t offset = 0, bool flat_mode = false,
-                    bool overwrite = false, const std::string& output_dir = "");
+                       const ExtractOptions& opts = {});
 
     TarcResult list(const std::string& arch_path, size_t offset = 0);
 

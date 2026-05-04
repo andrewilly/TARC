@@ -5,6 +5,7 @@
 #include <optional>
 #include <chrono>
 #include <functional>
+#include <cstdio>
 
 #define TARC_MAGIC     "TRC2"
 #define TARC_VERSION   200
@@ -124,11 +125,28 @@ struct TarcResult {
     uint64_t    bytes_in  = 0;
     uint64_t    bytes_out = 0;
     std::vector<std::string> warnings;
+    std::vector<FileEntry> entries;  // ARCH-012: populated by list() for UI decoupling
 
     static TarcResult success() { return {}; }
     static TarcResult failure(TarcError e, const std::string& msg = {}) {
-        return {false, e, msg, 0, 0, {}};
+        return {false, e, msg, 0, 0, {}, {}};
     }
+};
+
+struct CompressOptions {
+    int level = 3;
+    bool solid_mode = true;
+    bool sfx_requested = false;
+    bool verify = true;
+    size_t chunk_size = 256 * 1024 * 1024;
+};
+
+struct ExtractOptions {
+    bool test_only = false;
+    bool flat_mode = false;
+    bool verify = true;
+    bool overwrite = false;
+    std::string output_dir;
 };
 
 template<typename T>
@@ -142,13 +160,34 @@ struct Result {
     explicit operator bool() const { return value.has_value(); }
 };
 
-// ARCH-006: shared utility — avoids duplicating safe_now() in 3 files
-namespace TarcUtil {
-    inline std::chrono::steady_clock::time_point safe_now() {
-        try {
-            return std::chrono::steady_clock::now();
-        } catch (...) {
-            return std::chrono::steady_clock::time_point{};
-        }
+// Common utility: safe steady_clock access (centralized — ARCH-003)
+inline std::chrono::steady_clock::time_point safe_now() {
+    try {
+        return std::chrono::steady_clock::now();
+    } catch (...) {
+        return std::chrono::steady_clock::time_point{};
     }
 }
+
+// ARCH-010: RAII wrapper for FILE* to prevent handle leaks
+class FileGuard {
+public:
+    explicit FileGuard(FILE* f = nullptr) : f_(f) {}
+    ~FileGuard() { close(); }
+
+    FileGuard(const FileGuard&) = delete;
+    FileGuard& operator=(const FileGuard&) = delete;
+    FileGuard(FileGuard&& other) noexcept : f_(other.f_) { other.f_ = nullptr; }
+    FileGuard& operator=(FileGuard&& other) noexcept {
+        if (this != &other) { close(); f_ = other.f_; other.f_ = nullptr; }
+        return *this;
+    }
+
+    FILE* get() const { return f_; }
+    explicit operator bool() const { return f_ != nullptr; }
+    FILE* release() { FILE* tmp = f_; f_ = nullptr; return tmp; }
+    void close() { if (f_) { fclose(f_); f_ = nullptr; } }
+
+private:
+    FILE* f_;
+};

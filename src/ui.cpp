@@ -17,6 +17,8 @@ namespace {
 
 std::mutex cout_mutex;
 
+// ARCH-003: safe_now() removed from here — now centralized in types.h
+
 void safe_print(const std::string& s) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << s << std::flush;
@@ -25,6 +27,13 @@ void safe_print(const std::string& s) {
 }
 
 namespace UI {
+
+// ARCH-015: Dynamic progress label (replaces hardcoded "Compressing")
+static std::string g_progress_label = "Processing";
+
+void set_progress_label(const std::string& label) {
+    g_progress_label = label;
+}
 
 void enable_vtp() {
 #ifdef _WIN32
@@ -79,7 +88,6 @@ void show_help() {
     std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "       Create self-extracting archive\n";
     std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "      Flat extraction (no paths)\n";
     std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "    Overwrite existing files\n";
-    std::cout << "  " << Color::WHITE << "--output-dir <path>" << Color::RESET << "  Extract to directory\n";
     std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "    Verify integrity after operation\n";
     std::cout << "  " << Color::WHITE << "--threads N" << Color::RESET << " Set compression threads (default: auto)\n";
     
@@ -161,10 +169,11 @@ void print_success(const std::string& msg) {
     std::cout << Color::GREEN << "✔ " << Color::RESET << msg << "\n";
 }
 
+// ARCH-015: Use dynamic g_progress_label instead of hardcoded "Compressing"
 void print_progress(size_t current, size_t total, const std::string& current_file) {
     static std::unique_ptr<ProgressBar> bar;
     if (!bar || bar->get_total() != total) {
-        bar = std::make_unique<ProgressBar>(total, "Compressing");
+        bar = std::make_unique<ProgressBar>(total, g_progress_label);
     }
     bar->update(current, current_file.substr(current_file.find_last_of("/\\") + 1));
 }
@@ -257,7 +266,7 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
     : total_(total), current_(0), label_(label), active_(true),
-      start_time(TarcUtil::safe_now()), start_set(false) {
+      start_time(safe_now()), start_set(false) {
     update(0);
 }
 
@@ -284,17 +293,17 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     // BUG FIX #5: usa variabili di istanza, non statiche
     if (current_ == 0 && current > 0) {
         // Primo aggiornamento con dati reali: reset timer
-        start_time = TarcUtil::safe_now();
+        start_time = safe_now();
         start_set = true;
     }
     if (!start_set && current > 0) {
-        start_time = TarcUtil::safe_now();
+        start_time = safe_now();
         start_set = true;
     }
     
     std::string speed_info = "";
     if (current > 0 && current < total_) {
-        auto now = TarcUtil::safe_now();
+        auto now = safe_now();
         double elapsed = std::chrono::duration<double>(now - start_time).count();
         if (elapsed > 0.5) {
             double mbps = (current / (1024.0 * 1024.0)) / elapsed;
