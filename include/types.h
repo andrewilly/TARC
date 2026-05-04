@@ -13,7 +13,10 @@
 #define TARC_EXT       ".strk"
 
 // Security constants (SEC-004, SEC-005)
-#define TARC_MAX_CHUNK_SIZE    (512ULL * 1024 * 1024)  // 512 MB anti-OOM
+// SEC-004 FIX: raised from 512MB to 2GB — old code used 1GB solid threshold,
+// so archives created before v2.01 may contain chunks > 512MB.
+// 2GB still prevents malicious OOM while being backward-compatible.
+#define TARC_MAX_CHUNK_SIZE    (2ULL * 1024 * 1024 * 1024)  // 2 GB anti-OOM
 #define TARC_MAX_NAME_LEN      4096                     // cross-platform
 #define TARC_VERSION_MIN       100                      // minimum accepted version
 
