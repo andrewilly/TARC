@@ -213,8 +213,8 @@ Result<FileEntry> IO::read_entry(FILE* f) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
     
-    // SEC-005: Validazione dimensione nome con TARC_PATH_MAX
-    if (fe.meta.name_len == 0 || fe.meta.name_len > TARC_PATH_MAX) {
+    // SEC-005: Validazione dimensione nome (cross-platform, non legata al SO)
+    if (fe.meta.name_len == 0 || fe.meta.name_len > TARC_MAX_NAME_LEN) {
         return Result<FileEntry>{TarcError::CorruptedArchive, std::nullopt};
     }
 
@@ -350,7 +350,7 @@ std::string IO::sanitize_extract_path(const std::string& raw_path) {
 // ============================================================================
 bool IO::is_safe_filename(const std::string& name) {
     if (name.empty()) return false;
-    if (name.size() > TARC_PATH_MAX) return false;
+    if (name.size() > TARC_MAX_NAME_LEN) return false;
 
     // Rifiuta null bytes
     if (name.find('\0') != std::string::npos) return false;
@@ -360,8 +360,10 @@ bool IO::is_safe_filename(const std::string& name) {
         if (static_cast<unsigned char>(c) < 0x20 && c != '\t') return false;
     }
 
-    // Rifiuta path traversal
-    if (name.find("..") != std::string::npos) return false;
+    // NOTA: il controllo ".." (path traversal) e' delegato a sanitize_extract_path()
+    // che normalizza il path e rifiuta solo componenti ".." reali.
+    // Qui non rifiutiamo ".." nel nome perche' file legittimi come
+    // "mio_file_v2..bak.txt" o "file..old" devono essere accettati.
 
     return true;
 }

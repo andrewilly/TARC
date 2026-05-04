@@ -13,12 +13,7 @@
 #define TARC_EXT       ".strk"
 #define TARC_MAX_CHUNK_SIZE  (512UL * 1024 * 1024)  // SEC-004: max 512MB per chunk
 #define TARC_MAX_FILE_SIZE   (8UL * 1024 * 1024 * 1024)  // SEC-004: max 8GB per singolo file
-
-#ifdef _WIN32
-    #define TARC_PATH_MAX 260
-#else
-    #define TARC_PATH_MAX 4096
-#endif
+#define TARC_MAX_NAME_LEN    4096  // SEC-005: max filename length nel TOC (cross-platform)
 
 enum class Codec : uint8_t {
     ZSTD = 0,
