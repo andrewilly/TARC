@@ -11,12 +11,14 @@
 #include <regex>
 
 #ifdef _WIN32
+    #define NOMINMAX
     #include <windows.h>
 #endif
 
 namespace fs = std::filesystem;
 
-// BUG FIX #3: helper glob matching per Unix
+// BUG FIX #3: helper glob matching per Unix (non usato su Windows)
+#ifndef _WIN32
 static bool glob_match(const std::string& name, const std::string& pattern) {
     if (pattern.empty()) return name.empty();
 
@@ -45,6 +47,7 @@ static bool glob_match(const std::string& name, const std::string& pattern) {
         return name == pattern;
     }
 }
+#endif
 
 std::string IO::ensure_ext(const std::string& path) {
     if (path.length() < 5 || path.substr(path.length() - 5) != ".strk") {

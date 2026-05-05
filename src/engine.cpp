@@ -17,6 +17,7 @@
 #include <deque>
 
 #ifdef _WIN32
+    #define NOMINMAX
     #include <windows.h>
 #endif
 
@@ -56,13 +57,13 @@ namespace CodecSelector {
     
     bool is_compressible(const std::string& ext) {
         std::string e = ext;
-        std::transform(e.begin(), e.end(), e.begin(), ::tolower);
+        std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return skip.find(e) == skip.end();
     }
     
     Codec select(const std::string& path, size_t size) {
         std::string ext = fs::path(path).extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         
         if (!is_compressible(ext)) return Codec::STORE;
         
