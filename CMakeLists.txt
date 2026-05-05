@@ -101,6 +101,19 @@ set(TARC_LINK_LIBS
 )
 
 # ============================================================================
+# Icona Windows — solo su WIN32, usa il resource compiler (rc.exe / windres)
+# ============================================================================
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/res/tarc.ico")
+    set(TARC_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/res/tarc.rc")
+    message(STATUS "  Icona Windows: res/tarc.ico trovata, inclusa nel build")
+else()
+    set(TARC_ICON_RC "")
+    if(WIN32)
+        message(STATUS "  Icona Windows: res/tarc.ico NON trovata, exe senza icona")
+    endif()
+endif()
+
+# ============================================================================
 # Target 1: tarc — Tool principale
 # ============================================================================
 set(TARC_SOURCES
@@ -108,7 +121,13 @@ set(TARC_SOURCES
     ${TARC_CORE_SOURCES}
 )
 
-add_executable(tarc ${TARC_SOURCES})
+if(TARC_ICON_RC)
+    add_executable(tarc ${TARC_SOURCES} ${TARC_ICON_RC})
+    # Il .rc include windows.h — serve il percorso della cartella res/
+    target_include_directories(tarc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/res)
+else()
+    add_executable(tarc ${TARC_SOURCES})
+endif()
 
 target_include_directories(tarc PRIVATE ${TARC_INCLUDE_DIRS})
 
