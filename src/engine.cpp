@@ -216,7 +216,7 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     lzma_filter filters[2] = {};
     filters[0].id = LZMA_FILTER_LZMA2;
     filters[0].options = &opt;
-    filters[1].id = LZMA_VLI_END;
+    filters[1].id = UINT64_MAX;  // terminator (equivalente a LZMA_VLI_END, cross-platform)
     
     lzma_ret ret = lzma_stream_buffer_encode(
         filters,
