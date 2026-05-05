@@ -43,6 +43,12 @@ namespace Engine {
     
     TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_path);
 
+    // SFX integrato: tarc.exe rileva se stesso come archivio SFX e auto-estrae
+    bool is_sfx_mode(const std::string& exe_path);
+    TarcResult extract_sfx(const std::string& exe_path,
+                           const std::string& output_dir = "",
+                           bool overwrite = false);
+
     void set_progress_callback(ProgressCallback* callback);
 
     CompressionStats get_stats();

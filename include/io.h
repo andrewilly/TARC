@@ -68,4 +68,7 @@ namespace IO {
 
     Result<FileEntry> read_entry(FILE* f);
 
+    // Percorso dell'eseguibile corrente (usato da SFX)
+    std::string get_self_path();
+
 }

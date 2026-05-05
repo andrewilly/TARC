@@ -324,7 +324,74 @@ static int run_command(const Command& cmd) {
 
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
-    
+
+    // ====================================================================
+    // SFX MODE: se tarc.exe ha un trailer SFX, auto-estrae.
+    // Questo permette di usare tarc.exe come stub per archivi autoestraenti
+    // senza bisogno di un eseguibile separato.
+    // ====================================================================
+    std::string self_path = IO::get_self_path();
+    if (self_path.empty() && argc > 0) {
+        self_path = argv[0];
+    }
+
+    if (!self_path.empty() && Engine::is_sfx_mode(self_path)) {
+        // Siamo un archivio SFX — parse opzioni SFX minime
+        std::string output_dir;
+        bool overwrite = false;
+
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--output-dir" && i + 1 < argc) {
+                output_dir = argv[++i];
+            } else if (arg == "--force" || arg == "-y") {
+                overwrite = true;
+            } else if (arg == "--help" || arg == "-h") {
+                std::cout << Color::CYAN << Color::BOLD
+                          << "  TARC STRIKE — Self-Extracting Archive\n"
+                          << Color::RESET << "\n";
+                std::cout << "Usage: " << Color::WHITE
+                          << fs::path(argv[0]).filename().string() << " [options]"
+                          << Color::RESET << "\n\n";
+                std::cout << "Options:\n";
+                std::cout << "  " << Color::WHITE << "--output-dir <path>"
+                          << Color::RESET << "  Extract to directory (default: current)\n";
+                std::cout << "  " << Color::WHITE << "--force, -y"
+                          << Color::RESET << "          Overwrite existing files\n";
+                std::cout << "  " << Color::WHITE << "--help, -h"
+                          << Color::RESET << "          Show this help\n";
+                return 0;
+            }
+        }
+
+        // Banner SFX
+        std::cout << Color::CYAN << Color::BOLD
+                  << "  TARC STRIKE — Self-Extracting Archive\n"
+                  << Color::RESET << "\n";
+
+        // Auto-estrai
+        ProgressReporter reporter;
+        Engine::set_progress_callback(&reporter);
+
+        auto sfx_start = TarcUtil::safe_now();
+        auto res = Engine::extract_sfx(self_path, output_dir, overwrite);
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            TarcUtil::safe_now() - sfx_start
+        );
+
+        UI::print_progress_end();
+        UI::print_summary(res, "SFX Extract", elapsed);
+
+        if (!output_dir.empty()) {
+            std::cout << Color::DIM << "  Output: " << output_dir << Color::RESET << "\n";
+        }
+
+        return res.ok ? 0 : 1;
+    }
+
+    // ====================================================================
+    // NORMAL MODE: tarc.exe come archiviatore standard
+    // ====================================================================
     bool show_license_full = false;
     Command cmd = parse_args(argc, argv);
     

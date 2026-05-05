@@ -438,3 +438,25 @@ bool IO::read_bytes(FILE* f, void* buf, size_t size) {
 bool IO::write_bytes(FILE* f, const void* buf, size_t size) {
     return fwrite(buf, 1, size, f) == size;
 }
+
+// ============================================================================
+// Percorso dell'eseguibile corrente (cross-platform)
+// ============================================================================
+std::string IO::get_self_path() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return "";
+    int narrow_len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+    if (narrow_len <= 0) return "";
+    std::string result(narrow_len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &result[0], narrow_len, nullptr, nullptr);
+    return result;
+#else
+    char buf[4096];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len <= 0) return "";
+    buf[len] = '\0';
+    return std::string(buf);
+#endif
+}
