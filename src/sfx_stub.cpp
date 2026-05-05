@@ -171,7 +171,7 @@ static int extract_embedded(const std::string& self_path,
               << Color::RESET;
 
     // Configura opzioni di estrazione
-    Engine::ExtractOptions xopts;
+    ExtractOptions xopts;
     xopts.test_only = false;
     xopts.flat_mode = false;
     xopts.verify = true;

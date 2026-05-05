@@ -633,7 +633,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
         size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(COPY_BUF)));
         stub_in.read(buf.data(), to_read);
         if (!stub_in) {
-            res.error = TarcError::ReadFailed;  // legacy compat
+            res.error = TarcError::CorruptedArchive;
             res.message = "Failed to read stub.";
             return res;
         }
@@ -648,7 +648,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
         size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(COPY_BUF)));
         archive_in.read(buf.data(), to_read);
         if (!archive_in) {
-            res.error = TarcError::ReadFailed;
+            res.error = TarcError::CorruptedArchive;
             res.message = "Failed to read archive.";
             return res;
         }
