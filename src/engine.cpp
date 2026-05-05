@@ -546,39 +546,139 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
 }
 
 // ============================================================================
-// SFX — Self-Extracting Archive Creator
+// SFX — Self-Extracting Archive (integrato in tarc.exe)
 // ============================================================================
 // Layout del file SFX generato:
-//   [Stub EXE][Archivio TARC .strk][SfxTrailer (24 byte)]
+//   [tarc.exe][Archivio TARC .strk][SfxTrailer (24 byte)]
 //
-// Il stub e' tarc_sfx_stub (compilato separatamente).
-// Il trailer alla fine permette al stub di trovare l'archivio embeddato.
+// Quando l'utente lancia il file .exe generato, tarc.exe rileva il trailer
+// SFX alla fine del file e auto-estrae l'archivio embeddato.
+// Non serve nessun stub separato — tarc.exe e' sia il compressore che lo stub.
 // ============================================================================
+
+// ============================================================================
+// Legge il trailer SFX dagli ultimi 24 byte di un file
+// ============================================================================
+static bool read_sfx_trailer(const std::string& exe_path, SfxTrailer& trailer) {
+    std::ifstream f(exe_path, std::ios::binary);
+    if (!f) return false;
+
+    f.seekg(0, std::ios::end);
+    auto file_size = f.tellg();
+    if (file_size < static_cast<std::streamoff>(SFX_TRAILER_SIZE)) return false;
+
+    f.seekg(-static_cast<std::streamoff>(SFX_TRAILER_SIZE), std::ios::end);
+    f.read(reinterpret_cast<char*>(&trailer), SFX_TRAILER_SIZE);
+    if (f.gcount() != SFX_TRAILER_SIZE) return false;
+
+    if (std::memcmp(trailer.magic, SFX_MAGIC, 8) != 0) return false;
+
+    // Validazione coerenza offset/dimensione
+    uint64_t fsize = static_cast<uint64_t>(file_size);
+    if (trailer.archive_offset >= fsize) return false;
+    if (trailer.archive_offset + trailer.archive_size > fsize - SFX_TRAILER_SIZE) return false;
+
+    return true;
+}
+
+bool is_sfx_mode(const std::string& exe_path) {
+    SfxTrailer trailer;
+    return read_sfx_trailer(exe_path, trailer);
+}
+
+TarcResult extract_sfx(const std::string& exe_path,
+                       const std::string& output_dir,
+                       bool overwrite) {
+    TarcResult res;
+    res.ok = false;
+
+    // Leggi il trailer
+    SfxTrailer trailer;
+    if (!read_sfx_trailer(exe_path, trailer)) {
+        res.error = TarcError::CorruptedArchive;
+        res.message = "Not a valid TARC SFX archive.";
+        return res;
+    }
+
+    // Estrai l'archivio TARC embeddato in un file temporaneo
+    fs::path temp_dir = fs::temp_directory_path();
+    fs::path temp_archive = temp_dir / "tarc_sfx_temp.strk";
+
+    {
+        std::ifstream self(exe_path, std::ios::binary);
+        if (!self) {
+            res.error = TarcError::AccessDenied;
+            res.message = "Cannot open: " + exe_path;
+            return res;
+        }
+
+        std::ofstream out(temp_archive, std::ios::binary);
+        if (!out) {
+            res.error = TarcError::AccessDenied;
+            res.message = "Cannot create temporary file.";
+            return res;
+        }
+
+        self.clear();
+        self.seekg(static_cast<std::streamoff>(trailer.archive_offset));
+
+        const size_t BUF_SIZE = 1024 * 1024;
+        std::vector<char> buf(BUF_SIZE);
+        uint64_t remaining = trailer.archive_size;
+
+        while (remaining > 0) {
+            size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BUF_SIZE)));
+            self.read(buf.data(), to_read);
+            if (self.gcount() != static_cast<std::streamsize>(to_read)) {
+                out.close();
+                std::error_code ec;
+                fs::remove(temp_archive, ec);
+                res.error = TarcError::CorruptedArchive;
+                res.message = "Failed to read embedded archive.";
+                return res;
+            }
+            out.write(buf.data(), to_read);
+            remaining -= to_read;
+        }
+        out.flush();
+        out.close();
+
+        if (!out.good()) {
+            std::error_code ec;
+            fs::remove(temp_archive, ec);
+            res.error = TarcError::WriteFailed;
+            res.message = "Failed to write temporary archive.";
+            return res;
+        }
+    }
+
+    // Estrai usando il motore TARC
+    ExtractOptions xopts;
+    xopts.test_only = false;
+    xopts.verify = true;
+    xopts.overwrite = overwrite;
+    if (!output_dir.empty()) {
+        xopts.output_dir = output_dir;
+    }
+
+    res = extract(temp_archive.string(), {}, xopts);
+
+    // Cleanup temporaneo
+    std::error_code ec;
+    fs::remove(temp_archive, ec);
+
+    return res;
+}
 
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
     TarcResult res;
     res.ok = false;
 
-    // Cerca lo stub in diverse posizioni (accanto all'eseguibile, cwd, ecc.)
-    const char* stub_names[] = {
-        "tarc_sfx_stub.exe",     // Windows
-        "tarc_sfx_stub",         // Linux/macOS
-        "bin/tarc_sfx_stub.exe",
-        "bin/tarc_sfx_stub",
-        nullptr
-    };
-
-    std::string stub_path;
-    for (int i = 0; stub_names[i] != nullptr; ++i) {
-        if (fs::exists(stub_names[i])) {
-            stub_path = stub_names[i];
-            break;
-        }
-    }
-
+    // Usa l'eseguibile corrente (tarc.exe) come stub
+    std::string stub_path = IO::get_self_path();
     if (stub_path.empty()) {
         res.error = TarcError::FileNotFound;
-        res.message = "SFX stub not found. Compile tarc_sfx_stub first.";
+        res.message = "Cannot determine current executable path.";
         return res;
     }
 
