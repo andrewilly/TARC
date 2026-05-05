@@ -939,8 +939,230 @@ static bool write_chunk(FILE* f, Codec codec, uint32_t raw_size,
 }
 
 // ============================================================================
+// STREAMING COMPRESSION — Anti-OOM per file grandi
+// ============================================================================
+// Legge il file sorgente a blocchi di 256KB e comprime usando API streaming.
+// Memory usage costante: ~128-256MB (indipendente dalla dimensione del file).
+// Il decompressore esistente funziona senza modifiche (formati compatibili).
+// ============================================================================
+
+constexpr size_t STREAM_BUF_SIZE = 256 * 1024;  // 256KB I/O buffers
+
+// Helper: flush del solid buffer (usato dallo streaming path)
+static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& solid_has_files,
+                                size_t solid_toc_begin, Codec solid_codec, int level,
+                                std::vector<FileEntry>& final_toc, uint64_t& bytes_out) {
+    if (!solid_has_files || solid_buf.empty()) return true;
+    ChunkResult solid_cr = compress_worker(std::move(solid_buf), level, solid_codec);
+    if (!solid_cr.success) return false;
+    uint64_t solid_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+    if (!write_chunk(f, solid_cr.codec, solid_cr.raw_size, solid_cr.compressed_data, bytes_out))
+        return false;
+    Codec actual_codec = solid_cr.codec;
+    for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
+        final_toc[j].meta.offset = solid_offset;
+        final_toc[j].meta.codec = static_cast<uint8_t>(actual_codec);
+    }
+    solid_buf.clear();
+    solid_buf.reserve(128 * 1024 * 1024);
+    solid_has_files = false;
+    return true;
+}
+
+// Streaming LZMA2 — memory costante (~128MB encoder)
+static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
+                                   uint64_t& out_comp_size, uint64_t& out_checksum) {
+    lzma_options_lzma opt;
+    uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
+    if (level >= 7) preset |= LZMA_PRESET_EXTREME;
+    if (lzma_lzma_preset(&opt, preset) != LZMA_OK) return false;
+
+    // Cap dict a 64MB per streaming (encoder usa ~2x dict)
+    if (opt.dict_size > 64u * 1024 * 1024) opt.dict_size = 64u * 1024 * 1024;
+
+    lzma_filter filters[2] = {};
+    filters[0].id = LZMA_FILTER_LZMA2;
+    filters[0].options = &opt;
+    filters[1].id = UINT64_MAX;
+
+    lzma_stream strm = LZMA_STREAM_INIT;
+    if (lzma_stream_encoder(&strm, filters, LZMA_CHECK_CRC64) != LZMA_OK) return false;
+
+    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
+    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+    out_comp_size = 0;
+    out_checksum = 0;
+    lzma_action action = LZMA_RUN;
+
+    XXH64_state_t* xxh = XXH64_createState();
+    XXH64_reset(xxh, 0);
+    bool ok = true;
+
+    while (true) {
+        if (strm.avail_in == 0 && action == LZMA_RUN) {
+            size_t n = fread(in_buf.data(), 1, in_buf.size(), src_f);
+            if (n == 0) { action = LZMA_FINISH; }
+            else { strm.next_in = in_buf.data(); strm.avail_in = n; }
+        }
+        strm.next_out = out_buf.data();
+        strm.avail_out = out_buf.size();
+        lzma_ret ret = lzma_code(&strm, action);
+        if (ret != LZMA_OK && ret != LZMA_STREAM_END) { ok = false; break; }
+        size_t have = out_buf.size() - strm.avail_out;
+        if (have > 0) {
+            XXH64_update(xxh, out_buf.data(), have);
+            if (fwrite(out_buf.data(), 1, have, dst_f) != have) { ok = false; break; }
+            out_comp_size += have;
+        }
+        if (ret == LZMA_STREAM_END) break;
+    }
+
+    out_checksum = XXH64_digest(xxh);
+    lzma_end(&strm);
+    XXH64_freeState(xxh);
+    return ok;
+}
+
+// Streaming ZSTD — memory costante
+static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
+                                  uint64_t& out_comp_size, uint64_t& out_checksum) {
+    ZSTD_CStream* cs = ZSTD_createCStream();
+    if (!cs) return false;
+    int zl = std::clamp(level, 1, 19);
+    ZSTD_CCtx_setParameter(cs, ZSTD_c_compressionLevel, zl);
+    int wlog = 23; // 8MB
+    if (zl >= 10) wlog = 25; // 32MB
+    if (zl >= 16) wlog = 27; // 128MB
+    ZSTD_CCtx_setParameter(cs, ZSTD_c_windowLog, wlog);
+    if (zl >= 16) ZSTD_CCtx_setParameter(cs, ZSTD_c_strategy, ZSTD_btultra2);
+    else if (zl >= 10) ZSTD_CCtx_setParameter(cs, ZSTD_c_strategy, ZSTD_btultra);
+
+    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
+    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+    out_comp_size = 0;
+    out_checksum = 0;
+    XXH64_state_t* xxh = XXH64_createState();
+    XXH64_reset(xxh, 0);
+    bool ok = true;
+
+    while (true) {
+        size_t n = fread(in_buf.data(), 1, in_buf.size(), src_f);
+        bool last = (n < in_buf.size());
+        ZSTD_inBuffer input = {in_buf.data(), n, 0};
+        ZSTD_outBuffer output = {out_buf.data(), out_buf.size(), 0};
+
+        size_t ret = ZSTD_compressStream2(cs, &output, &input,
+                                           last ? ZSTD_e_end : ZSTD_e_continue);
+        if (ZSTD_isError(ret)) { ok = false; break; }
+
+        if (output.pos > 0) {
+            XXH64_update(xxh, out_buf.data(), output.pos);
+            if (fwrite(out_buf.data(), 1, output.pos, dst_f) != output.pos) { ok = false; break; }
+            out_comp_size += output.pos;
+        }
+        if (last && ret == 0) break;
+    }
+
+    out_checksum = XXH64_digest(xxh);
+    ZSTD_freeCStream(cs);
+    XXH64_freeState(xxh);
+    return ok;
+}
+
+// Streaming Brotli — memory costante
+static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
+                                    uint64_t& out_comp_size, uint64_t& out_checksum) {
+    BrotliEncoderState* bs = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
+    if (!bs) return false;
+    int quality = std::clamp(level, 0, 11);
+    BrotliEncoderSetParameter(bs, BROTLI_PARAM_QUALITY, quality);
+    BrotliEncoderSetParameter(bs, BROTLI_PARAM_LGWIN, 24); // 16MB
+
+    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
+    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+    out_comp_size = 0;
+    out_checksum = 0;
+    XXH64_state_t* xxh = XXH64_createState();
+    XXH64_reset(xxh, 0);
+    bool ok = true;
+
+    while (true) {
+        size_t avail_in = fread(in_buf.data(), 1, in_buf.size(), src_f);
+        bool last = (avail_in < in_buf.size());
+        BrotliEncoderOperation op = last ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
+        const uint8_t* next_in = in_buf.data();
+
+        while (true) {
+            size_t avail_out = out_buf.size();
+            uint8_t* next_out = out_buf.data();
+            BROTLI_BOOL r = BrotliEncoderCompressStream(bs, op, &avail_in, &next_in, &avail_out, &next_out, nullptr);
+            size_t have = out_buf.size() - avail_out;
+            if (have > 0) {
+                XXH64_update(xxh, out_buf.data(), have);
+                if (fwrite(out_buf.data(), 1, have, dst_f) != have) { ok = false; goto done_brotli; }
+                out_comp_size += have;
+            }
+            if (!r) { ok = false; goto done_brotli; }
+            if (op == BROTLI_OPERATION_FINISH && BrotliEncoderIsFinished(bs)) goto done_brotli;
+            if (avail_in > 0 && op == BROTLI_OPERATION_PROCESS) continue;
+            break;
+        }
+        if (last) break;
+    }
+done_brotli:
+    out_checksum = XXH64_digest(xxh);
+    BrotliEncoderDestroyInstance(bs);
+    XXH64_freeState(xxh);
+    return ok;
+}
+
+// Scrive un chunk usando compressione streaming (seek-back per ChunkHeader)
+static bool write_chunk_streaming(FILE* archive_f, const std::string& source_path,
+                                   uintmax_t source_size, int level, Codec codec,
+                                   uint64_t& bytes_out) {
+    int64_t hdr_pos = IO::tarc_ftell(archive_f);
+    if (hdr_pos == -1) return false;
+
+    ChunkHeader placeholder = {0, 0, 0, 0};
+    if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) return false;
+
+    FILE* src_f = fopen(source_path.c_str(), "rb");
+    if (!src_f) return false;
+
+    // LZ4 non ha streaming buono → fallback ZSTD
+    Codec actual = codec;
+    if (codec == Codec::LZ4) actual = Codec::ZSTD;
+
+    uint64_t csz = 0, cksum = 0;
+    bool ok = false;
+    switch (actual) {
+        case Codec::LZMA: ok = stream_compress_lzma2(src_f, archive_f, level, csz, cksum); break;
+        case Codec::ZSTD: ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum); break;
+        case Codec::BR:   ok = stream_compress_brotli(src_f, archive_f, level, csz, cksum); break;
+        default:          ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum); actual = Codec::ZSTD; break;
+    }
+    fclose(src_f);
+    if (!ok) return false;
+
+    int64_t end_pos = IO::tarc_ftell(archive_f);
+    if (end_pos == -1) return false;
+    if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) return false;
+
+    ChunkHeader hdr = {
+        static_cast<uint32_t>(actual),
+        static_cast<uint32_t>(source_size > UINT32_MAX ? 0 : source_size),
+        static_cast<uint32_t>(csz > UINT32_MAX ? 0 : csz),
+        cksum
+    };
+    if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) return false;
+    if (IO::tarc_fseek(archive_f, end_pos, SEEK_SET) != 0) return false;
+
+    bytes_out += csz;
+    return true;
+}
+
+// ============================================================================
 // Struttura per tracciare i file appartenenti a un chunk solid
-// Usata per popolare Entry.offset retroattivamente (FEATURE #5)
 // ============================================================================
 struct SolidChunkFiles {
     size_t toc_begin; // primo indice in final_toc
@@ -993,7 +1215,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     // FEATURE #5: traccia l'offset dei chunk nell'archivio
     uint64_t data_offset = sizeof(Header);
 
-    constexpr size_t CHUNK_THRESHOLD = 1024 * 1024 * 1024;
+    // Anti-OOM: solid buffer ridotto da 1GB a 128MB
+    constexpr size_t CHUNK_THRESHOLD = 128 * 1024 * 1024;
+    // File piu grandi di questo vengono compressi in streaming (non caricati in RAM)
+    constexpr size_t MAX_IN_MEMORY = 256 * 1024 * 1024;
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     
@@ -1058,14 +1283,19 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             continue;
         }
         
+        // ============================================================
+        // Anti-OOM: file grandi → streaming (non caricati in RAM)
+        // ============================================================
+        constexpr size_t MAX_IN_MEMORY = 256 * 1024 * 1024;
+        bool use_streaming = (fsize > MAX_IN_MEMORY);
+        
         std::vector<char> data;
-        try {
-            data.resize(static_cast<size_t>(fsize));
-        } catch (const std::bad_alloc&) {
-            res.error = TarcError::OutOfMemory;
-            res.message = "Out of memory: " + disk_path;
-            report_warning(res.message);
-            continue;
+        if (!use_streaming) {
+            try {
+                data.resize(static_cast<size_t>(fsize));
+            } catch (const std::bad_alloc&) {
+                use_streaming = true; // fallback a streaming se OOM
+            }
         }
 
         bool read_ok = false;
@@ -1075,10 +1305,20 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
-            size_t read_res = fread(data.data(), 1, static_cast<size_t>(fsize), in_f);
-            if (read_res == static_cast<size_t>(fsize)) {
+            if (use_streaming) {
+                // Streaming: calcola hash leggendo a blocchi (senza caricare tutto)
+                std::vector<char> hbuf(64 * 1024);
+                size_t n;
+                while ((n = fread(hbuf.data(), 1, hbuf.size(), in_f)) > 0) {
+                    if (state) XXH64_update(state, hbuf.data(), n);
+                }
                 read_ok = true;
-                if (state) XXH64_update(state, data.data(), static_cast<size_t>(fsize));
+            } else {
+                size_t read_res = fread(data.data(), 1, static_cast<size_t>(fsize), in_f);
+                if (read_res == static_cast<size_t>(fsize)) {
+                    read_ok = true;
+                    if (state) XXH64_update(state, data.data(), static_cast<size_t>(fsize));
+                }
             }
             fclose(in_f);
         } else {
@@ -1126,7 +1366,47 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
 
-            if (fsize <= STORE_THRESHOLD) {
+            // ============================================================
+            // STREAMING: file grandi compressi direttamente da disco
+            // Non carica il file in RAM, usa ~128-256MB costanti
+            // ============================================================
+            if (use_streaming && selected_codec != Codec::STORE) {
+                // Flush solid buffer pendente prima dello streaming
+                if (worker_active && !write_pending_chunk(future_chunk)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Chunk compression failed.";
+                    fclose(f);
+                    return res;
+                }
+                worker_active = false;
+
+                if (!flush_solid_buffer(f, solid_buf, solid_has_files,
+                                        solid_toc_begin, solid_codec, level,
+                                        final_toc, res.bytes_out)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Solid flush failed.";
+                    fclose(f);
+                    return res;
+                }
+
+                // Stream-comprime il file grande direttamente
+                uint64_t stream_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                Codec stream_codec = selected_codec;
+
+                if (!write_chunk_streaming(f, disk_path, fsize, level, stream_codec, res.bytes_out)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Streaming compression failed: " + disk_path;
+                    fclose(f);
+                    return res;
+                }
+
+                // Aggiorna TOC
+                fe.meta.offset = stream_offset;
+                if (stream_codec == Codec::LZ4) stream_codec = Codec::ZSTD; // fallback
+                fe.meta.codec = static_cast<uint8_t>(stream_codec);
+                g_stats.bytes_read += fsize;
+                data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+            } else if (fsize <= STORE_THRESHOLD) {
                 // ============================================================
                 // BUG FIX: flush pending solid buffer BEFORE writing STORE chunk
                 // Senza questo, i chunk solid vengono scritti DOPO i chunk STORE,
