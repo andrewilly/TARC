@@ -20,16 +20,19 @@ jobs:
           - os: ubuntu-latest
             artifact_name: tarc-linux-x86_64
             executable: tarc
+            sfx_stub: tarc_sfx_stub
             cmake_arch_flags: ""
 
           - os: windows-latest
             artifact_name: tarc-windows-x64.exe
             executable: tarc.exe
+            sfx_stub: tarc_sfx_stub.exe
             cmake_arch_flags: "-A x64"
 
           - os: macos-latest
             artifact_name: tarc-macos-universal
             executable: tarc
+            sfx_stub: tarc_sfx_stub
             cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'"
 
     steps:
@@ -83,9 +86,10 @@ jobs:
         cd build
         cmake --build . --config Release --parallel 2
 
-    - name: Find executable (Linux/macOS)
+    - name: Find executables (Linux/macOS)
       if: runner.os != 'Windows'
       run: |
+        # Trova tarc principale
         if [ -f "build/tarc" ]; then
           echo "EXECUTABLE_PATH=build/tarc" >> $GITHUB_ENV
         elif [ -f "build/Release/tarc" ]; then
@@ -93,11 +97,20 @@ jobs:
         else
           find build -name "tarc" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
         fi
+        # Trova sfx stub
+        if [ -f "build/tarc_sfx_stub" ]; then
+          echo "SFX_STUB_PATH=build/tarc_sfx_stub" >> $GITHUB_ENV
+        elif [ -f "build/Release/tarc_sfx_stub" ]; then
+          echo "SFX_STUB_PATH=build/Release/tarc_sfx_stub" >> $GITHUB_ENV
+        else
+          find build -name "tarc_sfx_stub" -type f | head -1 | xargs -I {} echo "SFX_STUB_PATH={}" >> $GITHUB_ENV
+        fi
 
-    - name: Find executable (Windows)
+    - name: Find executables (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
+        # Trova tarc principale
         if (Test-Path "build/Release/tarc.exe") {
           echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $env:GITHUB_ENV
         } elseif (Test-Path "build/tarc.exe") {
@@ -107,6 +120,16 @@ jobs:
           Select-Object -First 1 |
           ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" >> $env:GITHUB_ENV }
         }
+        # Trova sfx stub
+        if (Test-Path "build/Release/tarc_sfx_stub.exe") {
+          echo "SFX_STUB_PATH=build/Release/tarc_sfx_stub.exe" >> $env:GITHUB_ENV
+        } elseif (Test-Path "build/tarc_sfx_stub.exe") {
+          echo "SFX_STUB_PATH=build/tarc_sfx_stub.exe" >> $env:GITHUB_ENV
+        } else {
+          Get-ChildItem -Path build -Filter "tarc_sfx_stub.exe" -Recurse |
+          Select-Object -First 1 |
+          ForEach-Object { echo "SFX_STUB_PATH=$($_.FullName)" >> $env:GITHUB_ENV }
+        }
 
     - name: Test executable
       shell: bash
@@ -114,11 +137,24 @@ jobs:
         chmod +x ${{ env.EXECUTABLE_PATH }} 2>/dev/null || true
         ${{ env.EXECUTABLE_PATH }} -h || true
 
+    - name: Package executables
+      shell: bash
+      run: |
+        mkdir -p dist
+        cp "${{ env.EXECUTABLE_PATH }}" dist/${{ matrix.executable }}
+        if [ -n "${{ env.SFX_STUB_PATH }}" ] && [ -f "${{ env.SFX_STUB_PATH }}" ]; then
+          cp "${{ env.SFX_STUB_PATH }}" dist/${{ matrix.sfx_stub }}
+          echo "SFX stub incluso nella build"
+        else
+          echo "WARNING: SFX stub non trovato!"
+        fi
+        ls -lh dist/
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: ${{ env.EXECUTABLE_PATH }}
+        path: dist/
         if-no-files-found: error
 
   create-release:
@@ -138,20 +174,29 @@ jobs:
     - name: Prepare release files
       run: |
         VERSION=${GITHUB_REF#refs/tags/}
-        echo "📦 Versione: $VERSION"
+        echo "Versione: $VERSION"
 
+        # Linux
         find artifacts -type f -name "tarc" | grep linux | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
+        find artifacts -type f -name "tarc_sfx_stub" | grep linux | head -1 | xargs -I {} cp {} tarc-sfx_stub-$VERSION-linux-x86_64
+
+        # Windows
         find artifacts -type f -name "tarc.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
+        find artifacts -type f -name "tarc_sfx_stub.exe" | head -1 | xargs -I {} cp {} tarc-sfx_stub-$VERSION-windows-x64.exe
+
+        # macOS
         find artifacts -type f -name "tarc" | grep macos | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
+        find artifacts -type f -name "tarc_sfx_stub" | grep macos | head -1 | xargs -I {} cp {} tarc-sfx_stub-$VERSION-macos-universal
 
-        chmod +x tarc-$VERSION-* 2>/dev/null || true
+        chmod +x tarc-$VERSION-* tarc-sfx_stub-$VERSION-* 2>/dev/null || true
 
-        echo "✅ File pronti:"
-        ls -lh tarc-$VERSION-* || echo "❌ Nessun file trovato"
+        echo "File pronti:"
+        ls -lh tarc-*
+        ls -lh tarc-sfx_stub-* 2>/dev/null || echo "Nessun SFX stub trovato"
 
     - name: Generate checksums
       run: |
-        sha256sum tarc-* > checksums.txt
+        sha256sum tarc-* tarc-sfx_stub-* > checksums.txt
         cat checksums.txt
 
     - name: Create Release
@@ -159,6 +204,7 @@ jobs:
       with:
         files: |
           tarc-*
+          tarc-sfx_stub-*
           checksums.txt
         draft: false
         prerelease: false
