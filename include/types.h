@@ -14,6 +14,8 @@
 #define TARC_MAX_CHUNK_SIZE  (2ULL * 1024 * 1024 * 1024)  // SEC-004: max 2GB per chunk (backward-compat)
 #define TARC_MAX_FILE_SIZE   (8UL * 1024 * 1024 * 1024)  // SEC-004: max 8GB per singolo file
 #define TARC_MAX_NAME_LEN    4096  // SEC-005: max filename length nel TOC (cross-platform)
+#define SFX_MAGIC            "TARC_SFX"  // Magic per identificare archivi SFX autoestraenti
+#define SFX_TRAILER_SIZE     24          // sizeof(SfxTrailer): 8 + 8 + 8 bytes
 
 // ARCH-006: safe_now() centralizzato — evita duplicazione in engine.cpp, ui.cpp, main.cpp
 #include <chrono>
@@ -113,10 +115,19 @@ struct Entry {
 };
 
 struct ChunkHeader {
-    uint32_t codec;      
-    uint32_t raw_size;   
-    uint32_t comp_size;  
-    uint64_t checksum;   
+    uint32_t codec;
+    uint32_t raw_size;
+    uint32_t comp_size;
+    uint64_t checksum;
+};
+
+// SFX Trailer — scritto alla FINE del file EXE autoestraente
+// Layout: [Stub EXE][Archivio TARC .strk][SfxTrailer]
+// Il stub legge gli ultimi 24 byte per trovare offset e dimensione dell'archivio.
+struct SfxTrailer {
+    char     magic[8];      // "TARC_SFX"
+    uint64_t archive_offset; // offset dall'inizio del file dove inizia l'archivio TARC
+    uint64_t archive_size;   // dimensione in byte dell'archivio TARC embeddato
 };
 #pragma pack(pop)
 

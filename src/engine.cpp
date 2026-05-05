@@ -545,35 +545,136 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
 }
 
 // ============================================================================
-// SFX
+// SFX — Self-Extracting Archive Creator
+// ============================================================================
+// Layout del file SFX generato:
+//   [Stub EXE][Archivio TARC .strk][SfxTrailer (24 byte)]
+//
+// Il stub e' tarc_sfx_stub (compilato separatamente).
+// Il trailer alla fine permette al stub di trovare l'archivio embeddato.
 // ============================================================================
 
 TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_name) {
     TarcResult res;
     res.ok = false;
-    
-    std::string stub_path = "tarc_sfx_stub.exe";
-    if (!fs::exists(stub_path)) {
+
+    // Cerca lo stub in diverse posizioni (accanto all'eseguibile, cwd, ecc.)
+    const char* stub_names[] = {
+        "tarc_sfx_stub.exe",     // Windows
+        "tarc_sfx_stub",         // Linux/macOS
+        "bin/tarc_sfx_stub.exe",
+        "bin/tarc_sfx_stub",
+        nullptr
+    };
+
+    std::string stub_path;
+    for (int i = 0; stub_names[i] != nullptr; ++i) {
+        if (fs::exists(stub_names[i])) {
+            stub_path = stub_names[i];
+            break;
+        }
+    }
+
+    if (stub_path.empty()) {
         res.error = TarcError::FileNotFound;
-        res.message = "Stub SFX not found.";
+        res.message = "SFX stub not found. Compile tarc_sfx_stub first.";
         return res;
     }
 
+    // Verifica che l'archivio esista
+    if (!fs::exists(archive_path)) {
+        res.error = TarcError::FileNotFound;
+        res.message = "Archive not found: " + archive_path;
+        return res;
+    }
+
+    // Determina le dimensioni dei file
+    uint64_t stub_size = static_cast<uint64_t>(fs::file_size(stub_path));
+    uint64_t archive_size = static_cast<uint64_t>(fs::file_size(archive_path));
+
+    if (stub_size == 0) {
+        res.error = TarcError::CorruptedArchive;
+        res.message = "SFX stub is empty.";
+        return res;
+    }
+    if (archive_size == 0) {
+        res.error = TarcError::CorruptedArchive;
+        res.message = "Archive is empty.";
+        return res;
+    }
+
+    // L'archivio TARC inizia subito dopo lo stub
+    uint64_t archive_offset = stub_size;
+
+    // Costruisci il trailer
+    SfxTrailer trailer;
+    std::memcpy(trailer.magic, SFX_MAGIC, 8);
+    trailer.archive_offset = archive_offset;
+    trailer.archive_size = archive_size;
+
+    // Apri tutti i file
     std::ifstream stub_in(stub_path, std::ios::binary);
-    std::ifstream data_in(archive_path, std::ios::binary);
+    std::ifstream archive_in(archive_path, std::ios::binary);
     std::ofstream sfx_out(sfx_name, std::ios::binary);
 
-    if (!stub_in || !data_in || !sfx_out) {
+    if (!stub_in || !archive_in || !sfx_out) {
         res.error = TarcError::AccessDenied;
-        res.message = "Failed to create SFX.";
+        res.message = "Failed to open files for SFX creation.";
         return res;
     }
 
-    sfx_out << stub_in.rdbuf();
-    sfx_out << data_in.rdbuf();
-    
+    // Scrivi lo stub EXE
+    const size_t COPY_BUF = 1024 * 1024;
+    std::vector<char> buf(COPY_BUF);
+
+    // 1) Copia stub
+    uint64_t remaining = stub_size;
+    while (remaining > 0) {
+        size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(COPY_BUF)));
+        stub_in.read(buf.data(), to_read);
+        if (!stub_in) {
+            res.error = TarcError::ReadFailed;  // legacy compat
+            res.message = "Failed to read stub.";
+            return res;
+        }
+        sfx_out.write(buf.data(), to_read);
+        remaining -= to_read;
+    }
+    stub_in.close();
+
+    // 2) Copia archivio TARC
+    remaining = archive_size;
+    while (remaining > 0) {
+        size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(COPY_BUF)));
+        archive_in.read(buf.data(), to_read);
+        if (!archive_in) {
+            res.error = TarcError::ReadFailed;
+            res.message = "Failed to read archive.";
+            return res;
+        }
+        sfx_out.write(buf.data(), to_read);
+        remaining -= to_read;
+    }
+    archive_in.close();
+
+    // 3) Scrivi il trailer (ultimi 24 byte)
+    sfx_out.write(reinterpret_cast<const char*>(&trailer), SFX_TRAILER_SIZE);
+    sfx_out.flush();
+
+    if (!sfx_out.good()) {
+        res.error = TarcError::WriteFailed;
+        res.message = "Failed to write SFX file.";
+        return res;
+    }
+    sfx_out.close();
+
+    // Calcola dimensione finale per il report
+    uint64_t sfx_total = stub_size + archive_size + SFX_TRAILER_SIZE;
     res.ok = true;
-    res.message = "SFX created.";
+    res.bytes_in = archive_size;
+    res.bytes_out = sfx_total;
+    res.message = "SFX archive created: " + sfx_name
+                + " (" + std::to_string(sfx_total / (1024 * 1024)) + " MB)";
     return res;
 }
 
