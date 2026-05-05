@@ -11,6 +11,7 @@
 #include <cstring>
 #include <chrono>
 #include <filesystem>
+#include <exception>
 
 namespace fs = std::filesystem;
 
@@ -96,7 +97,7 @@ static Command parse_args(int argc, char* argv[]) {
         cmd.level = 3;
         
         if (arg == "-cbest") {
-            cmd.level = 9;
+            cmd.level = 19;  // Massima compressione: LZMA2 1GB dict + ZSTD 19 ultra
         } else if (arg == "-cfast") {
             cmd.level = 1;
         } else if (arg.length() > 2) {
@@ -104,7 +105,7 @@ static Command parse_args(int argc, char* argv[]) {
             if (!level_str.empty() && std::all_of(level_str.begin(), level_str.end(), ::isdigit)) {
                 try {
                     cmd.level = std::stoi(level_str);
-                    cmd.level = std::clamp(cmd.level, 1, 9);
+                    cmd.level = std::clamp(cmd.level, 1, 19);  // Livelli 1-19
                 } catch (...) {
                 }
             }
@@ -183,7 +184,7 @@ static int run_command(const Command& cmd) {
             return 0;
             
         case Command::Version:
-            std::cout << "TARC STRIKE v2.00_OpenAi\n";
+            std::cout << "TARC STRIKE v2.10_OpenAi\n";
             std::cout << "Build: " << __DATE__ << " " << __TIME__ << "\n";
             return 0;
             
@@ -414,5 +415,17 @@ int main(int argc, char* argv[]) {
     
     UI::show_banner();
     
-    return run_command(cmd);
+    try {
+        return run_command(cmd);
+    } catch (const std::bad_alloc& e) {
+        std::cerr << Color::RED << "\n[FATAL] Out of memory: " << e.what() << Color::RESET << "\n";
+        std::cerr << Color::DIM << "The input is too large for the available RAM." << Color::RESET << "\n";
+        return 1;
+    } catch (const std::exception& e) {
+        std::cerr << Color::RED << "\n[FATAL] " << e.what() << Color::RESET << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << Color::RED << "\n[FATAL] Unknown error" << Color::RESET << "\n";
+        return 1;
+    }
 }

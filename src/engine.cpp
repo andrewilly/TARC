@@ -67,6 +67,14 @@ namespace CodecSelector {
         
         if (!is_compressible(ext)) return Codec::STORE;
         
+        // PDF e documenti: ZSTD gestisce meglio i flussi gia compressi
+        // (PDF contiene stream zlib/deflate interni che LZMA non comprime bene)
+        if (ext == ".pdf" || ext == ".xps" || ext == ".oxps" ||
+            ext == ".epub" || ext == ".mobi") {
+            return Codec::ZSTD;
+        }
+        
+        // File di testo e codice sorgente: LZMA2 con dizionario grande
         if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".hpp" ||
             ext == ".c" || ext == ".py" || ext == ".js" || ext == ".ts" ||
             ext == ".json" || ext == ".xml" || ext == ".html" || ext == ".css" ||
@@ -75,24 +83,31 @@ namespace CodecSelector {
             return Codec::LZMA;
         }
         
+        // Database: ZSTD con dizionario grande
         if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde" ||
             ext == ".db" || ext == ".sqlite" || ext == ".sqlite3") {
             return Codec::ZSTD;
         }
         
+        // Immagini gia compresse: STORE (non riduce)
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
-            ext == ".bmp" || ext == ".ico" || ext == ".webp") {
-            return Codec::LZMA;
+            ext == ".bmp" || ext == ".ico" || ext == ".webp" ||
+            ext == ".mp3" || ext == ".mp4" || ext == ".avi" || ext == ".mkv" ||
+            ext == ".wav" || ext == ".flac" || ext == ".ogg") {
+            return Codec::STORE;
         }
         
+        // Office (ZIP-based): LZMA per solid blocks
         if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt") {
             return Codec::LZMA;
         }
         
+        // File piccoli: LZ4 veloce
         if (size < 64 * 1024) {
             return Codec::LZ4;
         }
         
+        // Default: LZMA2 (miglior compressione per dati sconosciuti)
         return Codec::LZMA;
     }
 }
@@ -138,8 +153,26 @@ struct ChunkResult {
 };
 
 // ============================================================================
-// LZMA Codec
+// LZMA2 Codec — UPGRADE: LZMA2 + dizionario scalabile fino a 1GB
+// Prima si usava lzma_easy_buffer_encode (solo LZMA1, max ~64MB dict).
+// Ora si usa lzma_stream_buffer_encode con LZMA_FILTER_LZMA2 per:
+//   - Miglior compressione su blocchi solid (come 7-Zip)
+//   - Dizionario fino a 1GB ai livelli alti (vs 64MB)
+//   - LZMA2 gestisce meglio i dati misti (testo + binario)
 // ============================================================================
+
+// Mappa livello CLI → dimensione dizionario LZMA2
+static uint32_t lzma2_dict_size(int level) {
+    if (level <= 1)  return   4 * 1024 * 1024; //   4 MB
+    if (level <= 2)  return   8 * 1024 * 1024; //   8 MB
+    if (level <= 3)  return  16 * 1024 * 1024; //  16 MB
+    if (level <= 4)  return  32 * 1024 * 1024; //  32 MB
+    if (level <= 6)  return  64 * 1024 * 1024; //  64 MB
+    if (level <= 9)  return 128 * 1024 * 1024; // 128 MB
+    if (level <= 12) return 256 * 1024 * 1024; // 256 MB
+    if (level <= 15) return 512 * 1024 * 1024; // 512 MB
+    return 1024UL * 1024 * 1024;              //   1 GB (level 16-19)
+}
 
 ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) {
     ChunkResult res;
@@ -157,13 +190,36 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     res.compressed_data.resize(max_out);
     size_t out_pos = 0;
     
+    // Configura opzioni LZMA2 con dizionario scalabile
+    lzma_options_lzma opt;
     uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
     if (level >= 7) {
         preset |= LZMA_PRESET_EXTREME;
     }
     
-    lzma_ret ret = lzma_easy_buffer_encode(
-        preset,
+    if (lzma_lzma_preset(&opt, preset) != LZMA_OK) {
+        // Fallback se preset fallisce
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
+    
+    // Sovrascrivi il dizionario con la dimensione calcolata dal livello
+    // (preset 9 = 64MB, ma noi vogliamo fino a 1GB ai livelli alti)
+    uint32_t custom_dict = lzma2_dict_size(level);
+    if (custom_dict > opt.dict_size) {
+        opt.dict_size = custom_dict;
+    }
+    
+    // Usa LZMA2 filter (piu efficiente di LZMA1 per blocchi solid)
+    lzma_filter filters[2] = {};
+    filters[0].id = LZMA_FILTER_LZMA2;
+    filters[0].options = &opt;
+    filters[1].id = LZMA_VLI_END;
+    
+    lzma_ret ret = lzma_stream_buffer_encode(
+        filters,
         LZMA_CHECK_CRC64,
         nullptr,
         reinterpret_cast<const uint8_t*>(raw_data.data()),
@@ -207,7 +263,12 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
 }
 
 // ============================================================================
-// ZSTD Codec — FEATURE #1: implementazione nativa
+// ZSTD Codec — UPGRADE: API avanzata con window log grande
+// Prima si usava ZSTD_compress() semplice (max efficiente per default).
+// Ora si usa ZSTD_CCtx + parametri avanzati:
+//   - ZSTD_c_windowLog grande per long-range matching su blocchi solid
+//   - ZSTD_c_strategy ultra a livelli alti (ZSTD_btultra2)
+//   - Supporto completo livelli 1-19
 // ============================================================================
 
 ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
@@ -226,11 +287,65 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
     res.compressed_data.resize(bound);
     
     int zstd_level = std::clamp(level, 1, 19);
-    size_t comp_size = ZSTD_compress(
+    
+    // Crea contesto avanzato per ottimizzare la compressione
+    ZSTD_CCtx* cctx = ZSTD_createCCtx();
+    if (!cctx) {
+        // Fallback: API semplice
+        size_t comp_size = ZSTD_compress(
+            res.compressed_data.data(), bound,
+            raw_data.data(), raw_data.size(),
+            zstd_level
+        );
+        if (ZSTD_isError(comp_size)) {
+            res.compressed_data = raw_data;
+            res.codec = Codec::STORE;
+        } else {
+            res.compressed_data.resize(comp_size);
+            res.success = true;
+        }
+        return res;
+    }
+    
+    // Window log grande per long-range matching su blocchi solid
+    // Standard: log2(8MB) = 23. A livelli alti usiamo fino a 30 (1GB window)
+    int window_log = 23; // 8MB default
+    if (zstd_level >= 10) window_log = 27;      // 128MB
+    if (zstd_level >= 14) window_log = 29;      // 512MB
+    if (zstd_level >= 17) window_log = 30;      // 1GB
+    
+    // Assicura che il window log non ecceda la dimensione dei dati
+    size_t data_bits = 0;
+    size_t tmp = raw_data.size();
+    while (tmp > 0) { data_bits++; tmp >>= 1; }
+    if (window_log > 0 && static_cast<int>(data_bits) < window_log) {
+        window_log = static_cast<int>(data_bits);
+    }
+    // ZSTD richiede window_log >= 10
+    if (window_log < 10) window_log = 10;
+    
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, zstd_level);
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, window_log);
+    
+    // Usa strategia ultra ai livelli piu alti (miglior compressione)
+    if (zstd_level >= 16) {
+        ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra2);
+    } else if (zstd_level >= 10) {
+        ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra);
+    }
+    
+    // Abilita checksum a livelli alti per integrita
+    if (zstd_level >= 10) {
+        ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1);
+    }
+    
+    size_t comp_size = ZSTD_compress2(
+        cctx,
         res.compressed_data.data(), bound,
-        raw_data.data(), raw_data.size(),
-        zstd_level
+        raw_data.data(), raw_data.size()
     );
+    
+    ZSTD_freeCCtx(cctx);
     
     if (ZSTD_isError(comp_size)) {
         // Fallback: store uncompressed
@@ -372,7 +487,10 @@ bool decompress_lz4(const std::vector<char>& compressed, std::vector<char>& deco
 }
 
 // ============================================================================
-// Brotli Codec — FEATURE #1: implementazione nativa (API corretta)
+// Brotli Codec — UPGRADE: window size scalabile con il livello
+// Prima: lgwin fisso a 22 (4MB) per tutti i livelli.
+// Ora: lgwin scala da 20 (1MB) a 26 (64MB) in base al livello,
+// permettendo long-range matching su blocchi solid grandi.
 // ============================================================================
 
 ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
@@ -392,7 +510,24 @@ ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
     res.compressed_data.resize(max_out);
     
     int quality = std::clamp(level, 0, 11);
-    int lgwin = 22; // window size massimo per miglior compressione
+    
+    // Window size scalabile: da 1MB (livello 1) a 64MB (livello 11+)
+    // Livelli alti beneficiano di window piu grande per long-range matching
+    int lgwin = 20; // 1MB default
+    if (quality >= 3)  lgwin = 22; //   4 MB
+    if (quality >= 5)  lgwin = 23; //   8 MB
+    if (quality >= 7)  lgwin = 24; //  16 MB
+    if (quality >= 9)  lgwin = 25; //  32 MB
+    if (quality >= 11) lgwin = 26; //  64 MB
+    
+    // Assicura che il window non ecceda la dimensione dei dati
+    size_t data_bits = 0;
+    size_t tmp = raw_data.size();
+    while (tmp > 0) { data_bits++; tmp >>= 1; }
+    if (static_cast<int>(data_bits) < lgwin) {
+        lgwin = static_cast<int>(data_bits);
+    }
+    if (lgwin < 10) lgwin = 10; // Brotli minimum
     
     size_t encoded_size = max_out;
     BROTLI_BOOL result = BrotliEncoderCompress(
