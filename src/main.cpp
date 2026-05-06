@@ -395,48 +395,55 @@ static int sfx_do_extract(const std::string& self_path,
     return res.ok ? 0 : 1;
 }
 
+// Estrae l'archivio SFX embedded in un file temporaneo (utility condivisa)
+static bool sfx_extract_to_temp(const std::string& self_path,
+                                  const std::string& temp_archive_path) {
+    SfxTrailer trailer;
+    std::ifstream self(self_path, std::ios::binary);
+    if (!self) {
+        UI::print_error("Cannot open: " + self_path);
+        return false;
+    }
+
+    std::ofstream out(temp_archive_path, std::ios::binary);
+    if (!out) {
+        UI::print_error("Cannot create temporary file.");
+        return false;
+    }
+
+    self.clear();
+    self.seekg(-static_cast<std::streamoff>(SFX_TRAILER_SIZE), std::ios::end);
+    self.read(reinterpret_cast<char*>(&trailer), SFX_TRAILER_SIZE);
+    if (std::memcmp(trailer.magic, SFX_MAGIC, 8) != 0) {
+        UI::print_error("Invalid SFX archive.");
+        return false;
+    }
+
+    self.clear();
+    self.seekg(static_cast<std::streamoff>(trailer.archive_offset));
+
+    const size_t BUF = 1024 * 1024;
+    std::vector<char> buf(BUF);
+    uint64_t remaining = trailer.archive_size;
+    while (remaining > 0) {
+        size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BUF)));
+        self.read(buf.data(), to_read);
+        out.write(buf.data(), to_read);
+        remaining -= to_read;
+    }
+    out.flush();
+    out.close();
+    return true;
+}
+
 // Lista il contenuto dell'archivio SFX (estrae in temp, lista, cleanup)
 static int sfx_do_list(const std::string& self_path) {
     fs::path temp_dir = fs::temp_directory_path();
     fs::path temp_archive = temp_dir / "tarc_sfx_list_temp.strk";
 
     // Estrai l'archivio embeddato in un file temporaneo
-    {
-        SfxTrailer trailer;
-        std::ifstream self(self_path, std::ios::binary);
-        if (!self) {
-            UI::print_error("Cannot open: " + self_path);
-            return 1;
-        }
-
-        std::ofstream out(temp_archive, std::ios::binary);
-        if (!out) {
-            UI::print_error("Cannot create temporary file.");
-            return 1;
-        }
-
-        self.clear();
-        self.seekg(-static_cast<std::streamoff>(SFX_TRAILER_SIZE), std::ios::end);
-        self.read(reinterpret_cast<char*>(&trailer), SFX_TRAILER_SIZE);
-        if (std::memcmp(trailer.magic, SFX_MAGIC, 8) != 0) {
-            UI::print_error("Invalid SFX archive.");
-            return 1;
-        }
-
-        self.clear();
-        self.seekg(static_cast<std::streamoff>(trailer.archive_offset));
-
-        const size_t BUF = 1024 * 1024;
-        std::vector<char> buf(BUF);
-        uint64_t remaining = trailer.archive_size;
-        while (remaining > 0) {
-            size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BUF)));
-            self.read(buf.data(), to_read);
-            out.write(buf.data(), to_read);
-            remaining -= to_read;
-        }
-        out.flush();
-        out.close();
+    if (!sfx_extract_to_temp(self_path, temp_archive.string())) {
+        return 1;
     }
 
     // Lista il contenuto
@@ -449,19 +456,35 @@ static int sfx_do_list(const std::string& self_path) {
     return res.ok ? 0 : 1;
 }
 
-// Testa l'integrita dell'archivio SFX
+// Testa l'integrita dell'archivio SFX (SENZA estrarre file su disco)
 static int sfx_do_test(const std::string& self_path) {
+    fs::path temp_dir = fs::temp_directory_path();
+    fs::path temp_archive = temp_dir / "tarc_sfx_test_temp.strk";
+
+    // Estrai l'archivio embeddato in un file temporaneo
+    if (!sfx_extract_to_temp(self_path, temp_archive.string())) {
+        return 1;
+    }
+
+    // Testa l'integrita con test_only=true (non scrive nulla su disco)
     ProgressReporter reporter;
     Engine::set_progress_callback(&reporter);
 
     auto start = TarcUtil::safe_now();
-    auto res = Engine::extract_sfx(self_path, "", false);
+    ExtractOptions topts;
+    topts.test_only = true;
+    topts.verify = true;
+    auto res = Engine::extract(temp_archive.string(), {}, topts);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         TarcUtil::safe_now() - start
     );
 
     UI::print_progress_end();
     UI::print_summary(res, "SFX Test", elapsed);
+
+    // Cleanup
+    std::error_code ec;
+    fs::remove(temp_archive, ec);
 
     if (!res.ok || res.bytes_out == 0) {
         UI::print_error("Archive integrity check FAILED.");
@@ -480,20 +503,20 @@ static int sfx_interactive_menu(const std::string& self_path,
         std::cout << "\n";
         std::cout << Color::CYAN << Color::BOLD
                   << "  ╔══════════════════════════════════════╗\n"
-                  << "  ║     TARC STRIKE - SFX Archive       ║\n"
+                  << "  ║      TARC STRIKE - SFX Archive       ║\n" // 6 spazi + 25 testo + 7 spazi = 38
                   << "  ╠══════════════════════════════════════╣\n"
-                  << "  ║                                    ║\n"
+                  << "  ║                                      ║\n"
                   << "  ║  " << Color::GREEN << "1" << Color::CYAN << Color::BOLD << ") Extract archive"
-                  << std::string(22, ' ') << "║\n"
+                  << std::string(18, ' ') << "║\n" // 2 + 1 + 2 + 15 = 20. 38-20 = 18
                   << "  ║  " << Color::GREEN << "2" << Color::CYAN << Color::BOLD << ") View contents"
-                  << std::string(25, ' ') << "║\n"
+                  << std::string(20, ' ') << "║\n" // 2 + 1 + 2 + 13 = 18. 38-18 = 20
                   << "  ║  " << Color::GREEN << "3" << Color::CYAN << Color::BOLD << ") Test integrity"
-                  << std::string(25, ' ') << "║\n"
+                  << std::string(19, ' ') << "║\n" // 2 + 1 + 2 + 14 = 19. 38-19 = 19
                   << "  ║  " << Color::GREEN << "4" << Color::CYAN << Color::BOLD << ") Help"
-                  << std::string(33, ' ') << "║\n"
-                  << "  ║  " << Color::RED << "0" << Color::CYAN << Color::BOLD << ") Exit"
-                  << std::string(36, ' ') << "║\n"
-                  << "  ║                                    ║\n"
+                  << std::string(29, ' ') << "║\n" // 2 + 1 + 2 + 4  = 9.  38-9  = 29
+                  << "  ║  " << Color::RED   << "0" << Color::CYAN << Color::BOLD << ") Exit"
+                  << std::string(29, ' ') << "║\n" // 2 + 1 + 2 + 4  = 9.  38-9  = 29
+                  << "  ║                                      ║\n"
                   << "  ╚══════════════════════════════════════╝"
                   << Color::RESET << "\n";
 
@@ -503,32 +526,26 @@ static int sfx_interactive_menu(const std::string& self_path,
         std::string choice = sfx_read_line();
 
         if (choice == "1" || choice == "e" || choice == "extract" || choice == "x") {
-            // Extract
             std::cout << "\n";
             int result = sfx_do_extract(self_path, output_dir, overwrite);
             if (result == 0) {
                 UI::print_success("Extraction completed.");
             }
-            // Torna al menu dopo l'estrazione
         } else if (choice == "2" || choice == "l" || choice == "list" || choice == "v") {
-            // List
             std::cout << "\n";
             sfx_do_list(self_path);
             std::cout << "\n" << Color::DIM << "  Press Enter to continue..." << Color::RESET;
             sfx_read_line();
         } else if (choice == "3" || choice == "t" || choice == "test") {
-            // Test
             std::cout << "\n";
             sfx_do_test(self_path);
             std::cout << "\n" << Color::DIM << "  Press Enter to continue..." << Color::RESET;
             sfx_read_line();
         } else if (choice == "4" || choice == "h" || choice == "help" || choice == "?") {
-            // Help
             sfx_show_help(self_path.c_str());
             std::cout << Color::DIM << "  Press Enter to continue..." << Color::RESET;
             sfx_read_line();
         } else if (choice == "0" || choice == "q" || choice == "quit" || choice == "exit") {
-            // Exit
             std::cout << Color::DIM << "\n  Goodbye.\n" << Color::RESET;
             return 0;
         } else {
