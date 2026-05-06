@@ -1,169 +1,79 @@
-name: Build TARC Cross-Platform
+name: TARC STRIKE Build
 
 on:
   push:
-    branches: [ main, master ]
-    tags:
-      - 'v*'
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'docs/**'
   pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+    branches: [ main ]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact_name: tarc-linux-x86_64
-            executable: tarc
-            cmake_arch_flags: ""
-
-          - os: windows-latest
-            artifact_name: tarc-windows-x64.exe
-            executable: tarc.exe
-            cmake_arch_flags: "-A x64"
-
-          - os: macos-latest
-            artifact_name: tarc-macos-universal
-            executable: tarc
-            cmake_arch_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'"
-
+  build-windows:
+    name: Build on windows-latest
+    runs-on: windows-2022
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v2
 
-    - name: Install dependencies (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        brew install cmake ninja
+      - name: Configure CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-    - name: Setup MSVC (Windows)
-      if: runner.os == 'Windows'
-      uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        run: cmake --build build --config Release
 
-    - name: Configure CMake (Linux/Windows)
-      if: runner.os != 'macOS'
-      shell: bash
-      run: |
-        mkdir -p build
-        cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=17 \
-          -DCMAKE_C_STANDARD=11 \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-          -DTARC_BUILD_SFX=OFF \
-          ${{ matrix.cmake_arch_flags }}
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarc-windows
+          path: build/tarc.exe
 
-    - name: Configure CMake (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: |
-        mkdir -p build
-        cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_STANDARD=17 \
-          -DCMAKE_C_STANDARD=11 \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-          -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
-          -DTARC_BUILD_SFX=OFF
+  build-macos:
+    name: Build on macos-latest
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Build Project
-      shell: bash
-      run: |
-        cd build
-        cmake --build . --config Release --parallel 2
+      - name: Install dependencies
+        run: brew install cmake ninja
 
-    - name: Find executable (Linux/macOS)
-      if: runner.os != 'Windows'
-      run: |
-        if [ -f "build/tarc" ]; then
-          echo "EXECUTABLE_PATH=build/tarc" >> $GITHUB_ENV
-        elif [ -f "build/Release/tarc" ]; then
-          echo "EXECUTABLE_PATH=build/Release/tarc" >> $GITHUB_ENV
-        else
-          find build -name "tarc" -type f | head -1 | xargs -I {} echo "EXECUTABLE_PATH={}" >> $GITHUB_ENV
-        fi
+      - name: Configure CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-    - name: Find executable (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        if (Test-Path "build/Release/tarc.exe") {
-          echo "EXECUTABLE_PATH=build/Release/tarc.exe" >> $env:GITHUB_ENV
-        } elseif (Test-Path "build/tarc.exe") {
-          echo "EXECUTABLE_PATH=build/tarc.exe" >> $env:GITHUB_ENV
-        } else {
-          Get-ChildItem -Path build -Filter "tarc.exe" -Recurse |
-          Select-Object -First 1 |
-          ForEach-Object { echo "EXECUTABLE_PATH=$($_.FullName)" >> $env:GITHUB_ENV }
-        }
+      - name: Build
+        run: cmake --build build --config Release
 
-    - name: Test executable
-      shell: bash
-      run: |
-        chmod +x ${{ env.EXECUTABLE_PATH }} 2>/dev/null || true
-        ${{ env.EXECUTABLE_PATH }} -h || true
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarc-macos
+          path: build/tarc
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.artifact_name }}
-        path: ${{ env.EXECUTABLE_PATH }}
-        if-no-files-found: error
-
-  create-release:
-    name: Create Release
-    needs: build
+  build-ubuntu:
+    name: Build on ubuntu-latest
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
+      - uses: actions/checkout@v4
 
-    - name: Prepare release files
-      run: |
-        VERSION=${GITHUB_REF#refs/tags/}
-        echo "Versione: $VERSION"
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
 
-        find artifacts -type f -name "tarc" | grep linux | head -1 | xargs -I {} cp {} tarc-$VERSION-linux-x86_64
-        find artifacts -type f -name "tarc.exe" | head -1 | xargs -I {} cp {} tarc-$VERSION-windows-x64.exe
-        find artifacts -type f -name "tarc" | grep macos | head -1 | xargs -I {} cp {} tarc-$VERSION-macos-universal
+      - name: Configure CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-        chmod +x tarc-$VERSION-* 2>/dev/null || true
+      - name: Build
+        run: cmake --build build --config Release
 
-        echo "File pronti:"
-        ls -lh tarc-$VERSION-* || echo "Nessun file trovato"
-
-    - name: Generate checksums
-      run: |
-        sha256sum tarc-* > checksums.txt
-        cat checksums.txt
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          tarc-*
-          checksums.txt
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarc-ubuntu
+          path: build/tarc
