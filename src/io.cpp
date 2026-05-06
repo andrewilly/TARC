@@ -334,12 +334,15 @@ std::string IO::sanitize_extract_path(const std::string& raw_path) {
     }
 
     // Risolvi . e .. nel path
+    // Blocca SOLO il componente ".." puro (directory traversal).
+    // I filename legittimi che contengono ".." come "AINELFS.R.L..mdb"
+    // o "file..old.txt" vengono accettati senza problemi.
     std::vector<std::string> resolved;
     for (const auto& part : parts) {
         if (part == ".") {
             continue;
-        } else if (part == ".." || part == "..." || part.find("..") != std::string::npos) {
-            // Path traversal tentato
+        } else if (part == "..") {
+            // Path traversal: componente ".." puro (directory parent)
             return "";
         } else {
             resolved.push_back(part);
