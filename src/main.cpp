@@ -51,7 +51,7 @@ struct Command {
         Version
     } type = None;
     
-    int level = 7;
+    int level = 3;
     bool sfx = false;
     bool flat = false;
     bool force = false;
@@ -94,7 +94,7 @@ static Command parse_args(int argc, char* argv[]) {
     
     if (prefix == "-c") {
         cmd.type = Command::Create;
-        cmd.level = 7;
+        cmd.level = 3;
         
         if (arg == "-cbest") {
             cmd.level = 19;  // Massima compressione: LZMA2 1GB dict + ZSTD 19 ultra

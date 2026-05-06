@@ -77,9 +77,9 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN << Color::BOLD
-              << "                      TARC STRIKE v2.00_OpenAi\n"
+              << "                       TARC STRIKE v2.00_OpenAi\n"
               << "                  Advanced Solid Compression Tool\n"
-              << "                     (c) 2026 Andre Willy Rizzo\n"
+              << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";
 }
 
@@ -87,7 +87,7 @@ void show_help() {
     std::cout << Color::BOLD << "Usage: " << Color::BRIGHT_WHITE << "tarc [command] [options] archive [files...]" << Color::RESET << "\n\n";
     
     std::cout << Color::BOLD << "Commands:" << Color::RESET << "\n";
-    std::cout << "  " << Color::GREEN << "-c" << Color::RESET << " [level]  Create archive (level 1-9, default 7)\n";
+    std::cout << "  " << Color::GREEN << "-c" << Color::RESET << " [level]  Create archive (level 1-9, default 3)\n";
     std::cout << "  " << Color::YELLOW << "-x" << Color::RESET << " [filt]  Extract files (supports wildcards)\n";
     std::cout << "  " << Color::CYAN << "-l" << Color::RESET << "          List archive contents\n";
     std::cout << "  " << Color::MAGENTA << "-t" << Color::RESET << "          Test archive integrity\n";
