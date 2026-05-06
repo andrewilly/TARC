@@ -301,8 +301,16 @@ std::string IO::sanitize_extract_path(const std::string& raw_path) {
     std::string path = raw_path;
     std::replace(path.begin(), path.end(), '\\', '/');
 
-    // Rifiuta path assoluti (es. /etc/passwd, C:/Windows)
-    if (!path.empty() && path[0] == '/') return "";
+    // Normalizza path assoluti Unix (es. /BACKUP-Blustring/test/file.mdb)
+    // rimuovendo lo slash iniziale. Questo accade quando l'archivio e' stato
+    // creato su Linux/macOS con percorsi assoluti. Non e' un path traversal,
+    // semplicemente il path va trattato come relativo all'output_dir.
+    // NOTA: il successivo check ".." previene qualsiasi tentativo reale di traversal.
+    while (!path.empty() && path[0] == '/') {
+        path = path.substr(1);
+    }
+
+    // Rifiuta drive letter Windows (es. C:/Windows)
 #ifdef _WIN32
     if (path.size() >= 2 && path[1] == ':') return "";
 #endif
