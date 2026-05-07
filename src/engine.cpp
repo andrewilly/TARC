@@ -104,26 +104,26 @@ namespace {
             // (LZMA alloca ~2-3x il dizionario per le strutture interne)
             max_dict = std::min(
                 static_cast<uint64_t>(avail_ram * 2 / 5),
-                1024ULL * 1024 * 1024  // hard cap: 1GB
+                static_cast<uint64_t>(1024ULL * 1024 * 1024)  // hard cap: 1GB
             );
             // Arrotonda al potere di 2 inferiore (LZMA richiede potenze di 2)
             max_dict = round_down_pow2(max_dict);
             // Minimo assoluto: 4MB
-            max_dict = std::max(max_dict, 4ULL * 1024 * 1024);
+            max_dict = std::max(max_dict, static_cast<uint64_t>(4ULL * 1024 * 1024));
 
             // ZSTD window: non piu del 30% della RAM disponibile
             max_window = std::min(
                 static_cast<uint64_t>(avail_ram * 3 / 10),
-                1024ULL * 1024 * 1024  // hard cap: 1GB
+                static_cast<uint64_t>(1024ULL * 1024 * 1024)  // hard cap: 1GB
             );
             max_window = round_down_pow2(max_window);
-            max_window = std::max(max_window, 8ULL * 1024 * 1024); // minimo 8MB
+            max_window = std::max(max_window, static_cast<uint64_t>(8ULL * 1024 * 1024)); // minimo 8MB
 
             // Solid buffer: non piu del 25% della RAM disponibile
             max_solid = static_cast<size_t>(
                 std::min(
                     static_cast<uint64_t>(avail_ram / 4),
-                    128ULL * 1024 * 1024  // hard cap: 128MB
+                    static_cast<uint64_t>(128ULL * 1024 * 1024)  // hard cap: 128MB
                 )
             );
             max_solid = std::max(max_solid, static_cast<size_t>(8 * 1024 * 1024)); // min 8MB
@@ -1137,7 +1137,7 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
 
     // Cap dict in base alla RAM disponibile per streaming
     ensure_mem();
-    uint64_t stream_dict_limit = std::min(g_mem.max_dict, 64ULL * 1024 * 1024);
+    uint64_t stream_dict_limit = std::min(g_mem.max_dict, static_cast<uint64_t>(64ULL * 1024 * 1024));
     if (opt.dict_size > static_cast<uint32_t>(stream_dict_limit))
         opt.dict_size = static_cast<uint32_t>(stream_dict_limit);
 

@@ -7,6 +7,8 @@
 //
 // Auto-detect CPU features a runtime e fallback graceful su hardware senza SIMD.
 // Supporta: AVX2 (256-bit), SSE4.2 (128-bit), NEON (ARM), Scalar fallback.
+//
+// Compilatori supportati: MSVC, GCC, Clang.
 // ============================================================================
 
 #include <cstdint>
@@ -15,9 +17,14 @@
 #include <string>
 
 // ============================================================================
-// SIMD Headers (inclusi solo se supportati dal compilatore)
+// SIMD Headers — inclusi solo se supportati dal compilatore
 // ============================================================================
-#if defined(__AVX2__)
+#if defined(_MSC_VER)
+    // MSVC: <intrin.h> fornisce __cpuid, __cpuidex, e tutte le x86 intrinsics
+    // (SSE2, SSE4.2, AVX, AVX2, AVX-512). Non usa le macro __SSE2__/__AVX2__
+    // ma _M_X64 e il flag /arch:AVX2.
+    #include <intrin.h>
+#elif defined(__AVX2__)
     #include <immintrin.h>
 #elif defined(__SSE2__)
     #include <emmintrin.h>
@@ -25,6 +32,26 @@
 
 #if defined(__ARM_NEON) || defined(__aarch64__)
     #include <arm_neon.h>
+#endif
+
+// ============================================================================
+// Compile-time: quali set di intrinsics sono disponibili in questo build?
+// ============================================================================
+// Su MSVC x86_64, SSE2 e' sempre disponibile (garantito dall'architettura).
+// Su MSVC, __AVX2__ viene definito solo se /arch:AVX2 e' specificato.
+// Su GCC/Clang, __SSE2__ e __AVX2__ vengono definiti da -march/-msse2/-mavx2.
+// ============================================================================
+
+#if defined(__AVX2__)
+    #define TARC_COMPILER_AVX2 1
+#endif
+
+#if defined(__SSE2__) || (defined(_MSC_VER) && defined(_M_X64))
+    #define TARC_COMPILER_SSE2 1
+#endif
+
+#if defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
+    #define TARC_COMPILER_NEON 1
 #endif
 
 // ============================================================================
@@ -46,13 +73,13 @@ inline uint32_t detect_cpu_features() {
     uint32_t features = SIMD_NONE;
 
 #if defined(_MSC_VER)
-    // MSVC: usa __cpuid
+    // MSVC: usa __cpuid / __cpuidex (da <intrin.h>)
     int cpuinfo[4] = {};
     __cpuid(cpuinfo, 1);
     if (cpuinfo[2] & (1 << 20)) features |= SIMD_SSE42;
     if (cpuinfo[2] & (1 << 28)) features |= SIMD_AVX;
 
-    // AVX2: necessita extended leaf
+    // AVX2: necessita extended leaf 7
     __cpuid(cpuinfo, 0);
     if (cpuinfo[0] >= 7) {
         __cpuidex(cpuinfo, 7, 0);
@@ -62,22 +89,20 @@ inline uint32_t detect_cpu_features() {
     features |= SIMD_SSE2;
 
 #elif defined(__x86_64__) || defined(__i386__)
-    // GCC/Clang: usa __cpuid intrinsics
+    // GCC/Clang: usa inline asm cpuid
     uint32_t eax, ebx, ecx, edx;
-    #if defined(__i386__)
+    // "=b" gia' informa il compilatore che rbx viene sovrascritto da cpuid.
+    // Non serve il clobber "rbx" aggiuntivo (su PIC genera impossible constraints).
     __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
-    #else
-    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1) : "rbx");
-    #endif
     if (edx & (1 << 26)) features |= SIMD_SSE2;
     if (ecx & (1 << 20)) features |= SIMD_SSE42;
     if (ecx & (1 << 28)) features |= SIMD_AVX;
 
-    // AVX2: leaf 7
-    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0) : "rbx");
+    // AVX2: leaf 7, sub-leaf 0
+    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
     if (ebx & (1 << 5)) features |= SIMD_AVX2;
 
-#elif defined(__ARM_NEON) || defined(__aarch64__)
+#elif defined(TARC_COMPILER_NEON)
     features |= SIMD_NEON;
 #endif
 
@@ -107,7 +132,7 @@ inline void* simd_memcpy(void* __restrict dst, const void* __restrict src, size_
         return std::memcpy(dst, src, len);
     }
 
-#if defined(__AVX2__)
+#if defined(TARC_COMPILER_AVX2)
     if (has_avx2()) {
         size_t i = 0;
         const size_t vec_size = 32;
@@ -125,7 +150,9 @@ inline void* simd_memcpy(void* __restrict dst, const void* __restrict src, size_
         }
         return dst;
     }
-#elif defined(__SSE2__)
+#endif
+
+#if defined(TARC_COMPILER_SSE2)
     if (has_sse2()) {
         size_t i = 0;
         const size_t vec_size = 16;
@@ -143,7 +170,9 @@ inline void* simd_memcpy(void* __restrict dst, const void* __restrict src, size_
         }
         return dst;
     }
-#elif defined(__ARM_NEON) || defined(__aarch64__)
+#endif
+
+#if defined(TARC_COMPILER_NEON)
     if (has_neon()) {
         size_t i = 0;
         const size_t vec_size = 16;
@@ -170,7 +199,7 @@ inline void* simd_memcpy(void* __restrict dst, const void* __restrict src, size_
 inline void* simd_memset_zero(void* dst, size_t len) {
     if (len == 0) return dst;
 
-#if defined(__AVX2__)
+#if defined(TARC_COMPILER_AVX2)
     if (has_avx2()) {
         __m256i zero = _mm256_setzero_si256();
         size_t i = 0;
@@ -191,7 +220,9 @@ inline void* simd_memset_zero(void* dst, size_t len) {
         }
         return dst;
     }
-#elif defined(__SSE2__)
+#endif
+
+#if defined(TARC_COMPILER_SSE2)
     if (has_sse2()) {
         __m128i zero = _mm_setzero_si128();
         size_t i = 0;
@@ -207,7 +238,9 @@ inline void* simd_memset_zero(void* dst, size_t len) {
         }
         return dst;
     }
-#elif defined(__ARM_NEON) || defined(__aarch64__)
+#endif
+
+#if defined(TARC_COMPILER_NEON)
     if (has_neon()) {
         uint8x16_t zero = vdupq_n_u8(0);
         size_t i = 0;
@@ -235,7 +268,7 @@ inline int simd_memcmp(const void* a, const void* b, size_t len) {
     if (len == 0) return 0;
     if (len < 64) return std::memcmp(a, b, len);
 
-#if defined(__AVX2__)
+#if defined(TARC_COMPILER_AVX2)
     if (has_avx2()) {
         const uint8_t* pa = static_cast<const uint8_t*>(a);
         const uint8_t* pb = static_cast<const uint8_t*>(b);
@@ -254,7 +287,9 @@ inline int simd_memcmp(const void* a, const void* b, size_t len) {
         if (i < len) return std::memcmp(pa + i, pb + i, len - i);
         return 0;
     }
-#elif defined(__SSE2__)
+#endif
+
+#if defined(TARC_COMPILER_SSE2)
     if (has_sse2()) {
         const uint8_t* pa = static_cast<const uint8_t*>(a);
         const uint8_t* pb = static_cast<const uint8_t*>(b);
@@ -273,7 +308,9 @@ inline int simd_memcmp(const void* a, const void* b, size_t len) {
         if (i < len) return std::memcmp(pa + i, pb + i, len - i);
         return 0;
     }
-#elif defined(__ARM_NEON) || defined(__aarch64__)
+#endif
+
+#if defined(TARC_COMPILER_NEON)
     if (has_neon()) {
         const uint8_t* pa = static_cast<const uint8_t*>(a);
         const uint8_t* pb = static_cast<const uint8_t*>(b);
@@ -301,7 +338,7 @@ inline void simd_buffer_xor(void* __restrict dst, const void* __restrict a,
                              const void* __restrict b, size_t len) {
     if (len == 0) return;
 
-#if defined(__AVX2__)
+#if defined(TARC_COMPILER_AVX2)
     if (has_avx2() && len >= 32) {
         const size_t vec_size = 32;
         size_t aligned_len = len & ~(vec_size - 1);
@@ -334,21 +371,37 @@ inline void simd_buffer_xor(void* __restrict dst, const void* __restrict a,
 // ============================================================================
 // SIMD info — per il banner e il debug
 // ============================================================================
+// Mostra il livello SIMD piu' alto che il binario PUO' usare (compile-time)
+// E che la CPU SUPPORTA (runtime). Se il compilatore non ha AVX2 ma la CPU si,
+// mostra SSE4.2/SSE2 (il massimo disponibile nel build).
+// ============================================================================
 inline std::string simd_info_string() {
     std::string info;
-#if defined(__AVX2__)
-    if (has_avx2())   info += "AVX2 ";
+
+#if defined(TARC_COMPILER_AVX2)
+    // Se il binario ha le intrinsics AVX2, mostra AVX2 se la CPU lo supporta
+    if (has_avx2()) {
+        info += "AVX2 ";
+    } else if (has_sse42()) {
+        info += "SSE4.2 ";
+    } else if (has_sse2()) {
+        info += "SSE2 ";
+    }
+#elif defined(TARC_COMPILER_SSE2)
+    // Binario con solo SSE2 (MSVC x86_64 senza /arch:AVX2, o GCC/Clang -msse2)
+    if (has_sse42()) {
+        info += "SSE4.2 ";
+    } else if (has_sse2()) {
+        info += "SSE2 ";
+    }
 #endif
-#if defined(__SSE4_2__)
-    if (has_sse42())  info += "SSE4.2 ";
-#elif defined(__SSE2__)
-    if (has_sse2())  info += "SSE2 ";
+
+#if defined(TARC_COMPILER_NEON)
+    if (has_neon()) info += "NEON ";
 #endif
-#if defined(__ARM_NEON) || defined(__aarch64__)
-    if (has_neon())   info += "NEON ";
-#endif
+
     if (info.empty()) info = "Scalar";
-    else info.pop_back();
+    else info.pop_back();  // rimuovi spazio finale
     return info;
 }
 
