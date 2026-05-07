@@ -253,9 +253,10 @@ void print_summary(const TarcResult& result, const std::string& op,
     std::cout << "\n";
     
     if (!result.ok) {
-        std::cerr << Color::RED << "✖ " << op << " failed: " << result.message << Color::RESET << "\n";
+        // Usa cout per visibilita' garantita (stderr potrebbe non essere visibile in alcuni terminali)
+        std::cout << Color::RED << "[FAIL] " << op << " failed: " << result.message << Color::RESET << "\n";
         if (result.error != TarcError::None) {
-            std::cerr << Color::DIM << "  Code: " << error_message(result.error) << Color::RESET << "\n";
+            std::cout << Color::DIM << "  Code: " << error_message(result.error) << Color::RESET << "\n";
         }
         return;
     }

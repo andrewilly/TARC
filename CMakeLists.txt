@@ -121,8 +121,11 @@ endif()
 target_include_directories(tarc PRIVATE ${TARC_INCLUDE_DIRS})
 
 # SIMD optimization flags for maximum throughput
+# NOTE: /arch:AVX2 removed — it causes illegal instruction crash on CPUs without AVX2.
+# MSVC x86_64 uses SSE2 by default, which is guaranteed on all x86_64 CPUs.
+# To enable AVX2, add: /arch:AVX2 (requires Haswell+ CPU, 2013+)
 if(MSVC)
-    target_compile_options(tarc PRIVATE /O2 /arch:AVX2 /W4 /EHsc /utf-8 /permissive-)
+    target_compile_options(tarc PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
     target_compile_definitions(tarc PRIVATE
         _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
 else()
@@ -193,6 +196,7 @@ if(TARC_BUILD_SFX)
 
     # Stesse opzioni di compilazione per coerenza
     if(MSVC)
+        # SFX stub: non usa /arch:AVX2 per massima compatibilita
         target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
     else()
         target_compile_options(tarc_sfx_stub PRIVATE -O3 -Wall -Wextra -Wpedantic -Wno-unused-parameter

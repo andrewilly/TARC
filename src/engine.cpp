@@ -1419,7 +1419,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (!cr.success) return false;
         
         // FEATURE #5: registra l'offset del chunk prima di scriverlo
-        uint64_t chunk_offset = static_cast<uint64_t>(ftell(f));
+        uint64_t chunk_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
         
         if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out))
             return false;
@@ -1527,11 +1527,16 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             selected_codec = CodecSelector::select(disk_path, fsize);  // auto
         }
 
-        fe.meta.timestamp = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::seconds>(
-                fs::last_write_time(disk_path).time_since_epoch()
-            ).count()
-        );
+        // Timestamp: gestisce eccezioni su file in uso o speciali (Windows)
+        try {
+            fe.meta.timestamp = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    fs::last_write_time(disk_path).time_since_epoch()
+                ).count()
+            );
+        } catch (...) {
+            fe.meta.timestamp = 0;  // fallback: nessun timestamp
+        }
 
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
@@ -1608,7 +1613,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         return res;
                     }
 
-                    uint64_t solid_offset = static_cast<uint64_t>(ftell(f));
+                    uint64_t solid_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
                     if (!write_chunk(f, solid_cr.codec, solid_cr.raw_size, solid_cr.compressed_data, res.bytes_out)) {
                         res.error = TarcError::WriteFailed;
                         res.message = "Failed to write solid chunk.";
@@ -1631,7 +1636,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
                     solid_has_files = false;
                     // Sincronizza data_offset con la posizione reale sul file
-                    data_offset = static_cast<uint64_t>(ftell(f));
+                    data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
                 }
 
                 // File STORE: scritti direttamente, NON nel solid_buf
@@ -1756,7 +1761,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         ChunkResult last = compress_worker(std::move(solid_buf), level, solid_codec);
         
         // FEATURE #5: offset del chunk finale
-        uint64_t last_chunk_offset = static_cast<uint64_t>(ftell(f));
+        uint64_t last_chunk_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
         
         if (!write_chunk(f, last.codec, last.raw_size, last.compressed_data, res.bytes_out)) {
             res.error = TarcError::WriteFailed;
