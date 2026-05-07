@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "simd_opt.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -77,25 +78,28 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN << Color::BOLD
-              << "                       TARC STRIKE v2.00_OpenAi\n"
+              << "                       TARC STRIKE v2.10_OpenAi\n"
               << "                  Advanced Solid Compression Tool\n"
               << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";
+    // Mostra SIMD features attive
+    std::string simd = SimdOpt::simd_info_string();
+    std::cout << Color::DIM << "  SIMD: " << simd << Color::RESET << "\n";
 }
 
 void show_help() {
     std::cout << Color::BOLD << "Usage: " << Color::BRIGHT_WHITE << "tarc [command] [options] archive [files...]" << Color::RESET << "\n\n";
     
     std::cout << Color::BOLD << "Commands:" << Color::RESET << "\n";
-    std::cout << "  " << Color::GREEN << "-c" << Color::RESET << " [level]  Create archive (level 1-9, default 3)\n";
+    std::cout << "  " << Color::GREEN << "-c" << Color::RESET << " [level]  Create archive (level 1-19, default 7)\n";
     std::cout << "  " << Color::YELLOW << "-x" << Color::RESET << " [filt]  Extract files (supports wildcards)\n";
     std::cout << "  " << Color::CYAN << "-l" << Color::RESET << "          List archive contents\n";
     std::cout << "  " << Color::MAGENTA << "-t" << Color::RESET << "          Test archive integrity\n";
     
     std::cout << "\n" << Color::BOLD << "Compression Levels:" << Color::RESET << "\n";
-    std::cout << "  " << Color::GREEN << "-cbest" << Color::RESET << "    Maximum compression (LZMA level 9)\n";
-    std::cout << "  " << Color::GREEN << "-cfast" << Color::RESET << "    Fastest compression (ZSTD)\n";
-    std::cout << "  " << Color::GREEN << "-c[N]" << Color::RESET << "       Level N (1=speed, 9=ratio)\n";
+    std::cout << "  " << Color::GREEN << "-cbest" << Color::RESET << "    Maximum compression (level 19)\n";
+    std::cout << "  " << Color::GREEN << "-cfast" << Color::RESET << "    Fastest compression (level 1)\n";
+    std::cout << "  " << Color::GREEN << "-c[N]" << Color::RESET << "       Level N (1=speed, 19=ratio)\n";
     
     std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
     std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "           Create self-extracting archive\n";
@@ -119,7 +123,8 @@ void show_help() {
     std::cout << "  • Smart codec selection (LZMA/ZSTD/LZ4/Brotli/STORE)\n";
     std::cout << "  • Native ZSTD, LZ4, LZMA, Brotli codec support\n";
     std::cout << "  • Path traversal protection (Zip Slip safe)\n";
-    std::cout << "  • xxHash integrity verification on extract";
+    std::cout << "  • xxHash integrity verification on extract\n";
+    std::cout << "  • SIMD-accelerated buffer operations (" << SimdOpt::simd_info_string() << ")";
     
     std::cout << "\n" << Color::DIM << "Type 'tarc --license' for license information.\n" << Color::RESET;
 }

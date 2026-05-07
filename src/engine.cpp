@@ -2,6 +2,7 @@
 #include "io.h"
 #include "ui.h"
 #include "types.h"
+#include "simd_opt.h"
 #include <cstring>
 #include <map>
 #include <filesystem>
@@ -16,9 +17,18 @@
 #include <fstream>
 #include <deque>
 
+#include <cmath>
+
 #ifdef _WIN32
     #define NOMINMAX
     #include <windows.h>
+#else
+    #include <unistd.h>
+    #include <sys/types.h>
+#endif
+
+#ifdef __APPLE__
+    #include <sys/sysctl.h>
 #endif
 
 #include "lzma.h"
@@ -37,6 +47,111 @@ namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
+
+    // ========================================================================
+    // Memory Manager — Auto-detect RAM disponibile e limita le allocazioni
+    // ========================================================================
+    // Previene OOM su macchine con poca RAM o CI runners con limiti stretti.
+    // Calcola la RAM disponibile una sola volta (lazy init) e espone limiti
+    // sicuri per dizionario LZMA2, window ZSTD, e buffer solid.
+    // ========================================================================
+    struct MemoryManager {
+        uint64_t total_ram = 0;       // RAM fisica totale (bytes)
+        uint64_t avail_ram = 0;       // RAM disponibile stimata (bytes)
+        uint64_t max_dict = 0;        // max dizionario LZMA2 sicuro
+        uint64_t max_window = 0;      // max window log ZSTD (come bytes)
+        size_t   max_solid = 0;       // max solid buffer size
+        bool     initialized = false;
+        bool     low_memory = false;  // flag per macchine < 2GB
+
+        void init() {
+            if (initialized) return;
+            initialized = true;
+
+#ifdef _WIN32
+            MEMORYSTATUSEX memInfo;
+            memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+            if (GlobalMemoryStatusEx(&memInfo)) {
+                total_ram = memInfo.ullTotalPhys;
+                avail_ram = memInfo.ullAvailPhys;
+            }
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_AVPHYS_PAGES)
+            long pages = sysconf(_SC_PHYS_PAGES);
+            long avail_pages = sysconf(_SC_AVPHYS_PAGES);
+            long page_size = sysconf(_SC_PAGE_SIZE);
+            if (pages > 0 && page_size > 0) {
+                total_ram = static_cast<uint64_t>(pages) * page_size;
+            }
+            if (avail_pages > 0 && page_size > 0) {
+                avail_ram = static_cast<uint64_t>(avail_pages) * page_size;
+            }
+#elif defined(__APPLE__)
+            // macOS: usiamo sysctl per RAM totale, stima 50% disponibile
+            int mib[2] = {CTL_HW, HW_MEMSIZE};
+            int64_t macos_ram = 0;
+            size_t len = sizeof(macos_ram);
+            if (sysctl(mib, 2, &macos_ram, &len, nullptr, 0) == 0) {
+                total_ram = static_cast<uint64_t>(macos_ram);
+                avail_ram = total_ram / 2;
+            }
+#endif
+
+            // Fallback: assumiamo 512MB se non riusciamo a rilevare
+            if (total_ram == 0) total_ram = 512ULL * 1024 * 1024;
+            if (avail_ram == 0) avail_ram = total_ram / 3;
+
+            // Non usare mai piu del 40% della RAM disponibile per il dizionario
+            // (LZMA alloca ~2-3x il dizionario per le strutture interne)
+            max_dict = std::min(
+                static_cast<uint64_t>(avail_ram * 2 / 5),
+                1024ULL * 1024 * 1024  // hard cap: 1GB
+            );
+            // Arrotonda al potere di 2 inferiore (LZMA richiede potenze di 2)
+            max_dict = round_down_pow2(max_dict);
+            // Minimo assoluto: 4MB
+            max_dict = std::max(max_dict, 4ULL * 1024 * 1024);
+
+            // ZSTD window: non piu del 30% della RAM disponibile
+            max_window = std::min(
+                static_cast<uint64_t>(avail_ram * 3 / 10),
+                1024ULL * 1024 * 1024  // hard cap: 1GB
+            );
+            max_window = round_down_pow2(max_window);
+            max_window = std::max(max_window, 8ULL * 1024 * 1024); // minimo 8MB
+
+            // Solid buffer: non piu del 25% della RAM disponibile
+            max_solid = static_cast<size_t>(
+                std::min(
+                    static_cast<uint64_t>(avail_ram / 4),
+                    128ULL * 1024 * 1024  // hard cap: 128MB
+                )
+            );
+            max_solid = std::max(max_solid, static_cast<size_t>(8 * 1024 * 1024)); // min 8MB
+
+            low_memory = (total_ram < 2ULL * 1024 * 1024 * 1024);
+        }
+
+    private:
+        static uint64_t round_down_pow2(uint64_t v) {
+            if (v == 0) return 1;
+            v--;
+            v |= v >> 1;
+            v |= v >> 2;
+            v |= v >> 4;
+            v |= v >> 8;
+            v |= v >> 16;
+            v |= v >> 32;
+            return v + 1;  // potenza di 2 <= v
+        }
+    };
+
+    MemoryManager g_mem;
+
+    // Inizializza il memory manager all'avvio
+    static MemoryManager& ensure_mem() {
+        g_mem.init();
+        return g_mem;
+    }
 }
 
 void Engine::set_progress_callback(ProgressCallback* callback) {
@@ -162,16 +277,27 @@ struct ChunkResult {
 // ============================================================================
 
 // Mappa livello CLI → dimensione dizionario LZMA2
+// Rispetta il limite di RAM disponibile (g_mem.max_dict)
 static uint32_t lzma2_dict_size(int level) {
-    if (level <= 1)  return   4 * 1024 * 1024; //   4 MB
-    if (level <= 2)  return   8 * 1024 * 1024; //   8 MB
-    if (level <= 3)  return  16 * 1024 * 1024; //  16 MB
-    if (level <= 4)  return  32 * 1024 * 1024; //  32 MB
-    if (level <= 6)  return  64 * 1024 * 1024; //  64 MB
-    if (level <= 9)  return 128 * 1024 * 1024; // 128 MB
-    if (level <= 12) return 256 * 1024 * 1024; // 256 MB
-    if (level <= 15) return 512 * 1024 * 1024; // 512 MB
-    return 1024UL * 1024 * 1024;              //   1 GB (level 16-19)
+    uint32_t ideal;
+    if (level <= 1)  ideal =   4 * 1024 * 1024; //   4 MB
+    else if (level <= 2)  ideal =   8 * 1024 * 1024; //   8 MB
+    else if (level <= 3)  ideal =  16 * 1024 * 1024; //  16 MB
+    else if (level <= 4)  ideal =  32 * 1024 * 1024; //  32 MB
+    else if (level <= 6)  ideal =  64 * 1024 * 1024; //  64 MB
+    else if (level <= 9)  ideal = 128 * 1024 * 1024; // 128 MB
+    else if (level <= 12) ideal = 256 * 1024 * 1024; // 256 MB
+    else if (level <= 15) ideal = 512 * 1024 * 1024; // 512 MB
+    else ideal = 1024UL * 1024 * 1024;              //   1 GB (level 16-19)
+
+    // Cap alla RAM disponibile (non allocare piu di quanto il sistema puo' sostenere)
+    ensure_mem();
+    if (static_cast<uint64_t>(ideal) > g_mem.max_dict) {
+        ideal = static_cast<uint32_t>(g_mem.max_dict);
+        report_warning("[MEMORY] LZMA2 dictionary capped to "
+            + std::to_string(ideal / (1024 * 1024)) + "MB (available RAM limit)");
+    }
+    return ideal;
 }
 
 ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) {
@@ -187,7 +313,17 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     }
     
     size_t max_out = lzma_stream_buffer_bound(raw_data.size());
-    res.compressed_data.resize(max_out);
+    try {
+        res.compressed_data.resize(max_out);
+    } catch (const std::bad_alloc&) {
+        // OOM: fallback a STORE (non comprimere piuttosto che crashare)
+        report_warning("[MEMORY] LZMA2 output buffer allocation failed ("
+            + std::to_string(max_out / (1024 * 1024)) + "MB), falling back to STORE");
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
     size_t out_pos = 0;
     
     // Configura opzioni LZMA2 con dizionario scalabile
@@ -284,7 +420,17 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
     }
     
     size_t bound = ZSTD_compressBound(raw_data.size());
-    res.compressed_data.resize(bound);
+    try {
+        res.compressed_data.resize(bound);
+    } catch (const std::bad_alloc&) {
+        // OOM: fallback a STORE
+        report_warning("[MEMORY] ZSTD output buffer allocation failed ("
+            + std::to_string(bound / (1024 * 1024)) + "MB), falling back to STORE");
+        res.compressed_data = raw_data;
+        res.codec = Codec::STORE;
+        res.success = true;
+        return res;
+    }
     
     int zstd_level = std::clamp(level, 1, 19);
     
@@ -313,7 +459,16 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
     if (zstd_level >= 10) window_log = 27;      // 128MB
     if (zstd_level >= 14) window_log = 29;      // 512MB
     if (zstd_level >= 17) window_log = 30;      // 1GB
-    
+
+    // Cap window log alla RAM disponibile
+    ensure_mem();
+    uint64_t window_bytes = 1ULL << window_log;
+    if (window_bytes > g_mem.max_window) {
+        window_log = static_cast<int>(std::log2(static_cast<double>(g_mem.max_window)));
+        report_warning("[MEMORY] ZSTD window capped to "
+            + std::to_string(g_mem.max_window / (1024 * 1024)) + "MB (available RAM limit)");
+    }
+
     // Assicura che il window log non ecceda la dimensione dei dati
     size_t data_bits = 0;
     size_t tmp = raw_data.size();
@@ -757,6 +912,7 @@ TarcResult extract_sfx(const std::string& exe_path,
         self.clear();
         self.seekg(static_cast<std::streamoff>(trailer.archive_offset));
 
+        // Buffer allineato a 64 byte per ottimale SIMD copy
         const size_t BUF_SIZE = 1024 * 1024;
         std::vector<char> buf(BUF_SIZE);
         uint64_t remaining = trailer.archive_size;
@@ -772,6 +928,7 @@ TarcResult extract_sfx(const std::string& exe_path,
                 res.message = "Failed to read embedded archive.";
                 return res;
             }
+            // SIMD-optimized write per buffer >= 4KB
             out.write(buf.data(), to_read);
             remaining -= to_read;
         }
@@ -859,7 +1016,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
         return res;
     }
 
-    // Scrivi lo stub EXE
+    // Buffer ottimizzato SIMD per copia SFX (1MB, allineato cache line)
     const size_t COPY_BUF = 1024 * 1024;
     std::vector<char> buf(COPY_BUF);
 
@@ -964,7 +1121,8 @@ static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& soli
         final_toc[j].meta.codec = static_cast<uint8_t>(actual_codec);
     }
     solid_buf.clear();
-    solid_buf.reserve(128 * 1024 * 1024);
+    ensure_mem();
+    solid_buf.reserve(std::min(g_mem.max_solid, static_cast<size_t>(64 * 1024 * 1024)));
     solid_has_files = false;
     return true;
 }
@@ -977,8 +1135,11 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
     if (level >= 7) preset |= LZMA_PRESET_EXTREME;
     if (lzma_lzma_preset(&opt, preset) != LZMA_OK) return false;
 
-    // Cap dict a 64MB per streaming (encoder usa ~2x dict)
-    if (opt.dict_size > 64u * 1024 * 1024) opt.dict_size = 64u * 1024 * 1024;
+    // Cap dict in base alla RAM disponibile per streaming
+    ensure_mem();
+    uint64_t stream_dict_limit = std::min(g_mem.max_dict, 64ULL * 1024 * 1024);
+    if (opt.dict_size > static_cast<uint32_t>(stream_dict_limit))
+        opt.dict_size = static_cast<uint32_t>(stream_dict_limit);
 
     lzma_filter filters[2] = {};
     filters[0].id = LZMA_FILTER_LZMA2;
@@ -1033,6 +1194,13 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
     int wlog = 23; // 8MB
     if (zl >= 10) wlog = 25; // 32MB
     if (zl >= 16) wlog = 27; // 128MB
+
+    // Cap window log in base alla RAM disponibile
+    ensure_mem();
+    if ((1ULL << wlog) > g_mem.max_window) {
+        wlog = static_cast<int>(std::log2(static_cast<double>(g_mem.max_window)));
+    }
+
     ZSTD_CCtx_setParameter(cs, ZSTD_c_windowLog, wlog);
     if (zl >= 16) ZSTD_CCtx_setParameter(cs, ZSTD_c_strategy, ZSTD_btultra2);
     else if (zl >= 10) ZSTD_CCtx_setParameter(cs, ZSTD_c_strategy, ZSTD_btultra);
@@ -1215,10 +1383,20 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     // FEATURE #5: traccia l'offset dei chunk nell'archivio
     uint64_t data_offset = sizeof(Header);
 
-    // Anti-OOM: solid buffer ridotto da 1GB a 128MB
-    constexpr size_t CHUNK_THRESHOLD = 128 * 1024 * 1024;
+    // Anti-OOM: adatta il solid buffer e la soglia streaming alla RAM disponibile
+    ensure_mem();
+    report_warning("[MEMORY] Total RAM: " + std::to_string(g_mem.total_ram / (1024 * 1024)) + "MB"
+        + " | Available: ~" + std::to_string(g_mem.avail_ram / (1024 * 1024)) + "MB"
+        + " | Dict max: " + std::to_string(g_mem.max_dict / (1024 * 1024)) + "MB"
+        + " | Window max: " + std::to_string(g_mem.max_window / (1024 * 1024)) + "MB"
+        + " | Solid buffer: " + std::to_string(g_mem.max_solid / (1024 * 1024)) + "MB"
+        + (g_mem.low_memory ? " | LOW MEMORY MODE" : ""));
+    const size_t CHUNK_THRESHOLD = g_mem.max_solid;
     // File piu grandi di questo vengono compressi in streaming (non caricati in RAM)
-    constexpr size_t MAX_IN_MEMORY = 256 * 1024 * 1024;
+    const size_t MAX_IN_MEMORY = std::min(
+        g_mem.max_solid * 2,
+        static_cast<size_t>(256 * 1024 * 1024)
+    );
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     
@@ -1286,7 +1464,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         // ============================================================
         // Anti-OOM: file grandi → streaming (non caricati in RAM)
         // ============================================================
-        constexpr size_t MAX_IN_MEMORY = 256 * 1024 * 1024;
         bool use_streaming = (fsize > MAX_IN_MEMORY);
         
         std::vector<char> data;
@@ -1451,7 +1628,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     }
 
                     solid_buf.clear();
-                    solid_buf.reserve(CHUNK_THRESHOLD);
+                    solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
                     solid_has_files = false;
                     // Sincronizza data_offset con la posizione reale sul file
                     data_offset = static_cast<uint64_t>(ftell(f));
@@ -1502,24 +1679,56 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 );
                 worker_active = true;
                 solid_buf.clear();
-                solid_buf.reserve(CHUNK_THRESHOLD);
-                
+                solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
+
                 // Inizia nuova generazione solid con il file corrente
                 solid_buf.insert(solid_buf.end(), data.begin(), data.end());
                 solid_toc_begin = final_toc.size(); // questo file sara' a questo index
                 solid_codec = selected_codec;       // il codec del nuovo chunk solid
                 solid_has_files = true;
                 g_stats.bytes_read += fsize;
-            } else {
+            } else try {
                 // File va nel buffer solid corrente
                 solid_buf.insert(solid_buf.end(), data.begin(), data.end());
                 g_stats.bytes_read += fsize;
-                
+
                 if (!solid_has_files) {
                     // Primo file del chunk solid: registra inizio e codec
                     solid_toc_begin = final_toc.size();
                     solid_codec = selected_codec;
                     solid_has_files = true;
+                }
+            } catch (const std::bad_alloc&) {
+                // Solid buffer OOM: flush immediato e retry
+                report_warning("[MEMORY] Solid buffer OOM, flushing early");
+                if (worker_active && !write_pending_chunk(future_chunk)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Chunk compression failed (OOM).";
+                    fclose(f);
+                    return res;
+                }
+                worker_active = false;
+
+                if (!flush_solid_buffer(f, solid_buf, solid_has_files,
+                                        solid_toc_begin, solid_codec, level,
+                                        final_toc, res.bytes_out)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Solid flush failed (OOM).";
+                    fclose(f);
+                    return res;
+                }
+
+                // Retry dopo flush: file singolo come mini-chunk
+                try {
+                    solid_buf = data; // copy singola
+                    solid_toc_begin = final_toc.size();
+                    solid_codec = selected_codec;
+                    solid_has_files = true;
+                    g_stats.bytes_read += fsize;
+                } catch (...) {
+                    // Il file stesso e' troppo grande per la RAM: fallback STORE
+                    report_warning("[MEMORY] File too large for RAM, using STORE: " + disk_path);
+                    solid_has_files = false;
                 }
             }
             
