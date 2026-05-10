@@ -128,6 +128,17 @@ if(MSVC)
     target_compile_options(tarc PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
     target_compile_definitions(tarc PRIVATE
         _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+    target_link_libraries(tarc PRIVATE bcrypt user32)
+elseif(APPLE)
+    # macOS: detecta architettura host automaticamente
+    # -march=native garantisce che il binario match la CPU (Intel x86_64 o Apple Silicon arm64)
+    # _DARWIN_C_SOURCE needed for some POSIX extensions
+    target_compile_definitions(tarc PRIVATE _DARWIN_C_SOURCE)
+    target_compile_options(tarc PRIVATE
+        -O3 -Wall -Wextra -Wpedantic -Wno-unused-parameter -Wno-unused-variable
+        -march=native -ftree-vectorize -funroll-loops
+    )
+    target_link_libraries(tarc PRIVATE dl)
 else()
     target_compile_options(tarc PRIVATE
         -O3 -Wall -Wextra -Wpedantic -Wno-unused-parameter
@@ -135,6 +146,8 @@ else()
         $<$<CXX_COMPILER_ID:GNU>:-march=native -mtune=generic -ftree-vectorize -funroll-loops>
         $<$<CXX_COMPILER_ID:Clang>:-march=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize>
     )
+    target_compile_definitions(tarc PRIVATE _GNU_SOURCE)
+    target_link_libraries(tarc PRIVATE dl)
 endif()
 
 if(MSVC)
@@ -155,7 +168,9 @@ endif()
 if(NOT MSVC)
     target_compile_options(tarc PRIVATE -fno-math-errno -fno-trapping-math)
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        target_link_options(tarc PRIVATE -s)
+        if(NOT APPLE)
+            target_link_options(tarc PRIVATE -s)
+        endif()
     endif()
 endif()
 

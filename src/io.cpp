@@ -463,7 +463,21 @@ std::string IO::get_self_path() {
     std::string result(narrow_len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, buf, -1, &result[0], narrow_len, nullptr, nullptr);
     return result;
+#elif defined(__APPLE__)
+    // macOS: usa _NSGetExecutablePath (mach-o/dyld.h)
+    // /proc/self/exe NON esiste su macOS!
+    #include <mach-o/dyld.h>
+    char buf[4096];
+    uint32_t buf_size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &buf_size) != 0) return "";
+    // Risolvi path relativo in assoluto
+    char resolved[4096];
+    if (realpath(buf, resolved) != nullptr) {
+        return std::string(resolved);
+    }
+    return std::string(buf);
 #else
+    // Linux / BSD con /proc filesystem
     char buf[4096];
     ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (len <= 0) return "";
