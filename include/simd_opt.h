@@ -21,8 +21,6 @@
 // ============================================================================
 #if defined(_MSC_VER)
     // MSVC: <intrin.h> fornisce __cpuid, __cpuidex, e tutte le x86 intrinsics
-    // (SSE2, SSE4.2, AVX, AVX2, AVX-512). Non usa le macro __SSE2__/__AVX2__
-    // ma _M_X64 e il flag /arch:AVX2.
     #include <intrin.h>
 #elif defined(__AVX2__)
     #include <immintrin.h>
@@ -301,7 +299,9 @@ inline int simd_memcmp(const void* a, const void* b, size_t len) {
             __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pa + i));
             __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pb + i));
             __m128i cmp = _mm_xor_si128(va, vb);
-            if (!_mm_test_all_zeros(cmp, cmp)) {
+            // _mm_test_all_zeros e' SSE4.2 — versione SSE2 compatibile:
+            // se xor != 0, almeno un byte differisce
+            if (_mm_movemask_epi8(_mm_cmpeq_epi8(cmp, _mm_setzero_si128())) != 0xFFFF) {
                 return std::memcmp(pa + i, pb + i, len - i);
             }
         }

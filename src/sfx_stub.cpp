@@ -34,6 +34,9 @@
 #ifdef _WIN32
     #include <windows.h>
     #include <shellapi.h>
+#elif defined(__APPLE__)
+    #include <mach-o/dyld.h>
+    #include <unistd.h>
 #else
     #include <unistd.h>
 #endif
@@ -54,8 +57,18 @@ static std::string get_self_path() {
     std::string result(narrow_len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, buf, -1, &result[0], narrow_len, nullptr, nullptr);
     return result;
+#elif defined(__APPLE__)
+    // macOS: usa _NSGetExecutablePath (mach-o/dyld.h)
+    char buf[4096];
+    uint32_t buf_size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &buf_size) != 0) return "";
+    char resolved[4096];
+    if (realpath(buf, resolved) != nullptr) {
+        return std::string(resolved);
+    }
+    return std::string(buf);
 #else
-    // Linux/macOS: leggi il symlink /proc/self/exe
+    // Linux: leggi il symlink /proc/self/exe
     char buf[4096];
     ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (len <= 0) {

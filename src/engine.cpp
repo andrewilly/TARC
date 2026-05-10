@@ -1284,6 +1284,67 @@ done_brotli:
     return ok;
 }
 
+// ============================================================================
+// BUG FIX #15: Streaming STORE — file grandi con codec STORE copiati direttamente
+// Senza questo fix, i file STORE > MAX_IN_MEMORY venivano inseriti nel solid
+// buffer con data vuota (0 byte), causando hash mismatch durante la verifica.
+// Ora il file viene scritto direttamente da disco a archivio, senza caricare in RAM.
+// ============================================================================
+static bool write_chunk_store_streaming(FILE* archive_f, const std::string& source_path,
+                                         uintmax_t source_size, uint64_t& bytes_out) {
+    FILE* src_f = fopen(source_path.c_str(), "rb");
+    if (!src_f) return false;
+
+    // Calcola xxHash del file originale (per ChunkHeader checksum)
+    uint64_t cksum = 0;
+    XXH64_state_t* xxh = XXH64_createState();
+    if (xxh) XXH64_reset(xxh, 0);
+
+    // Scrivi placeholder header (seek-back dopo)
+    int64_t hdr_pos = IO::tarc_ftell(archive_f);
+    if (hdr_pos == -1) { fclose(src_f); if (xxh) XXH64_freeState(xxh); return false; }
+
+    ChunkHeader placeholder = {0, 0, 0, 0};
+    if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) {
+        fclose(src_f); if (xxh) XXH64_freeState(xxh); return false;
+    }
+
+    // Copia dati da sorgente ad archivio, calcolando xxHash
+    const size_t BUF = 1024 * 1024;  // 1MB buffer
+    std::vector<char> buf(BUF);
+    uint64_t remaining = source_size;
+    bool ok = true;
+
+    while (remaining > 0 && ok) {
+        size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BUF)));
+        size_t nread = fread(buf.data(), 1, to_read, src_f);
+        if (nread != to_read) { ok = false; break; }
+        if (xxh) XXH64_update(xxh, buf.data(), nread);
+        if (fwrite(buf.data(), 1, nread, archive_f) != nread) { ok = false; break; }
+        remaining -= nread;
+    }
+
+    fclose(src_f);
+    if (xxh) { cksum = XXH64_digest(xxh); XXH64_freeState(xxh); }
+    if (!ok) return false;
+
+    // Seek-back e scrivi il ChunkHeader corretto
+    uint32_t raw_sz = static_cast<uint32_t>(source_size > UINT32_MAX ? 0 : source_size);
+    uint32_t comp_sz = raw_sz;  // STORE: raw == comp
+    ChunkHeader hdr = {
+        static_cast<uint32_t>(Codec::STORE),
+        raw_sz,
+        comp_sz,
+        cksum
+    };
+    if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) return false;
+    if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) return false;
+    if (IO::tarc_fseek(archive_f, 0, SEEK_END) != 0) return false;
+
+    bytes_out += source_size;
+    return true;
+}
+
 // Scrive un chunk usando compressione streaming (seek-back per ChunkHeader)
 static bool write_chunk_streaming(FILE* archive_f, const std::string& source_path,
                                    uintmax_t source_size, int level, Codec codec,
@@ -1430,6 +1491,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             pending_solid_ranges.pop_front();
             for (size_t j = range.toc_begin; j <= range.toc_end; ++j) {
                 final_toc[j].meta.offset = chunk_offset;
+                // BUG FIX: Aggiorna ANCHE il codec nel TOC per i file nel chunk async
+                // Prima il codec non veniva aggiornato, causando incoerenza
+                final_toc[j].meta.codec = static_cast<uint8_t>(cr.codec);
             }
         }
         
@@ -1588,6 +1652,48 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 fe.meta.codec = static_cast<uint8_t>(stream_codec);
                 g_stats.bytes_read += fsize;
                 data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+            } else if (use_streaming && selected_codec == Codec::STORE) {
+                // ============================================================
+                // BUG FIX #15: Streaming STORE — file grandi non compressibili
+                // (.mp4, .avi, .jpg, ecc.) che superano MAX_IN_MEMORY.
+                // Prima: data era vuota (0 byte), il file veniva tracciato nel
+                // solid buffer senza dati → hash mismatch durante verifica.
+                // Ora: il file viene copiato direttamente da disco ad archivio
+                // con un buffer di 1MB, senza caricare in RAM.
+                // ============================================================
+                // Flush solid buffer pendente
+                if (worker_active && !write_pending_chunk(future_chunk)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Chunk compression failed.";
+                    fclose(f);
+                    return res;
+                }
+                worker_active = false;
+
+                if (!flush_solid_buffer(f, solid_buf, solid_has_files,
+                                        solid_toc_begin, solid_codec, level,
+                                        final_toc, res.bytes_out)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Solid flush failed.";
+                    fclose(f);
+                    return res;
+                }
+
+                // Scrivi il file come chunk STORE diretto (streaming)
+                uint64_t store_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+
+                if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
+                    res.error = TarcError::CompressionFailed;
+                    res.message = "Streaming STORE failed: " + disk_path;
+                    fclose(f);
+                    return res;
+                }
+
+                // Aggiorna TOC
+                fe.meta.offset = store_offset;
+                fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+                g_stats.bytes_read += fsize;
+                data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
             } else if (fsize <= STORE_THRESHOLD) {
                 // ============================================================
                 // BUG FIX: flush pending solid buffer BEFORE writing STORE chunk
@@ -1639,26 +1745,42 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
                 }
 
-                // File STORE: scritti direttamente, NON nel solid_buf
-                ChunkResult cr;
-                cr.compressed_data = data;
-                cr.raw_size = static_cast<uint32_t>(fsize);
-                cr.codec = Codec::STORE;
-                cr.success = true;
+                // BUG FIX #2: File vuoti non producono chunk su disco.
+                // Un chunk con raw_size=0 viene confuso con l'end marker {0,0,0,0}
+                // dal decompressore (read_next_block), causando "Archive corrupted".
+                if (fsize == 0) {
+                    // File vuoto: aggiungi al TOC ma non scrivere nessun chunk.
+                    // L'estrattore salta i file con orig_size==0.
+                    fe.meta.offset = 0;
+                    fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+                    g_stats.bytes_read += 0;
+                    // Non incrementare data_offset perche' nessun chunk e' stato scritto.
+                    // BUG FIX #9: NON resettare solid_has_files qui!
+                    // Il solid buffer e' gia' stato svuotato dal flush sopra.
+                    // Resettarlo qui non fa nulla, ma rimuoviamo il rischio
+                    // se in futuro la logica dovesse cambiare.
+                } else {
+                    // File STORE: scritti direttamente, NON nel solid_buf
+                    ChunkResult cr;
+                    cr.compressed_data = data;
+                    cr.raw_size = static_cast<uint32_t>(fsize);
+                    cr.codec = Codec::STORE;
+                    cr.success = true;
 
-                // FEATURE #5: offset del chunk STORE
-                fe.meta.offset = data_offset;
-                fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+                    // FEATURE #5: offset del chunk STORE
+                    fe.meta.offset = data_offset;
+                    fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
 
-                if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out)) {
-                    res.error = TarcError::WriteFailed;
-                    res.message = "Failed to write STORE chunk.";
-                    fclose(f);
-                    return res;
+                    if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out)) {
+                        res.error = TarcError::WriteFailed;
+                        res.message = "Failed to write STORE chunk.";
+                        fclose(f);
+                        return res;
+                    }
+                    data_offset += sizeof(ChunkHeader) + data.size();
+                    g_stats.bytes_read += fsize;
+                    solid_has_files = false; // resetta tracciamento solid
                 }
-                data_offset += sizeof(ChunkHeader) + data.size();
-                g_stats.bytes_read += fsize;
-                solid_has_files = false; // resetta tracciamento solid
             } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
                 // Solid buffer pieno: scarica il blocco corrente
                 
@@ -1723,22 +1845,54 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     return res;
                 }
 
-                // Retry dopo flush: file singolo come mini-chunk
-                try {
-                    solid_buf = data; // copy singola
-                    solid_toc_begin = final_toc.size();
-                    solid_codec = selected_codec;
-                    solid_has_files = true;
+                // BUG FIX #15b: Se data e' vuota (file troppo grande per RAM),
+                // non inserire nel solid buffer. Scrivi come STORE chunk streaming.
+                if (data.empty()) {
+                    report_warning("[MEMORY] File too large for RAM, using streaming STORE: " + disk_path);
+                    uint64_t store_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                    if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
+                        res.error = TarcError::CompressionFailed;
+                        res.message = "Streaming STORE failed (OOM): " + disk_path;
+                        fclose(f);
+                        return res;
+                    }
+                    fe.meta.offset = store_offset;
+                    fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
                     g_stats.bytes_read += fsize;
-                } catch (...) {
-                    // Il file stesso e' troppo grande per la RAM: fallback STORE
-                    report_warning("[MEMORY] File too large for RAM, using STORE: " + disk_path);
+                    data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
                     solid_has_files = false;
+                } else {
+                    // Retry dopo flush: file singolo come mini-chunk
+                    try {
+                        solid_buf = data; // copy singola
+                        solid_toc_begin = final_toc.size();
+                        solid_codec = selected_codec;
+                        solid_has_files = true;
+                        g_stats.bytes_read += fsize;
+                    } catch (...) {
+                        // Il file stesso e' troppo grande per la RAM: fallback STORE streaming
+                        report_warning("[MEMORY] File too large for RAM, using streaming STORE: " + disk_path);
+                        uint64_t store_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                        if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
+                            res.error = TarcError::CompressionFailed;
+                            res.message = "Streaming STORE failed: " + disk_path;
+                            fclose(f);
+                            return res;
+                        }
+                        fe.meta.offset = store_offset;
+                        fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+                        g_stats.bytes_read += fsize;
+                        data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                        solid_has_files = false;
+                    }
                 }
             }
             
             // FEATURE #1: imposta il codec nel TOC al codec realmente usato
-            if (fsize > STORE_THRESHOLD) {
+            // BUG FIX #15c: NON sovrascrivere il codec se il file e' stato gestito
+            // dai percorsi streaming (use_streaming), che hanno gia' impostato
+            // il codec corretto nel blocco if/else sopra.
+            if (!use_streaming && fsize > STORE_THRESHOLD) {
                 fe.meta.codec = static_cast<uint8_t>(solid_codec);
             }
         }
@@ -1770,9 +1924,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             return res;
         }
         
-        // FEATURE #5: aggiorna Entry.offset per i file dell'ultimo chunk solid
+        // BUG FIX #4: Aggiorna ANCHE il codec nel TOC per i file dell'ultimo chunk solid.
+        // Prima veniva aggiornato solo l'offset ma non il codec, causando incoerenza
+        // quando compress_worker cambiava codec (es. solid < 4096 bytes → STORE).
+        Codec actual_last_codec = last.codec;
         for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
             final_toc[j].meta.offset = last_chunk_offset;
+            final_toc[j].meta.codec = static_cast<uint8_t>(actual_last_codec);
         }
     }
 
@@ -1854,8 +2012,16 @@ static bool match_pattern(const std::string& full_path, const std::string& patte
 static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& block_pos) {
     if (block_pos >= block.size()) {
         ChunkHeader ch;
-        if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.raw_size == 0) {
+        if (fread(&ch, sizeof(ch), 1, f) != 1) {
             return TarcError::CorruptedArchive;
+        }
+
+        // BUG FIX #1 + #10: end marker detection piu' robusto.
+        // L'end marker e' {0,0,0,0} — tutti i campi zero incluso checksum.
+        // Nota: Codec::ZSTD = 0, quindi un chunk ZSTD vuoto verrebbe confuso.
+        // Verifichiamo il checksum == 0 per distinguere dal chunk ZSTD vuoto.
+        if (ch.codec == 0 && ch.raw_size == 0 && ch.comp_size == 0 && ch.checksum == 0) {
+            return TarcError::CorruptedArchive;  // end marker raggiunto
         }
 
         if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
@@ -1863,13 +2029,32 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
         }
 
         std::vector<char> comp(ch.comp_size);
-        if (fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
+        if (ch.comp_size > 0 && fread(comp.data(), 1, ch.comp_size, f) != ch.comp_size) {
+            return TarcError::CorruptedArchive;
+        }
+
+        // BUG FIX #3: Verifica checksum del chunk (xxHash64 dei dati compressi)
+        if (ch.comp_size > 0 && ch.checksum != 0) {
+            uint64_t actual_cksum = XXH64(comp.data(), comp.size(), 0);
+            if (actual_cksum != ch.checksum) {
+                return TarcError::CorruptedArchive;
+            }
+        }
+
+        // BUG FIX #12: Dimensione raw_size deve essere ragionevole
+        if (ch.raw_size > TARC_MAX_CHUNK_SIZE) {
             return TarcError::CorruptedArchive;
         }
 
         block.resize(ch.raw_size);
         Codec codec = static_cast<Codec>(ch.codec);
         if (!decompress_chunk(comp, block, codec)) {
+            return TarcError::DecompressionFailed;
+        }
+        // BUG FIX #13: Verifica che la decompressione produca la dimensione attesa.
+        // Se il decompressore produce una dimensione diversa da ch.raw_size,
+        // i file successivi nel solid block avranno offset sbagliato.
+        if (block.size() != static_cast<size_t>(ch.raw_size)) {
             return TarcError::DecompressionFailed;
         }
         block_pos = 0;
@@ -1968,6 +2153,8 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         if (!should_extract) {
             if (fe.meta.is_duplicate) continue;
+            // BUG FIX #2: File vuoti (orig_size==0) non hanno chunk su disco
+            if (fe.meta.orig_size == 0) continue;
             TarcError err = read_next_block(f, current_block, block_pos);
             if (err == TarcError::CorruptedArchive) break;
             if (err != TarcError::None) {
@@ -1981,6 +2168,13 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
 
         if (fe.meta.is_duplicate) continue;
+
+        // BUG FIX #2: File vuoti non hanno chunk su disco, salta lettura
+        if (fe.meta.orig_size == 0) {
+            // File vuoto: nessun dato da verificare, conta come processato
+            g_stats.files_processed++;
+            continue;
+        }
 
         {
             TarcError err = read_next_block(f, current_block, block_pos);
@@ -2050,6 +2244,19 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 return res;
             }
 
+            // BUG FIX #14: Verifica bounds prima dell'accesso ai dati del blocco.
+            // Se block_pos + orig_size > block.size(), i dati sono corrotti o il blocco
+            // e' stato troncato, causando lettura fuori limite e hash errato.
+            if (block_pos + static_cast<size_t>(fe.meta.orig_size) > current_block.size()) {
+                fclose(f);
+                res.error = TarcError::CorruptedArchive;
+                res.message = "Block overrun: " + fe.name
+                    + " (need " + std::to_string(fe.meta.orig_size) + " bytes at offset "
+                    + std::to_string(block_pos) + ", block has "
+                    + std::to_string(current_block.size()) + " bytes)";
+                return res;
+            }
+
             // SEC-006: Verifica integrita' xxHash del file estratto
             if (opts.verify && fe.meta.xxhash != 0) {
                 XXH64_state_t* const vstate = XXH64_createState();
@@ -2070,6 +2277,17 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 }
             }
         } else {
+            // BUG FIX #14: bounds check anche per modalita' test
+            if (block_pos + static_cast<size_t>(fe.meta.orig_size) > current_block.size()) {
+                fclose(f);
+                res.error = TarcError::CorruptedArchive;
+                res.message = "Block overrun: " + fe.name
+                    + " (need " + std::to_string(fe.meta.orig_size) + " bytes at offset "
+                    + std::to_string(block_pos) + ", block has "
+                    + std::to_string(current_block.size()) + " bytes)";
+                return res;
+            }
+
             // SEC-006: Verifica integrita' in modalita' test
             if (opts.verify && fe.meta.xxhash != 0) {
                 XXH64_state_t* const vstate = XXH64_createState();
