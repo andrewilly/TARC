@@ -15,6 +15,10 @@
     #include <windows.h>
 #endif
 
+#ifdef __APPLE__
+    #include <mach-o/dyld.h>
+#endif
+
 namespace fs = std::filesystem;
 
 // BUG FIX #3: helper glob matching per Unix (non usato su Windows)
@@ -466,7 +470,6 @@ std::string IO::get_self_path() {
 #elif defined(__APPLE__)
     // macOS: usa _NSGetExecutablePath (mach-o/dyld.h)
     // /proc/self/exe NON esiste su macOS!
-    #include <mach-o/dyld.h>
     char buf[4096];
     uint32_t buf_size = sizeof(buf);
     if (_NSGetExecutablePath(buf, &buf_size) != 0) return "";

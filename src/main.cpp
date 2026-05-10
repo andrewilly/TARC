@@ -14,11 +14,6 @@
 #include <filesystem>
 #include <exception>
 
-#ifdef _WIN32
-    #define NOMINMAX
-    #include <windows.h>
-#endif
-
 namespace fs = std::filesystem;
 
 class ProgressReporter : public ProgressCallback {
@@ -656,28 +651,6 @@ int main(int argc, char* argv[]) {
     
     UI::show_banner();
     
-#ifdef _WIN32
-    // Windows SEH handler: cattura access violation (SIGSEGV), illegal instruction,
-    // stack overflow etc. che il try/catch C++ NON puo' intercettare.
-    __try {
-        return run_command(cmd);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        DWORD code = GetExceptionCode();
-        const char* desc = "Unknown";
-        switch (code) {
-            case EXCEPTION_ACCESS_VIOLATION:  desc = "Access violation (bad memory access)"; break;
-            case EXCEPTION_ILLEGAL_INSTRUCTION: desc = "Illegal instruction (SIMD/CPU mismatch?)"; break;
-            case EXCEPTION_STACK_OVERFLOW:    desc = "Stack overflow"; break;
-            case EXCEPTION_INT_DIVIDE_BY_ZERO: desc = "Division by zero"; break;
-            default: break;
-        }
-        std::cerr << Color::RED << "\n[FATAL] Windows exception 0x"
-                  << std::hex << code << std::dec << ": " << desc << Color::RESET << "\n";
-        std::cerr << Color::DIM << "This is a bug. Please report it with your CPU model and OS version."
-                  << Color::RESET << "\n";
-        return 1;
-    }
-#else
     try {
         return run_command(cmd);
     } catch (const std::bad_alloc& e) {
@@ -691,5 +664,4 @@ int main(int argc, char* argv[]) {
         std::cerr << Color::RED << "\n[FATAL] Unknown error" << Color::RESET << "\n";
         return 1;
     }
-#endif
 }
