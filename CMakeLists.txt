@@ -101,19 +101,6 @@ set(TARC_LINK_LIBS
 )
 
 # ============================================================================
-# Icona Windows — solo su WIN32, usa il resource compiler (rc.exe / windres)
-# ============================================================================
-if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/res/tarc.ico")
-    set(TARC_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/res/tarc.rc")
-    message(STATUS "  Icona Windows: res/tarc.ico trovata, inclusa nel build")
-else()
-    set(TARC_ICON_RC "")
-    if(WIN32)
-        message(STATUS "  Icona Windows: res/tarc.ico NON trovata, exe senza icona")
-    endif()
-endif()
-
-# ============================================================================
 # Target 1: tarc — Tool principale
 # ============================================================================
 set(TARC_SOURCES
@@ -121,30 +108,33 @@ set(TARC_SOURCES
     ${TARC_CORE_SOURCES}
 )
 
-if(TARC_ICON_RC)
-    add_executable(tarc ${TARC_SOURCES} ${TARC_ICON_RC})
-    # Il .rc include windows.h — serve il percorso della cartella res/
-    target_include_directories(tarc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/res)
-else()
-    add_executable(tarc ${TARC_SOURCES})
+add_executable(tarc ${TARC_SOURCES})
+
+# Windows: incorpora icona e VERSIONINFO nel .exe
+if(WIN32)
+    set(TARC_RC_FILE "${CMAKE_SOURCE_DIR}/res/tarc.rc")
+    if(EXISTS "${TARC_RC_FILE}")
+        target_sources(tarc PRIVATE "${TARC_RC_FILE}")
+    endif()
 endif()
 
 target_include_directories(tarc PRIVATE ${TARC_INCLUDE_DIRS})
 
-# Platform-specific definitions per il target principale tarc
-if(WIN32)
+# SIMD optimization flags for maximum throughput
+# NOTE: /arch:AVX2 removed — it causes illegal instruction crash on CPUs without AVX2.
+# MSVC x86_64 uses SSE2 by default, which is guaranteed on all x86_64 CPUs.
+# To enable AVX2, add: /arch:AVX2 (requires Haswell+ CPU, 2013+)
+if(MSVC)
+    target_compile_options(tarc PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
     target_compile_definitions(tarc PRIVATE
         _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
-    target_compile_options(tarc PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
-endif()
-
-if(APPLE)
-    target_compile_definitions(tarc PRIVATE _DARWIN_C_SOURCE)
-    target_compile_options(tarc PRIVATE -Wno-unused-variable -Wno-unused-parameter)
-endif()
-
-if(UNIX AND NOT APPLE)
-    target_compile_definitions(tarc PRIVATE _GNU_SOURCE)
+else()
+    target_compile_options(tarc PRIVATE
+        -O3 -Wall -Wextra -Wpedantic -Wno-unused-parameter
+        # SIMD: AVX2 + SSE4.2 + BMI2 (ZSTD requirement) + POPCNT
+        $<$<CXX_COMPILER_ID:GNU>:-march=native -mtune=generic -ftree-vectorize -funroll-loops>
+        $<$<CXX_COMPILER_ID:Clang>:-march=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize>
+    )
 endif()
 
 if(MSVC)
@@ -158,6 +148,15 @@ endif()
 
 if(ZSTD_FOUND)
     target_compile_definitions(tarc PRIVATE HAVE_ZSTD=1)
+    target_compile_definitions(tarc PRIVATE ZSTD_MULTITHREAD)
+endif()
+
+# SIMD-aware linker optimizations
+if(NOT MSVC)
+    target_compile_options(tarc PRIVATE -fno-math-errno -fno-trapping-math)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        target_link_options(tarc PRIVATE -s)
+    endif()
 endif()
 
 target_link_libraries(tarc PRIVATE ${TARC_LINK_LIBS})
@@ -197,6 +196,7 @@ if(TARC_BUILD_SFX)
 
     # Stesse opzioni di compilazione per coerenza
     if(MSVC)
+        # SFX stub: non usa /arch:AVX2 per massima compatibilita
         target_compile_options(tarc_sfx_stub PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
     else()
         target_compile_options(tarc_sfx_stub PRIVATE -O3 -Wall -Wextra -Wpedantic -Wno-unused-parameter
@@ -213,7 +213,9 @@ if(TARC_BUILD_SFX)
 
     if(APPLE)
         target_compile_definitions(tarc_sfx_stub PRIVATE _DARWIN_C_SOURCE)
-        target_compile_options(tarc_sfx_stub PRIVATE -Wno-unused-variable -Wno-unused-parameter)
+        target_compile_options(tarc_sfx_stub PRIVATE
+            -Wno-unused-variable -Wno-unused-parameter
+            -march=native -ftree-vectorize -funroll-loops)
     endif()
 
     if(UNIX AND NOT APPLE)
