@@ -37,11 +37,10 @@ jobs:
           name: tarc-windows
           path: build/tarc.exe
 
-  # --- JOB MACOS (INTEL) ---
+  # --- JOB MACOS (UNIVERSAL: INTEL + ARM) ---
   build-macos:
-    name: Build on macOS (Intel)
-    # macos-13 è l'ultima versione di GitHub Actions che gira su hardware Intel x86_64
-    runs-on: macos-13
+    name: Build on macOS (Universal)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -49,17 +48,20 @@ jobs:
         run: brew install cmake ninja
 
       - name: Configure CMake
-        # Forziamo l'architettura x86_64 per garantire la compatibilità Intel
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+        # Il flag CMAKE_OSX_ARCHITECTURES crea un binario compatibile sia con Intel che con Apple Silicon
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: Build
-        # Corretto il nome della cartella da build-intel a build per coerenza con lo step sopra
         run: cmake --build build --config Release
+
+      - name: Verify Binary Architecture
+        # Questo comando stampa nel log la conferma che il file è "Universal"
+        run: file build/tarc
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tarc-macos-intel
+          name: tarc-macos-universal
           path: build/tarc
 
   # --- JOB UBUNTU ---
