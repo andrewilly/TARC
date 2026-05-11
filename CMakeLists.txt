@@ -235,6 +235,45 @@ if(TARC_BUILD_SFX)
 endif()
 
 # ============================================================================
+# Target 3: tarc_test — Test suite (doctest)
+# ============================================================================
+option(TARC_BUILD_TESTS "Build tarc_test executable" ON)
+
+if(TARC_BUILD_TESTS)
+    # doctest header-only — gia' presente in include/doctest/doctest.h
+    set(TEST_SOURCES
+        test/tests.cpp
+        ${TARC_CORE_SOURCES}
+    )
+
+    add_executable(tarc_test ${TEST_SOURCES})
+
+    target_include_directories(tarc_test PRIVATE ${TARC_INCLUDE_DIRS})
+
+    target_link_libraries(tarc_test PRIVATE ${TARC_LINK_LIBS})
+
+    if(WIN32)
+        target_compile_definitions(tarc_test PRIVATE
+            _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+    endif()
+    if(APPLE)
+        target_compile_definitions(tarc_test PRIVATE _DARWIN_C_SOURCE)
+        target_compile_options(tarc_test PRIVATE -Wno-unused-variable -Wno-unused-parameter)
+    endif()
+    if(UNIX AND NOT APPLE)
+        target_compile_definitions(tarc_test PRIVATE _GNU_SOURCE)
+    endif()
+    if(ZSTD_FOUND)
+        target_compile_definitions(tarc_test PRIVATE HAVE_ZSTD=1)
+    endif()
+
+    add_custom_command(TARGET tarc_test POST_BUILD
+        COMMAND $<TARGET_FILE:tarc_test>
+        COMMENT "Running TARC test suite..."
+    )
+endif()
+
+# ============================================================================
 # Install targets
 # ============================================================================
 install(TARGETS tarc RUNTIME DESTINATION bin)

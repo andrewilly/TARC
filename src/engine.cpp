@@ -48,6 +48,10 @@ namespace {
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
 
+    // End marker: tutti i campi zero — nessun chunk legittimo puo' avere
+    // codec=0 AND raw_size=0 AND comp_size=0 AND checksum=0 simultaneamente.
+    static constexpr ChunkHeader END_MARKER = {0, 0, 0, 0};
+
     // RAII wrapper per FILE* — chiude automaticamente in distruttore
     struct FileGuard {
         FILE* f = nullptr;
@@ -65,6 +69,14 @@ namespace {
         FILE* get() const { return f; }
         FILE* release() { FILE* tmp = f; f = nullptr; return tmp; }
     };
+
+    // Helper: tarc_ftell con controllo errore — restituisce false in caso di errore
+    static bool tell_pos(FILE* f, uint64_t& pos) {
+        int64_t p = IO::tarc_ftell(f);
+        if (p < 0) return false;
+        pos = static_cast<uint64_t>(p);
+        return true;
+    }
 
     // ========================================================================
     // Memory Manager — Auto-detect RAM disponibile e limita le allocazioni
@@ -497,19 +509,49 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
     // ZSTD richiede window_log >= 10
     if (window_log < 10) window_log = 10;
     
-    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, zstd_level);
-    ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, window_log);
+    if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, zstd_level))) {
+        ZSTD_freeCCtx(cctx);
+        res.codec = Codec::STORE;
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
+    if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, window_log))) {
+        ZSTD_freeCCtx(cctx);
+        res.codec = Codec::STORE;
+        res.compressed_data = raw_data;
+        res.success = true;
+        return res;
+    }
     
     // Usa strategia ultra ai livelli piu alti (miglior compressione)
     if (zstd_level >= 16) {
-        ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra2);
+        if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra2))) {
+            ZSTD_freeCCtx(cctx);
+            res.codec = Codec::STORE;
+            res.compressed_data = raw_data;
+            res.success = true;
+            return res;
+        }
     } else if (zstd_level >= 10) {
-        ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra);
+        if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra))) {
+            ZSTD_freeCCtx(cctx);
+            res.codec = Codec::STORE;
+            res.compressed_data = raw_data;
+            res.success = true;
+            return res;
+        }
     }
     
     // Abilita checksum a livelli alti per integrita
     if (zstd_level >= 10) {
-        ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1);
+        if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1))) {
+            ZSTD_freeCCtx(cctx);
+            res.codec = Codec::STORE;
+            res.compressed_data = raw_data;
+            res.success = true;
+            return res;
+        }
     }
     
     size_t comp_size = ZSTD_compress2(
@@ -1131,7 +1173,9 @@ static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& soli
     if (!solid_has_files || solid_buf.empty()) return true;
     ChunkResult solid_cr = compress_worker(std::move(solid_buf), level, solid_codec);
     if (!solid_cr.success) return false;
-    uint64_t solid_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+    int64_t _solid_tell = IO::tarc_ftell(f);
+    if (_solid_tell < 0) return false;
+    uint64_t solid_offset = static_cast<uint64_t>(_solid_tell);
     if (!write_chunk(f, solid_cr.codec, solid_cr.raw_size, solid_cr.compressed_data, bytes_out))
         return false;
     Codec actual_codec = solid_cr.codec;
@@ -1166,11 +1210,12 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
     filters[0].options = &opt;
     filters[1].id = UINT64_MAX;
 
+    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
+    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+
     lzma_stream strm = LZMA_STREAM_INIT;
     if (lzma_stream_encoder(&strm, filters, LZMA_CHECK_CRC64) != LZMA_OK) return false;
 
-    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
-    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
     out_comp_size = 0;
     out_checksum = 0;
     lzma_action action = LZMA_RUN;
@@ -1214,6 +1259,9 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
 static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
                                   uint64_t& out_comp_size, uint64_t& out_checksum,
                                   uint64_t input_limit = UINT64_MAX) {
+    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
+    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+
     ZSTD_CStream* cs = ZSTD_createCStream();
     if (!cs) return false;
     int zl = std::clamp(level, 1, 19);
@@ -1231,9 +1279,6 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
     ZSTD_CCtx_setParameter(cs, ZSTD_c_windowLog, wlog);
     if (zl >= 16) ZSTD_CCtx_setParameter(cs, ZSTD_c_strategy, ZSTD_btultra2);
     else if (zl >= 10) ZSTD_CCtx_setParameter(cs, ZSTD_c_strategy, ZSTD_btultra);
-
-    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
-    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
     out_comp_size = 0;
     out_checksum = 0;
     XXH64_state_t* xxh = XXH64_createState();
@@ -1277,14 +1322,20 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
 static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
                                     uint64_t& out_comp_size, uint64_t& out_checksum,
                                     uint64_t input_limit = UINT64_MAX) {
+    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
+    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+
     BrotliEncoderState* bs = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
     if (!bs) return false;
     int quality = std::clamp(level, 0, 11);
-    BrotliEncoderSetParameter(bs, BROTLI_PARAM_QUALITY, quality);
-    BrotliEncoderSetParameter(bs, BROTLI_PARAM_LGWIN, 24); // 16MB
-
-    std::vector<uint8_t> in_buf(STREAM_BUF_SIZE);
-    std::vector<uint8_t> out_buf(STREAM_BUF_SIZE * 4);
+    if (!BrotliEncoderSetParameter(bs, BROTLI_PARAM_QUALITY, quality)) {
+        BrotliEncoderDestroyInstance(bs);
+        return false;
+    }
+    if (!BrotliEncoderSetParameter(bs, BROTLI_PARAM_LGWIN, 24)) { // 16MB
+        BrotliEncoderDestroyInstance(bs);
+        return false;
+    }
     out_comp_size = 0;
     out_checksum = 0;
     XXH64_state_t* xxh = XXH64_createState();
@@ -1333,7 +1384,8 @@ done_brotli:
 // ============================================================================
 static bool write_chunk_store_streaming(FILE* archive_f, const std::string& source_path,
                                          uintmax_t source_size, uint64_t& bytes_out) {
-    FILE* src_f = fopen(source_path.c_str(), "rb");
+    FileGuard src_fg(fopen(source_path.c_str(), "rb"));
+    FILE* src_f = src_fg.get();
     if (!src_f) return false;
 
     const size_t BUF = 1024 * 1024;
@@ -1353,11 +1405,11 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
         if (xxh) XXH64_reset(xxh, 0);
 
         int64_t hdr_pos = IO::tarc_ftell(archive_f);
-        if (hdr_pos == -1) { fclose(src_f); if (xxh) XXH64_freeState(xxh); return false; }
+        if (hdr_pos == -1) { if (xxh) XXH64_freeState(xxh); return false; }
 
         ChunkHeader placeholder = {0, 0, 0, 0};
         if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) {
-            fclose(src_f); if (xxh) XXH64_freeState(xxh); return false;
+            if (xxh) XXH64_freeState(xxh); return false;
         }
 
         uint64_t chunk_remaining = chunk_size;
@@ -1371,7 +1423,7 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
         }
 
         if (xxh) { cksum = XXH64_digest(xxh); XXH64_freeState(xxh); }
-        if (!ok) { fclose(src_f); return false; }
+        if (!ok) { return false; }
 
         ChunkHeader hdr = {
             static_cast<uint32_t>(Codec::STORE),
@@ -1379,15 +1431,15 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
             chunk_size,
             cksum
         };
-        if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) { fclose(src_f); return false; }
-        if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) { fclose(src_f); return false; }
-        if (IO::tarc_fseek(archive_f, 0, SEEK_END) != 0) { fclose(src_f); return false; }
+        if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) { return false; }
+        if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) { return false; }
+        if (IO::tarc_fseek(archive_f, 0, SEEK_END) != 0) { return false; }
 
         bytes_out += chunk_size;
         remaining -= chunk_size;
     }
 
-    fclose(src_f);
+    src_fg.release();
     return ok;
 }
 
@@ -1412,10 +1464,10 @@ static bool write_chunk_streaming(FILE* archive_f, const std::string& source_pat
         );
 
         int64_t hdr_pos = IO::tarc_ftell(archive_f);
-        if (hdr_pos == -1) { fclose(src_f); return false; }
+        if (hdr_pos == -1) { return false; }
 
         ChunkHeader placeholder = {0, 0, 0, 0};
-        if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) { fclose(src_f); return false; }
+        if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) { return false; }
 
         uint64_t csz = 0, cksum = 0;
         switch (actual) {
@@ -1424,11 +1476,11 @@ static bool write_chunk_streaming(FILE* archive_f, const std::string& source_pat
             case Codec::BR:   ok = stream_compress_brotli(src_f, archive_f, level, csz, cksum, segment_raw); break;
             default:          ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum, segment_raw); actual = Codec::ZSTD; break;
         }
-        if (!ok) { fclose(src_f); return false; }
+        if (!ok) { return false; }
 
         int64_t end_pos = IO::tarc_ftell(archive_f);
-        if (end_pos == -1) { fclose(src_f); return false; }
-        if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) { fclose(src_f); return false; }
+        if (end_pos == -1) { return false; }
+        if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) { return false; }
 
         ChunkHeader hdr = {
             static_cast<uint32_t>(actual),
@@ -1436,14 +1488,13 @@ static bool write_chunk_streaming(FILE* archive_f, const std::string& source_pat
             static_cast<uint32_t>(csz > UINT32_MAX ? UINT32_MAX : csz),
             cksum
         };
-        if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) { fclose(src_f); return false; }
-        if (IO::tarc_fseek(archive_f, end_pos, SEEK_SET) != 0) { fclose(src_f); return false; }
+        if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) { return false; }
+        if (IO::tarc_fseek(archive_f, end_pos, SEEK_SET) != 0) { return false; }
 
         bytes_out += csz;
         remaining -= segment_raw;
     }
 
-    fclose(src_f);
     return true;
 }
 
@@ -1537,7 +1588,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (!cr.success) return false;
         
         // FEATURE #5: registra l'offset del chunk prima di scriverlo
-        uint64_t chunk_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+        int64_t _cpos = IO::tarc_ftell(f);
+        if (_cpos < 0) return false;
+        uint64_t chunk_offset = static_cast<uint64_t>(_cpos);
         
         if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out))
             return false;
@@ -1690,7 +1743,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 }
 
                 // Stream-comprime il file grande direttamente
-                uint64_t stream_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                uint64_t stream_offset;
+                if (!tell_pos(f, stream_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                 Codec stream_codec = selected_codec;
 
                 if (!write_chunk_streaming(f, disk_path, fsize, level, stream_codec, res.bytes_out)) {
@@ -1704,7 +1758,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (stream_codec == Codec::LZ4) stream_codec = Codec::ZSTD; // fallback
                 fe.meta.codec = static_cast<uint8_t>(stream_codec);
                 g_stats.bytes_read += fsize;
-                data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                int64_t _data_tell = IO::tarc_ftell(f);
+                if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
+                data_offset = static_cast<uint64_t>(_data_tell);
             } else if (use_streaming && selected_codec == Codec::STORE) {
                 // ============================================================
                 // BUG FIX #15: Streaming STORE — file grandi non compressibili
@@ -1731,7 +1787,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 }
 
                 // Scrivi il file come chunk STORE diretto (streaming)
-                uint64_t store_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                uint64_t store_offset;
+                if (!tell_pos(f, store_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
 
                 if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
                     res.error = TarcError::CompressionFailed;
@@ -1743,7 +1800,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 fe.meta.offset = store_offset;
                 fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
                 g_stats.bytes_read += fsize;
-                data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                int64_t _data_tell = IO::tarc_ftell(f);
+                if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
+                data_offset = static_cast<uint64_t>(_data_tell);
             } else if (fsize <= STORE_THRESHOLD) {
                 // ============================================================
                 // BUG FIX: flush pending solid buffer BEFORE writing STORE chunk
@@ -1767,7 +1826,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         return res;
                     }
 
-                    uint64_t solid_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                    uint64_t solid_offset;
+                    if (!tell_pos(f, solid_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                     if (!write_chunk(f, solid_cr.codec, solid_cr.raw_size, solid_cr.compressed_data, res.bytes_out)) {
                         res.error = TarcError::WriteFailed;
                         res.message = "Failed to write solid chunk.";
@@ -1789,7 +1849,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
                     solid_has_files = false;
                     // Sincronizza data_offset con la posizione reale sul file
-                    data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                    int64_t _data_tell = IO::tarc_ftell(f);
+                    if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
+                    data_offset = static_cast<uint64_t>(_data_tell);
                 }
 
                 // BUG FIX #2: File vuoti non producono chunk su disco.
@@ -1842,13 +1904,43 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 pending_solid_ranges.push_back({solid_toc_begin, final_toc.size() - 1});
                 
                 // Avvia compressione async per il buffer solid corrente
-                future_chunk = std::async(
-                    std::launch::async,
-                    compress_worker,
-                    std::move(solid_buf),
-                    level,
-                    solid_codec  // FEATURE #1: usa il codec del buffer solid
-                );
+                try {
+                    future_chunk = std::async(
+                        std::launch::async,
+                        compress_worker,
+                        std::move(solid_buf),
+                        level,
+                        solid_codec  // FEATURE #1: usa il codec del buffer solid
+                    );
+                } catch (const std::system_error&) {
+                    // Thread creation fallita: sync fallback
+                    pending_solid_ranges.pop_back();
+                    ChunkResult cr = compress_worker(std::move(solid_buf), level, solid_codec);
+                    if (!cr.success) {
+                        res.error = TarcError::CompressionFailed;
+                        res.message = "Solid chunk compression failed (async fallback).";
+                        return res;
+                    }
+                    uint64_t chunk_off;
+                    if (!tell_pos(f, chunk_off)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
+                    if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out)) {
+                        res.error = TarcError::WriteFailed;
+                        res.message = "Failed to write solid chunk (async fallback).";
+                        return res;
+                    }
+                    for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
+                        final_toc[j].meta.offset = chunk_off;
+                        final_toc[j].meta.codec = static_cast<uint8_t>(cr.codec);
+                    }
+                    worker_active = false;
+                    solid_buf.clear();
+                    solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
+                    solid_toc_begin = final_toc.size();
+                    solid_codec = selected_codec;
+                    solid_has_files = true;
+                    g_stats.bytes_read += fsize;
+                    continue;
+                }
                 worker_active = true;
                 solid_buf.clear();
                 solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
@@ -1892,7 +1984,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 // non inserire nel solid buffer. Scrivi come STORE chunk streaming.
                 if (data.empty()) {
                     report_warning("[MEMORY] File too large for RAM, using streaming STORE: " + disk_path);
-                    uint64_t store_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                    uint64_t store_offset;
+                    if (!tell_pos(f, store_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                     if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
                         res.error = TarcError::CompressionFailed;
                         res.message = "Streaming STORE failed (OOM): " + disk_path;
@@ -1901,7 +1994,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     fe.meta.offset = store_offset;
                     fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
                     g_stats.bytes_read += fsize;
-                    data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                    int64_t _data_tell = IO::tarc_ftell(f);
+                    if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
+                    data_offset = static_cast<uint64_t>(_data_tell);
                     solid_has_files = false;
                 } else {
                     // Retry dopo flush: file singolo come mini-chunk
@@ -1914,7 +2009,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     } catch (...) {
                         // Il file stesso e' troppo grande per la RAM: fallback STORE streaming
                         report_warning("[MEMORY] File too large for RAM, using streaming STORE: " + disk_path);
-                        uint64_t store_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                        uint64_t store_offset;
+                        if (!tell_pos(f, store_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                         if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
                             res.error = TarcError::CompressionFailed;
                             res.message = "Streaming STORE failed: " + disk_path;
@@ -1923,7 +2019,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         fe.meta.offset = store_offset;
                         fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
                         g_stats.bytes_read += fsize;
-                        data_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+                        int64_t _data_tell = IO::tarc_ftell(f);
+                        if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
+                        data_offset = static_cast<uint64_t>(_data_tell);
                         solid_has_files = false;
                     }
                 }
@@ -1955,7 +2053,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         ChunkResult last = compress_worker(std::move(solid_buf), level, solid_codec);
         
         // FEATURE #5: offset del chunk finale
-        uint64_t last_chunk_offset = static_cast<uint64_t>(IO::tarc_ftell(f));
+        uint64_t last_chunk_offset;
+        if (!tell_pos(f, last_chunk_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
         
         if (!write_chunk(f, last.codec, last.raw_size, last.compressed_data, res.bytes_out)) {
             res.error = TarcError::WriteFailed;
@@ -1973,8 +2072,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         }
     }
 
-    ChunkHeader end_mark = {0, 0, 0, 0};
-    if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
+    if (fwrite(&END_MARKER, sizeof(END_MARKER), 1, f) != 1) {
         res.error = TarcError::WriteFailed;
         res.message = "Failed to write end marker.";
         return res;
@@ -2053,11 +2151,9 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
             return TarcError::CorruptedArchive;
         }
 
-        // BUG FIX #1 + #10: end marker detection piu' robusto.
-        // L'end marker e' {0,0,0,0} — tutti i campi zero incluso checksum.
-        // Nota: Codec::ZSTD = 0, quindi un chunk ZSTD vuoto verrebbe confuso.
-        // Verifichiamo il checksum == 0 per distinguere dal chunk ZSTD vuoto.
-        if (ch.codec == 0 && ch.raw_size == 0 && ch.comp_size == 0 && ch.checksum == 0) {
+        // End marker detection: {0,0,0,0} — nessun chunk legittimo puo'
+        // avere tutti e 4 i campi zero (Codec::ZSTD=0 ma comp_size > 0).
+        if (std::memcmp(&ch, &END_MARKER, sizeof(ChunkHeader)) == 0) {
             return TarcError::CorruptedArchive;  // end marker raggiunto
         }
 

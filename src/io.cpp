@@ -136,8 +136,9 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
             // Rimuovi .\ iniziale se presente
             if (fullPath.substr(0, 2) == ".\\") fullPath = fullPath.substr(2);
             
-            if (fs::exists(fullPath)) {
-                if (fs::is_regular_file(fullPath)) {
+            std::error_code _ec;
+            if (fs::exists(fullPath, _ec)) {
+                if (fs::is_regular_file(fullPath, _ec)) {
                     out.push_back(fullPath);
                 }
             }
@@ -248,7 +249,7 @@ Result<FileEntry> IO::read_entry(FILE* f) {
 }
 
 bool IO::write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
-    fflush(f);
+    if (fflush(f) != 0) return false;
     int64_t toc_pos = IO::tarc_ftell(f);
     if (toc_pos == -1) return false;
     
@@ -256,6 +257,7 @@ bool IO::write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     h.file_count = static_cast<uint32_t>(toc.size());
 
     for (auto& fe : toc) {
+        if (fe.name.length() > UINT16_MAX) return false;
         fe.meta.name_len = static_cast<uint16_t>(fe.name.length());
         if (!write_entry(f, fe)) return false;
     }
@@ -264,7 +266,7 @@ bool IO::write_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (fwrite(&h, sizeof(Header), 1, f) != 1) return false;
     
     if (IO::tarc_fseek(f, 0, SEEK_END) != 0) return false;
-    fflush(f);
+    if (fflush(f) != 0) return false;
     return true;
 }
 
@@ -487,10 +489,17 @@ std::string IO::get_self_path() {
     return std::string(buf);
 #else
     // Linux / BSD con /proc filesystem
-    char buf[4096];
-    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    std::string result;
+    result.resize(4096);
+    ssize_t len = readlink("/proc/self/exe", &result[0], result.size());
     if (len <= 0) return "";
-    buf[len] = '\0';
-    return std::string(buf);
+    if (static_cast<size_t>(len) >= result.size()) {
+        // Path troppo lungo per il buffer statico: ridimensiona e riprova
+        result.resize(len + 1);
+        len = readlink("/proc/self/exe", &result[0], result.size());
+        if (len <= 0) return "";
+    }
+    result.resize(static_cast<size_t>(len));
+    return result;
 #endif
 }

@@ -69,14 +69,17 @@ static std::string get_self_path() {
     return std::string(buf);
 #else
     // Linux: leggi il symlink /proc/self/exe
-    char buf[4096];
-    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (len <= 0) {
-        // Fallback: usa argv[0] passato dal main
-        return "";
+    std::string result;
+    result.resize(4096);
+    ssize_t len = readlink("/proc/self/exe", &result[0], result.size());
+    if (len <= 0) return "";
+    if (static_cast<size_t>(len) >= result.size()) {
+        result.resize(len + 1);
+        len = readlink("/proc/self/exe", &result[0], result.size());
+        if (len <= 0) return "";
     }
-    buf[len] = '\0';
-    return std::string(buf);
+    result.resize(static_cast<size_t>(len));
+    return result;
 #endif
 }
 
