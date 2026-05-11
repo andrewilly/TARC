@@ -2164,6 +2164,13 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
     }
 
+    // Conta i file reali (non duplicati, non vuoti) che devono avere chunk data
+    size_t expected_real_files = 0;
+    for (const auto& fe : toc) {
+        if (!fe.meta.is_duplicate && fe.meta.orig_size > 0) expected_real_files++;
+    }
+    bool end_marker_hit = false;
+
     for (size_t i = 0; i < toc.size(); ++i) {
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
@@ -2193,7 +2200,10 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             size_t remaining_skip = static_cast<size_t>(fe.meta.orig_size);
             while (remaining_skip > 0) {
                 TarcError err = read_next_block(f, current_block, block_pos);
-                if (err == TarcError::CorruptedArchive) goto done_extract_files;
+                if (err == TarcError::CorruptedArchive) {
+                    end_marker_hit = true;
+                    break;
+                }
                 if (err != TarcError::None) {
                     fclose(f);
                     res.error = err;
@@ -2205,6 +2215,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 remaining_skip -= to_skip;
                 block_pos += to_skip;
             }
+            if (end_marker_hit) break;
             continue;
         }
 
@@ -2281,7 +2292,8 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             TarcError err = read_next_block(f, current_block, block_pos);
             if (err == TarcError::CorruptedArchive) {
                 cleanup_vstate();
-                goto done_extract_files;
+                end_marker_hit = true;
+                break;
             }
             if (err != TarcError::None) {
                 cleanup_vstate();
@@ -2328,6 +2340,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             bytes_remaining -= to_consume;
             block_pos += to_consume;
         }
+        if (end_marker_hit) break;
 
         // Chiude file e imposta timestamp
         if (file_written) {
@@ -2358,9 +2371,13 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         res.bytes_out += fe.meta.orig_size;
         g_stats.files_processed++;
     }
-done_extract_files:
-    
     fclose(f);
+    if (end_marker_hit && g_stats.files_processed < expected_real_files) {
+        res.ok = false;
+        res.error = TarcError::CorruptedArchive;
+        res.message = "Unexpected end of archive data (possible corruption).";
+        return res;
+    }
     res.ok = true;
     res.message = opts.test_only ? "Test completed." : "Extraction completed.";
     return res;
