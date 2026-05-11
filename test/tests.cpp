@@ -1,4 +1,5 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#define DOCTEST_CONFIG_NO_POSIX_SIGNALS
 #include "doctest/doctest.h"
 #include "engine.h"
 #include "io.h"
@@ -72,8 +73,8 @@ struct Sandbox {
         return name;
     }
 
-    std::string read_file(const std::string& path) const {
-        auto full = fs::path(path).is_relative() ? (dir / path).string() : path;
+    std::string read_file(const fs::path& path) const {
+        auto full = path.is_relative() ? (dir / path).string() : path.string();
         std::ifstream ifs(full, std::ios::binary | std::ios::ate);
         if (!ifs) return {};
         auto sz = ifs.tellg();
@@ -87,14 +88,14 @@ struct Sandbox {
         return (dir / name).string();
     }
 
-    bool exists(const std::string& path) const {
-        auto full = fs::path(path).is_relative() ? (dir / path).string() : path;
+    bool exists(const fs::path& path) const {
+        auto full = path.is_relative() ? (dir / path).string() : path.string();
         std::error_code ec;
         return fs::exists(full, ec);
     }
 
-    uint64_t file_size(const std::string& path) const {
-        auto full = fs::path(path).is_relative() ? (dir / path).string() : path;
+    uint64_t file_size(const fs::path& path) const {
+        auto full = path.is_relative() ? (dir / path).string() : path.string();
         std::error_code ec;
         auto sz = fs::file_size(full, ec);
         return ec ? 0 : sz;
