@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #define DOCTEST_CONFIG_NO_POSIX_SIGNALS
+#define DOCTEST_CONFIG_COLORS_NONE
 #include "doctest/doctest.h"
 #include "engine.h"
 #include "io.h"
