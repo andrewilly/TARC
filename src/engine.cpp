@@ -48,6 +48,24 @@ namespace {
     std::atomic<bool> g_cancelled{false};
     Engine::CompressionStats g_stats;
 
+    // RAII wrapper per FILE* — chiude automaticamente in distruttore
+    struct FileGuard {
+        FILE* f = nullptr;
+        FileGuard(FILE* f) : f(f) {}
+        ~FileGuard() { if (f) fclose(f); }
+        FileGuard(const FileGuard&) = delete;
+        FileGuard& operator=(const FileGuard&) = delete;
+        FileGuard(FileGuard&& other) : f(other.f) { other.f = nullptr; }
+        FileGuard& operator=(FileGuard&& other) {
+            if (f) fclose(f);
+            f = other.f;
+            other.f = nullptr;
+            return *this;
+        }
+        FILE* get() const { return f; }
+        FILE* release() { FILE* tmp = f; f = nullptr; return tmp; }
+    };
+
     // ========================================================================
     // Memory Manager — Auto-detect RAM disponibile e limita le allocazioni
     // ========================================================================
@@ -1158,7 +1176,7 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
     lzma_action action = LZMA_RUN;
 
     XXH64_state_t* xxh = XXH64_createState();
-    XXH64_reset(xxh, 0);
+    if (xxh) XXH64_reset(xxh, 0);
     bool ok = true;
     uint64_t total_input = 0;
 
@@ -1179,16 +1197,16 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
         if (ret != LZMA_OK && ret != LZMA_STREAM_END) { ok = false; break; }
         size_t have = out_buf.size() - strm.avail_out;
         if (have > 0) {
-            XXH64_update(xxh, out_buf.data(), have);
+            if (xxh) XXH64_update(xxh, out_buf.data(), have);
             if (fwrite(out_buf.data(), 1, have, dst_f) != have) { ok = false; break; }
             out_comp_size += have;
         }
         if (ret == LZMA_STREAM_END) break;
     }
 
-    out_checksum = XXH64_digest(xxh);
+    out_checksum = xxh ? XXH64_digest(xxh) : 0;
     lzma_end(&strm);
-    XXH64_freeState(xxh);
+    if (xxh) XXH64_freeState(xxh);
     return ok;
 }
 
@@ -1219,34 +1237,39 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
     out_comp_size = 0;
     out_checksum = 0;
     XXH64_state_t* xxh = XXH64_createState();
-    XXH64_reset(xxh, 0);
+    if (xxh) XXH64_reset(xxh, 0);
     bool ok = true;
     uint64_t total_input = 0;
 
+    bool last = false;
+    bool flushed = false;
+    ZSTD_inBuffer input = {nullptr, 0, 0};
     while (true) {
-        uint64_t max_read = std::min(static_cast<uint64_t>(in_buf.size()), input_limit - total_input);
-        size_t n = (max_read > 0) ? fread(in_buf.data(), 1, static_cast<size_t>(max_read), src_f) : 0;
-        total_input += n;
-        bool last = (n < max_read || total_input >= input_limit);
-        ZSTD_inBuffer input = {in_buf.data(), n, 0};
+        if (!flushed && input.pos == input.size) {
+            uint64_t max_read = std::min(static_cast<uint64_t>(in_buf.size()), input_limit - total_input);
+            size_t n = (max_read > 0) ? fread(in_buf.data(), 1, static_cast<size_t>(max_read), src_f) : 0;
+            total_input += n;
+            last = (n < max_read || total_input >= input_limit);
+            input = {in_buf.data(), n, 0};
+            if (last) flushed = true;
+        }
         ZSTD_outBuffer output = {out_buf.data(), out_buf.size(), 0};
 
         size_t ret = ZSTD_compressStream2(cs, &output, &input,
-                                           last ? ZSTD_e_end : ZSTD_e_continue);
+                                           flushed ? ZSTD_e_end : ZSTD_e_continue);
         if (ZSTD_isError(ret)) { ok = false; break; }
 
         if (output.pos > 0) {
-            XXH64_update(xxh, out_buf.data(), output.pos);
+            if (xxh) XXH64_update(xxh, out_buf.data(), output.pos);
             if (fwrite(out_buf.data(), 1, output.pos, dst_f) != output.pos) { ok = false; break; }
             out_comp_size += output.pos;
         }
-        if (last && ret == 0) break;
-        if (total_input >= input_limit) break;
+        if (flushed && input.pos == input.size && ret == 0) break;
     }
 
-    out_checksum = XXH64_digest(xxh);
+    out_checksum = xxh ? XXH64_digest(xxh) : 0;
     ZSTD_freeCStream(cs);
-    XXH64_freeState(xxh);
+    if (xxh) XXH64_freeState(xxh);
     return ok;
 }
 
@@ -1265,7 +1288,7 @@ static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
     out_comp_size = 0;
     out_checksum = 0;
     XXH64_state_t* xxh = XXH64_createState();
-    XXH64_reset(xxh, 0);
+    if (xxh) XXH64_reset(xxh, 0);
     bool ok = true;
     uint64_t total_input = 0;
 
@@ -1283,7 +1306,7 @@ static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
             BROTLI_BOOL r = BrotliEncoderCompressStream(bs, op, &avail_in, &next_in, &avail_out, &next_out, nullptr);
             size_t have = out_buf.size() - avail_out;
             if (have > 0) {
-                XXH64_update(xxh, out_buf.data(), have);
+                if (xxh) XXH64_update(xxh, out_buf.data(), have);
                 if (fwrite(out_buf.data(), 1, have, dst_f) != have) { ok = false; goto done_brotli; }
                 out_comp_size += have;
             }
@@ -1296,9 +1319,9 @@ static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
         if (total_input >= input_limit) break;
     }
 done_brotli:
-    out_checksum = XXH64_digest(xxh);
+    out_checksum = xxh ? XXH64_digest(xxh) : 0;
     BrotliEncoderDestroyInstance(bs);
-    XXH64_freeState(xxh);
+    if (xxh) XXH64_freeState(xxh);
     return ok;
 }
 
@@ -1442,7 +1465,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     reset_stats();
     
     int level = opts.level;
-    bool has_codec_override = (opts.codec != Codec::LZMA);  // LZMA = auto/default
+    bool has_codec_override = opts.has_codec_override;
     
     std::vector<std::string> expanded_files;
     for (const auto& in : inputs) {
@@ -1461,15 +1484,15 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     std::memcpy(h.magic, TARC_MAGIC, 4);
     h.version = TARC_VERSION;
 
-    FILE* f = fopen(arch_path.c_str(), "wb");
-    if (!f) {
+    FileGuard fg(fopen(arch_path.c_str(), "wb"));
+    if (!fg.get()) {
         res.error = TarcError::AccessDenied;
         res.message = "Cannot write archive.";
         return res;
     }
+    FILE* f = fg.get();
 
     if (fwrite(&h, sizeof(h), 1, f) != 1) {
-        fclose(f);
         res.error = TarcError::WriteFailed;
         res.message = "Failed to write header.";
         return res;
@@ -1540,7 +1563,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
             res.message = "Cancelled.";
-            fclose(f);
             return res;
         }
         
@@ -1655,7 +1677,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
-                    fclose(f);
                     return res;
                 }
                 worker_active = false;
@@ -1665,7 +1686,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                                         final_toc, res.bytes_out)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Solid flush failed.";
-                    fclose(f);
                     return res;
                 }
 
@@ -1676,7 +1696,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (!write_chunk_streaming(f, disk_path, fsize, level, stream_codec, res.bytes_out)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Streaming compression failed: " + disk_path;
-                    fclose(f);
                     return res;
                 }
 
@@ -1699,7 +1718,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
-                    fclose(f);
                     return res;
                 }
                 worker_active = false;
@@ -1709,7 +1727,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                                         final_toc, res.bytes_out)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Solid flush failed.";
-                    fclose(f);
                     return res;
                 }
 
@@ -1719,7 +1736,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Streaming STORE failed: " + disk_path;
-                    fclose(f);
                     return res;
                 }
 
@@ -1739,7 +1755,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (worker_active && !write_pending_chunk(future_chunk)) {
                         res.error = TarcError::CompressionFailed;
                         res.message = "Chunk compression failed.";
-                        fclose(f);
                         return res;
                     }
                     worker_active = false;
@@ -1749,7 +1764,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (!solid_cr.success) {
                         res.error = TarcError::CompressionFailed;
                         res.message = "Solid chunk compression failed.";
-                        fclose(f);
                         return res;
                     }
 
@@ -1757,7 +1771,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (!write_chunk(f, solid_cr.codec, solid_cr.raw_size, solid_cr.compressed_data, res.bytes_out)) {
                         res.error = TarcError::WriteFailed;
                         res.message = "Failed to write solid chunk.";
-                        fclose(f);
                         return res;
                     }
 
@@ -1808,7 +1821,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out)) {
                         res.error = TarcError::WriteFailed;
                         res.message = "Failed to write STORE chunk.";
-                        fclose(f);
                         return res;
                     }
                     data_offset += sizeof(ChunkHeader) + data.size();
@@ -1822,7 +1834,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
-                    fclose(f);
                     return res;
                 }
                 worker_active = false;
@@ -1865,7 +1876,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed (OOM).";
-                    fclose(f);
                     return res;
                 }
                 worker_active = false;
@@ -1875,7 +1885,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                                         final_toc, res.bytes_out)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Solid flush failed (OOM).";
-                    fclose(f);
                     return res;
                 }
 
@@ -1887,7 +1896,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
                         res.error = TarcError::CompressionFailed;
                         res.message = "Streaming STORE failed (OOM): " + disk_path;
-                        fclose(f);
                         return res;
                     }
                     fe.meta.offset = store_offset;
@@ -1910,7 +1918,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         if (!write_chunk_store_streaming(f, disk_path, fsize, res.bytes_out)) {
                             res.error = TarcError::CompressionFailed;
                             res.message = "Streaming STORE failed: " + disk_path;
-                            fclose(f);
                             return res;
                         }
                         fe.meta.offset = store_offset;
@@ -1939,7 +1946,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     if (worker_active && !write_pending_chunk(future_chunk)) {
         res.error = TarcError::CompressionFailed;
         res.message = "Final chunk failed.";
-        fclose(f);
         return res;
     }
     worker_active = false;
@@ -1954,7 +1960,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (!write_chunk(f, last.codec, last.raw_size, last.compressed_data, res.bytes_out)) {
             res.error = TarcError::WriteFailed;
             res.message = "Failed to write final chunk.";
-            fclose(f);
             return res;
         }
         
@@ -1972,12 +1977,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     if (fwrite(&end_mark, sizeof(end_mark), 1, f) != 1) {
         res.error = TarcError::WriteFailed;
         res.message = "Failed to write end marker.";
-        fclose(f);
         return res;
     }
     IO::write_toc(f, h, final_toc);
     fflush(f);
-    fclose(f);
     
     g_stats.bytes_in = g_stats.bytes_read;
     g_stats.bytes_out = res.bytes_out;
@@ -2106,8 +2109,8 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     res.ok = false;
     reset_stats();
 
-    FILE* f = fopen(arch_path.c_str(), "rb");
-    if (!f) {
+    FileGuard fg(fopen(arch_path.c_str(), "rb")); FILE* f = fg.get();
+    if (!fg.get()) {
         res.error = TarcError::FileNotFound;
         res.message = "Archive not found.";
         return res;
@@ -2115,14 +2118,12 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
-        fclose(f);
         res.error = TarcError::InvalidHeader;
         res.message = "Invalid header.";
         return res;
     }
 
     if (!IO::validate_archive_header(h)) {
-        fclose(f);
         if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
             res.error = TarcError::InvalidHeader;
             res.message = "Not a valid TARC archive (bad magic).";
@@ -2135,14 +2136,17 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
     std::vector<FileEntry> toc;
     if (!IO::read_toc(f, h, toc)) {
-        fclose(f);
         res.error = TarcError::CorruptedArchive;
         res.message = "Cannot read TOC.";
         return res;
     }
     
     // Seek to start of chunk data (right after header)
-    IO::tarc_fseek(f, static_cast<int64_t>(sizeof(Header)), SEEK_SET);
+    if (IO::tarc_fseek(f, static_cast<int64_t>(sizeof(Header)), SEEK_SET) != 0) {
+        res.error = TarcError::CorruptedArchive;
+        res.message = "Failed to seek to chunk data.";
+        return res;
+    }
     
     std::vector<char> current_block;
     size_t block_pos = 0;
@@ -2157,7 +2161,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         std::error_code ec;
         fs::create_directories(out_dir, ec);
         if (ec) {
-            fclose(f);
             res.error = TarcError::AccessDenied;
             res.message = "Cannot create output directory: " + opts.output_dir;
             return res;
@@ -2175,7 +2178,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         if (check_cancelled()) {
             res.error = TarcError::Cancelled;
             res.message = "Cancelled.";
-            fclose(f);
             return res;
         }
         
@@ -2205,7 +2207,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     break;
                 }
                 if (err != TarcError::None) {
-                    fclose(f);
                     res.error = err;
                     res.message = "Chunk read failed.";
                     return res;
@@ -2223,7 +2224,24 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         // BUG FIX #2: File vuoti non hanno chunk su disco, salta lettura
         if (fe.meta.orig_size == 0) {
-            // File vuoto: nessun dato da verificare, conta come processato
+            if (!opts.test_only) {
+                std::string safe_path = IO::sanitize_extract_path(fe.name);
+                if (!safe_path.empty()) {
+                    std::string full_path = safe_path;
+                    if (!opts.output_dir.empty()) {
+                        std::string dir = opts.output_dir;
+                        std::replace(dir.begin(), dir.end(), '\\', '/');
+                        if (!dir.empty() && dir.back() != '/') dir += '/';
+                        full_path = dir + safe_path;
+                    }
+                    fs::path p(full_path);
+                    if (p.has_parent_path()) {
+                        std::error_code ec;
+                        fs::create_directories(p.parent_path(), ec);
+                    }
+                    std::ofstream out(full_path, std::ios::binary);
+                }
+            }
             g_stats.files_processed++;
             continue;
         }
@@ -2270,7 +2288,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             if (safe_path.empty()) {
                 cleanup_vstate();
                 report_warning("Path traversal blocked: " + fe.name);
-                fclose(f);
                 res.error = TarcError::PathTraversal;
                 res.message = "Unsafe path in archive: " + fe.name;
                 return res;
@@ -2297,7 +2314,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
             if (err != TarcError::None) {
                 cleanup_vstate();
-                fclose(f);
                 res.error = err;
                 res.message = "Chunk read failed.";
                 return res;
@@ -2316,7 +2332,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     out_file.open(full_output_path, std::ios::binary);
                     if (!out_file) {
                         cleanup_vstate();
-                        fclose(f);
                         res.error = TarcError::AccessDenied;
                         res.message = "Failed to write: " + full_output_path;
                         return res;
@@ -2326,7 +2341,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 out_file.write(current_block.data() + block_pos, to_consume);
                 if (!out_file) {
                     cleanup_vstate();
-                    fclose(f);
                     res.error = TarcError::WriteFailed;
                     res.message = "Write failed: " + full_output_path;
                     return res;
@@ -2359,7 +2373,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             uint64_t extracted_hash = XXH64_digest(vstate);
             cleanup_vstate();
             if (extracted_hash != fe.meta.xxhash) {
-                fclose(f);
                 res.error = TarcError::IntegrityCheckFailed;
                 res.message = "Integrity check failed: " + fe.name;
                 return res;
@@ -2371,7 +2384,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         res.bytes_out += fe.meta.orig_size;
         g_stats.files_processed++;
     }
-    fclose(f);
     if (end_marker_hit && g_stats.files_processed < expected_real_files) {
         res.ok = false;
         res.error = TarcError::CorruptedArchive;
@@ -2391,27 +2403,30 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     TarcResult res;
     res.ok = false;
     
-    FILE* f = fopen(arch_path.c_str(), "rb");
-    if (!f) {
+    FileGuard fg(fopen(arch_path.c_str(), "rb"));
+    if (!fg.get()) {
         res.error = TarcError::FileNotFound;
         res.message = "Archive not found.";
         return res;
     }
+    FILE* f = fg.get();
     
     if (offset > 0) {
-        IO::tarc_fseek(f, static_cast<int64_t>(offset), SEEK_SET);
+        if (IO::tarc_fseek(f, static_cast<int64_t>(offset), SEEK_SET) != 0) {
+            res.error = TarcError::CorruptedArchive;
+            res.message = "Failed to seek in archive.";
+            return res;
+        }
     }
     
     Header h;
     if (fread(&h, sizeof(h), 1, f) != 1) {
-        fclose(f);
         res.error = TarcError::InvalidHeader;
         res.message = "Invalid header.";
         return res;
     }
 
     if (!IO::validate_archive_header(h)) {
-        fclose(f);
         if (std::memcmp(h.magic, TARC_MAGIC, 4) != 0) {
             res.error = TarcError::InvalidHeader;
             res.message = "Not a valid TARC archive (bad magic).";
@@ -2425,7 +2440,6 @@ TarcResult list(const std::string& arch_path, size_t offset) {
     std::vector<FileEntry> toc;
     h.toc_offset += offset;
     if (!IO::read_toc(f, h, toc)) {
-        fclose(f);
         res.error = TarcError::CorruptedArchive;
         res.message = "Cannot read TOC.";
         return res;
@@ -2440,7 +2454,6 @@ TarcResult list(const std::string& arch_path, size_t offset) {
         );
     }
     
-    fclose(f);
     res.ok = true;
     res.message = "Listed " + std::to_string(toc.size()) + " files.";
     return res;

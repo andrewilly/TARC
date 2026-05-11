@@ -155,8 +155,9 @@ struct CompressOptions {
     bool solid_mode = true;
     bool sfx_requested = false;
     bool verify = true;
+    bool has_codec_override = false;
     size_t chunk_size = 256 * 1024 * 1024;
-    Codec codec = Codec::LZMA;  // FEATURE #6: codec override (LZMA = auto)
+    Codec codec = Codec::LZMA;
 };
 
 struct ExtractOptions {

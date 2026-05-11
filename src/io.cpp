@@ -13,6 +13,8 @@
 #ifdef _WIN32
     #define NOMINMAX
     #include <windows.h>
+#else
+    #include <sys/time.h>
 #endif
 
 #ifdef __APPLE__
@@ -427,17 +429,21 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
         }
         out.close();
 
-        if (out.good()) {
-            try {
+        if (!out.good()) return false;
+
+        try {
 #ifdef _WIN32
-                auto file_time = fs::file_time_type(std::chrono::seconds(timestamp));
-                fs::last_write_time(safe_path, file_time);
+            auto file_time = fs::file_time_type(std::chrono::seconds(timestamp));
+            fs::last_write_time(safe_path, file_time);
 #else
-                // Su POSIX usa utime/utimes per timestamp
-                (void)timestamp;
+            struct timeval tv[2];
+            tv[0].tv_sec = 0;
+            tv[0].tv_usec = 0;
+            tv[1].tv_sec = static_cast<time_t>(timestamp);
+            tv[1].tv_usec = 0;
+            utimes(safe_path.c_str(), tv);
 #endif
-            } catch (...) {
-            }
+        } catch (...) {
         }
 
         return true;

@@ -214,6 +214,7 @@ static int run_command(const Command& cmd) {
             copts.level = cmd.level;
             if (cmd.has_codec_override) {
                 copts.codec = cmd.codec_override;
+                copts.has_codec_override = true;
             }
             auto res = Engine::compress(arch, cmd.files, copts);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
