@@ -15,8 +15,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # --- JOB WINDOWS ---
   build-windows:
-    name: Build on windows-latest
+    name: Build on Windows
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -36,9 +37,11 @@ jobs:
           name: tarc-windows
           path: build/tarc.exe
 
+  # --- JOB MACOS (INTEL) ---
   build-macos:
-    name: Build on macos-latest
-    runs-on: macos-latest
+    name: Build on macOS (Intel)
+    # macos-13 è l'ultima versione di GitHub Actions che gira su hardware Intel x86_64
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
 
@@ -46,19 +49,22 @@ jobs:
         run: brew install cmake ninja
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        # Forziamo l'architettura x86_64 per garantire la compatibilità Intel
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
 
       - name: Build
-        run: cmake --build build-intel --config Release
+        # Corretto il nome della cartella da build-intel a build per coerenza con lo step sopra
+        run: cmake --build build --config Release
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tarc-macos
+          name: tarc-macos-intel
           path: build/tarc
 
+  # --- JOB UBUNTU ---
   build-ubuntu:
-    name: Build on ubuntu-latest
+    name: Build on Ubuntu
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
