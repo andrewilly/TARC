@@ -173,7 +173,8 @@ void License::check_and_activate(bool show_full_info) {
 }
 
 bool License::is_valid(const std::string& key) {
-    if (key.empty() || key.length() < 16) return false;
+    // Prima verifica il formato, poi genera l'hash
+    if (!is_valid_key_format(key)) return false;
     
     std::string hash = hash_key(key);
     return !hash.empty() && hash.length() >= 16;

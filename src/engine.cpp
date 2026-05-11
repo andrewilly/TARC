@@ -625,14 +625,15 @@ bool decompress_lz4(const std::vector<char>& compressed, std::vector<char>& deco
     );
     
     if (dec_size < 0) {
-        // Buffer troppo piccolo: ritentare con dimensione doppia
-        if (dst_capacity > 0 && static_cast<size_t>(dst_capacity) == decompressed.size()) {
+        // Buffer troppo piccolo: ritentare con dimensione doppia (fino a 8 tentativi)
+        for (int attempt = 0; attempt < 8; ++attempt) {
             dst_capacity *= 2;
             decompressed.resize(static_cast<size_t>(dst_capacity));
             dec_size = LZ4_decompress_safe(
                 compressed.data(), decompressed.data(),
                 src_size, dst_capacity
             );
+            if (dec_size >= 0) break;
         }
         if (dec_size < 0) return false;
     }
@@ -1129,7 +1130,8 @@ static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& soli
 
 // Streaming LZMA2 — memory costante (~128MB encoder)
 static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
-                                   uint64_t& out_comp_size, uint64_t& out_checksum) {
+                                   uint64_t& out_comp_size, uint64_t& out_checksum,
+                                   uint64_t input_limit = UINT64_MAX) {
     lzma_options_lzma opt;
     uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
     if (level >= 7) preset |= LZMA_PRESET_EXTREME;
@@ -1158,12 +1160,18 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
     XXH64_state_t* xxh = XXH64_createState();
     XXH64_reset(xxh, 0);
     bool ok = true;
+    uint64_t total_input = 0;
 
     while (true) {
         if (strm.avail_in == 0 && action == LZMA_RUN) {
-            size_t n = fread(in_buf.data(), 1, in_buf.size(), src_f);
-            if (n == 0) { action = LZMA_FINISH; }
-            else { strm.next_in = in_buf.data(); strm.avail_in = n; }
+            uint64_t max_read = std::min(static_cast<uint64_t>(in_buf.size()), input_limit - total_input);
+            if (max_read == 0) { action = LZMA_FINISH; }
+            else {
+                size_t n = fread(in_buf.data(), 1, static_cast<size_t>(max_read), src_f);
+                total_input += n;
+                if (n == 0 || total_input >= input_limit) { action = LZMA_FINISH; }
+                else { strm.next_in = in_buf.data(); strm.avail_in = n; }
+            }
         }
         strm.next_out = out_buf.data();
         strm.avail_out = out_buf.size();
@@ -1186,7 +1194,8 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
 
 // Streaming ZSTD — memory costante
 static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
-                                  uint64_t& out_comp_size, uint64_t& out_checksum) {
+                                  uint64_t& out_comp_size, uint64_t& out_checksum,
+                                  uint64_t input_limit = UINT64_MAX) {
     ZSTD_CStream* cs = ZSTD_createCStream();
     if (!cs) return false;
     int zl = std::clamp(level, 1, 19);
@@ -1212,10 +1221,13 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
     XXH64_state_t* xxh = XXH64_createState();
     XXH64_reset(xxh, 0);
     bool ok = true;
+    uint64_t total_input = 0;
 
     while (true) {
-        size_t n = fread(in_buf.data(), 1, in_buf.size(), src_f);
-        bool last = (n < in_buf.size());
+        uint64_t max_read = std::min(static_cast<uint64_t>(in_buf.size()), input_limit - total_input);
+        size_t n = (max_read > 0) ? fread(in_buf.data(), 1, static_cast<size_t>(max_read), src_f) : 0;
+        total_input += n;
+        bool last = (n < max_read || total_input >= input_limit);
         ZSTD_inBuffer input = {in_buf.data(), n, 0};
         ZSTD_outBuffer output = {out_buf.data(), out_buf.size(), 0};
 
@@ -1229,6 +1241,7 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
             out_comp_size += output.pos;
         }
         if (last && ret == 0) break;
+        if (total_input >= input_limit) break;
     }
 
     out_checksum = XXH64_digest(xxh);
@@ -1239,7 +1252,8 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
 
 // Streaming Brotli — memory costante
 static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
-                                    uint64_t& out_comp_size, uint64_t& out_checksum) {
+                                    uint64_t& out_comp_size, uint64_t& out_checksum,
+                                    uint64_t input_limit = UINT64_MAX) {
     BrotliEncoderState* bs = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
     if (!bs) return false;
     int quality = std::clamp(level, 0, 11);
@@ -1253,10 +1267,13 @@ static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
     XXH64_state_t* xxh = XXH64_createState();
     XXH64_reset(xxh, 0);
     bool ok = true;
+    uint64_t total_input = 0;
 
     while (true) {
-        size_t avail_in = fread(in_buf.data(), 1, in_buf.size(), src_f);
-        bool last = (avail_in < in_buf.size());
+        uint64_t max_read = std::min(static_cast<uint64_t>(in_buf.size()), input_limit - total_input);
+        size_t avail_in = (max_read > 0) ? fread(in_buf.data(), 1, static_cast<size_t>(max_read), src_f) : 0;
+        total_input += avail_in;
+        bool last = (avail_in < max_read || total_input >= input_limit);
         BrotliEncoderOperation op = last ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_PROCESS;
         const uint8_t* next_in = in_buf.data();
 
@@ -1276,6 +1293,7 @@ static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
             break;
         }
         if (last) break;
+        if (total_input >= input_limit) break;
     }
 done_brotli:
     out_checksum = XXH64_digest(xxh);
@@ -1295,98 +1313,114 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
     FILE* src_f = fopen(source_path.c_str(), "rb");
     if (!src_f) return false;
 
-    // Calcola xxHash del file originale (per ChunkHeader checksum)
-    uint64_t cksum = 0;
-    XXH64_state_t* xxh = XXH64_createState();
-    if (xxh) XXH64_reset(xxh, 0);
-
-    // Scrivi placeholder header (seek-back dopo)
-    int64_t hdr_pos = IO::tarc_ftell(archive_f);
-    if (hdr_pos == -1) { fclose(src_f); if (xxh) XXH64_freeState(xxh); return false; }
-
-    ChunkHeader placeholder = {0, 0, 0, 0};
-    if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) {
-        fclose(src_f); if (xxh) XXH64_freeState(xxh); return false;
-    }
-
-    // Copia dati da sorgente ad archivio, calcolando xxHash
-    const size_t BUF = 1024 * 1024;  // 1MB buffer
+    const size_t BUF = 1024 * 1024;
     std::vector<char> buf(BUF);
     uint64_t remaining = source_size;
     bool ok = true;
 
+    // Splitta file > UINT32_MAX in chunk multipli per non troncare raw_size
     while (remaining > 0 && ok) {
-        size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BUF)));
-        size_t nread = fread(buf.data(), 1, to_read, src_f);
-        if (nread != to_read) { ok = false; break; }
-        if (xxh) XXH64_update(xxh, buf.data(), nread);
-        if (fwrite(buf.data(), 1, nread, archive_f) != nread) { ok = false; break; }
-        remaining -= nread;
+        uint32_t chunk_size = static_cast<uint32_t>(
+            std::min(remaining, static_cast<uint64_t>(UINT32_MAX))
+        );
+
+        // Calcola xxHash per questo chunk
+        uint64_t cksum = 0;
+        XXH64_state_t* xxh = XXH64_createState();
+        if (xxh) XXH64_reset(xxh, 0);
+
+        int64_t hdr_pos = IO::tarc_ftell(archive_f);
+        if (hdr_pos == -1) { fclose(src_f); if (xxh) XXH64_freeState(xxh); return false; }
+
+        ChunkHeader placeholder = {0, 0, 0, 0};
+        if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) {
+            fclose(src_f); if (xxh) XXH64_freeState(xxh); return false;
+        }
+
+        uint64_t chunk_remaining = chunk_size;
+        while (chunk_remaining > 0 && ok) {
+            size_t to_read = static_cast<size_t>(std::min(chunk_remaining, static_cast<uint64_t>(BUF)));
+            size_t nread = fread(buf.data(), 1, to_read, src_f);
+            if (nread != to_read) { ok = false; break; }
+            if (xxh) XXH64_update(xxh, buf.data(), nread);
+            if (fwrite(buf.data(), 1, nread, archive_f) != nread) { ok = false; break; }
+            chunk_remaining -= nread;
+        }
+
+        if (xxh) { cksum = XXH64_digest(xxh); XXH64_freeState(xxh); }
+        if (!ok) { fclose(src_f); return false; }
+
+        ChunkHeader hdr = {
+            static_cast<uint32_t>(Codec::STORE),
+            chunk_size,
+            chunk_size,
+            cksum
+        };
+        if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) { fclose(src_f); return false; }
+        if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) { fclose(src_f); return false; }
+        if (IO::tarc_fseek(archive_f, 0, SEEK_END) != 0) { fclose(src_f); return false; }
+
+        bytes_out += chunk_size;
+        remaining -= chunk_size;
     }
 
     fclose(src_f);
-    if (xxh) { cksum = XXH64_digest(xxh); XXH64_freeState(xxh); }
-    if (!ok) return false;
-
-    // Seek-back e scrivi il ChunkHeader corretto
-    uint32_t raw_sz = static_cast<uint32_t>(source_size > UINT32_MAX ? 0 : source_size);
-    uint32_t comp_sz = raw_sz;  // STORE: raw == comp
-    ChunkHeader hdr = {
-        static_cast<uint32_t>(Codec::STORE),
-        raw_sz,
-        comp_sz,
-        cksum
-    };
-    if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) return false;
-    if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) return false;
-    if (IO::tarc_fseek(archive_f, 0, SEEK_END) != 0) return false;
-
-    bytes_out += source_size;
-    return true;
+    return ok;
 }
 
 // Scrive un chunk usando compressione streaming (seek-back per ChunkHeader)
+// Per file > UINT32_MAX, splitta in chunk multipli raw_size <= UINT32_MAX
 static bool write_chunk_streaming(FILE* archive_f, const std::string& source_path,
-                                   uintmax_t source_size, int level, Codec codec,
-                                   uint64_t& bytes_out) {
-    int64_t hdr_pos = IO::tarc_ftell(archive_f);
-    if (hdr_pos == -1) return false;
-
-    ChunkHeader placeholder = {0, 0, 0, 0};
-    if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) return false;
-
-    FILE* src_f = fopen(source_path.c_str(), "rb");
-    if (!src_f) return false;
-
+                                    uintmax_t source_size, int level, Codec codec,
+                                    uint64_t& bytes_out) {
     // LZ4 non ha streaming buono → fallback ZSTD
     Codec actual = codec;
     if (codec == Codec::LZ4) actual = Codec::ZSTD;
 
-    uint64_t csz = 0, cksum = 0;
-    bool ok = false;
-    switch (actual) {
-        case Codec::LZMA: ok = stream_compress_lzma2(src_f, archive_f, level, csz, cksum); break;
-        case Codec::ZSTD: ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum); break;
-        case Codec::BR:   ok = stream_compress_brotli(src_f, archive_f, level, csz, cksum); break;
-        default:          ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum); actual = Codec::ZSTD; break;
+    FILE* src_f = fopen(source_path.c_str(), "rb");
+    if (!src_f) return false;
+
+    uint64_t remaining = source_size;
+    bool ok = true;
+
+    while (remaining > 0) {
+        uint32_t segment_raw = static_cast<uint32_t>(
+            std::min(remaining, static_cast<uint64_t>(UINT32_MAX))
+        );
+
+        int64_t hdr_pos = IO::tarc_ftell(archive_f);
+        if (hdr_pos == -1) { fclose(src_f); return false; }
+
+        ChunkHeader placeholder = {0, 0, 0, 0};
+        if (fwrite(&placeholder, sizeof(placeholder), 1, archive_f) != 1) { fclose(src_f); return false; }
+
+        uint64_t csz = 0, cksum = 0;
+        switch (actual) {
+            case Codec::LZMA: ok = stream_compress_lzma2(src_f, archive_f, level, csz, cksum, segment_raw); break;
+            case Codec::ZSTD: ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum, segment_raw); break;
+            case Codec::BR:   ok = stream_compress_brotli(src_f, archive_f, level, csz, cksum, segment_raw); break;
+            default:          ok = stream_compress_zstd(src_f, archive_f, level, csz, cksum, segment_raw); actual = Codec::ZSTD; break;
+        }
+        if (!ok) { fclose(src_f); return false; }
+
+        int64_t end_pos = IO::tarc_ftell(archive_f);
+        if (end_pos == -1) { fclose(src_f); return false; }
+        if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) { fclose(src_f); return false; }
+
+        ChunkHeader hdr = {
+            static_cast<uint32_t>(actual),
+            segment_raw,
+            static_cast<uint32_t>(csz > UINT32_MAX ? UINT32_MAX : csz),
+            cksum
+        };
+        if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) { fclose(src_f); return false; }
+        if (IO::tarc_fseek(archive_f, end_pos, SEEK_SET) != 0) { fclose(src_f); return false; }
+
+        bytes_out += csz;
+        remaining -= segment_raw;
     }
+
     fclose(src_f);
-    if (!ok) return false;
-
-    int64_t end_pos = IO::tarc_ftell(archive_f);
-    if (end_pos == -1) return false;
-    if (IO::tarc_fseek(archive_f, hdr_pos, SEEK_SET) != 0) return false;
-
-    ChunkHeader hdr = {
-        static_cast<uint32_t>(actual),
-        static_cast<uint32_t>(source_size > UINT32_MAX ? 0 : source_size),
-        static_cast<uint32_t>(csz > UINT32_MAX ? 0 : csz),
-        cksum
-    };
-    if (fwrite(&hdr, sizeof(hdr), 1, archive_f) != 1) return false;
-    if (IO::tarc_fseek(archive_f, end_pos, SEEK_SET) != 0) return false;
-
-    bytes_out += csz;
     return true;
 }
 
@@ -2155,15 +2189,22 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             if (fe.meta.is_duplicate) continue;
             // BUG FIX #2: File vuoti (orig_size==0) non hanno chunk su disco
             if (fe.meta.orig_size == 0) continue;
-            TarcError err = read_next_block(f, current_block, block_pos);
-            if (err == TarcError::CorruptedArchive) break;
-            if (err != TarcError::None) {
-                fclose(f);
-                res.error = err;
-                res.message = "Chunk read failed.";
-                return res;
+            // Salta TUTTI i chunk per questo file (potenzialmente multi-chunk se >4GB)
+            size_t remaining_skip = static_cast<size_t>(fe.meta.orig_size);
+            while (remaining_skip > 0) {
+                TarcError err = read_next_block(f, current_block, block_pos);
+                if (err == TarcError::CorruptedArchive) goto done_extract_files;
+                if (err != TarcError::None) {
+                    fclose(f);
+                    res.error = err;
+                    res.message = "Chunk read failed.";
+                    return res;
+                }
+                size_t available = current_block.size() - block_pos;
+                size_t to_skip = std::min(remaining_skip, available);
+                remaining_skip -= to_skip;
+                block_pos += to_skip;
             }
-            block_pos += fe.meta.orig_size;
             continue;
         }
 
@@ -2174,17 +2215,6 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             // File vuoto: nessun dato da verificare, conta come processato
             g_stats.files_processed++;
             continue;
-        }
-
-        {
-            TarcError err = read_next_block(f, current_block, block_pos);
-            if (err == TarcError::CorruptedArchive) break;
-            if (err != TarcError::None) {
-                fclose(f);
-                res.error = err;
-                res.message = "Chunk read failed.";
-                return res;
-            }
         }
 
         std::string final_path = fe.name;
@@ -2208,9 +2238,26 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             final_path = filename;
         }
 
+        // Lettura potenzialmente multi-chunk del file
+        size_t bytes_remaining = static_cast<size_t>(fe.meta.orig_size);
+
+        XXH64_state_t* vstate = nullptr;
+        if (opts.verify && fe.meta.xxhash != 0) {
+            vstate = XXH64_createState();
+            if (vstate) XXH64_reset(vstate, 0);
+        }
+
+        auto cleanup_vstate = [&]() { if (vstate) XXH64_freeState(vstate); };
+
+        // Determina path di output (solo per test_only=false)
+        std::string full_output_path;
+        std::ofstream out_file;
+        bool file_written = false;
+
         if (!opts.test_only) {
             std::string safe_path = IO::sanitize_extract_path(final_path);
             if (safe_path.empty()) {
+                cleanup_vstate();
                 report_warning("Path traversal blocked: " + fe.name);
                 fclose(f);
                 res.error = TarcError::PathTraversal;
@@ -2218,8 +2265,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 return res;
             }
 
-            // FEATURE #4: preponi output_dir se specificato
-            std::string full_output_path = safe_path;
+            full_output_path = safe_path;
             if (!opts.output_dir.empty()) {
                 std::string dir = opts.output_dir;
                 std::replace(dir.begin(), dir.end(), '\\', '/');
@@ -2228,90 +2274,91 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                 }
                 full_output_path = dir + safe_path;
             }
+        }
 
-            if (!IO::write_file_to_disk(full_output_path,
-                                   current_block.data() + block_pos,
-                                   static_cast<size_t>(fe.meta.orig_size),
-                                   fe.meta.timestamp, opts.overwrite)) {
-                if (IO::file_exists(full_output_path)) {
-                    res.error = TarcError::AccessDenied;
-                    res.message = "File exists (use --force): " + full_output_path;
-                } else {
-                    res.error = TarcError::AccessDenied;
-                    res.message = "Failed to write: " + full_output_path;
-                }
+        // Legge chunk finche' non abbiamo tutto il file
+        while (bytes_remaining > 0) {
+            TarcError err = read_next_block(f, current_block, block_pos);
+            if (err == TarcError::CorruptedArchive) {
+                cleanup_vstate();
+                goto done_extract_files;
+            }
+            if (err != TarcError::None) {
+                cleanup_vstate();
                 fclose(f);
+                res.error = err;
+                res.message = "Chunk read failed.";
                 return res;
             }
 
-            // BUG FIX #14: Verifica bounds prima dell'accesso ai dati del blocco.
-            // Se block_pos + orig_size > block.size(), i dati sono corrotti o il blocco
-            // e' stato troncato, causando lettura fuori limite e hash errato.
-            if (block_pos + static_cast<size_t>(fe.meta.orig_size) > current_block.size()) {
-                fclose(f);
-                res.error = TarcError::CorruptedArchive;
-                res.message = "Block overrun: " + fe.name
-                    + " (need " + std::to_string(fe.meta.orig_size) + " bytes at offset "
-                    + std::to_string(block_pos) + ", block has "
-                    + std::to_string(current_block.size()) + " bytes)";
-                return res;
-            }
+            size_t available = current_block.size() - block_pos;
+            size_t to_consume = std::min(bytes_remaining, available);
 
-            // SEC-006: Verifica integrita' xxHash del file estratto
-            if (opts.verify && fe.meta.xxhash != 0) {
-                XXH64_state_t* const vstate = XXH64_createState();
-                if (vstate) {
-                    XXH64_reset(vstate, 0);
-                    XXH64_update(vstate, current_block.data() + block_pos,
-                                 static_cast<size_t>(fe.meta.orig_size));
-                    uint64_t extracted_hash = XXH64_digest(vstate);
-                    XXH64_freeState(vstate);
-
-                    if (extracted_hash != fe.meta.xxhash) {
-                        report_warning("XXH64 mismatch: " + fe.name);
+            if (!opts.test_only && to_consume > 0) {
+                if (!file_written) {
+                    fs::path p(full_output_path);
+                    if (p.has_parent_path()) {
+                        std::error_code ec;
+                        fs::create_directories(p.parent_path(), ec);
+                    }
+                    out_file.open(full_output_path, std::ios::binary);
+                    if (!out_file) {
+                        cleanup_vstate();
                         fclose(f);
-                        res.error = TarcError::IntegrityCheckFailed;
-                        res.message = "Checksum mismatch: " + fe.name;
+                        res.error = TarcError::AccessDenied;
+                        res.message = "Failed to write: " + full_output_path;
                         return res;
                     }
+                    file_written = true;
+                }
+                out_file.write(current_block.data() + block_pos, to_consume);
+                if (!out_file) {
+                    cleanup_vstate();
+                    fclose(f);
+                    res.error = TarcError::WriteFailed;
+                    res.message = "Write failed: " + full_output_path;
+                    return res;
                 }
             }
-        } else {
-            // BUG FIX #14: bounds check anche per modalita' test
-            if (block_pos + static_cast<size_t>(fe.meta.orig_size) > current_block.size()) {
-                fclose(f);
-                res.error = TarcError::CorruptedArchive;
-                res.message = "Block overrun: " + fe.name
-                    + " (need " + std::to_string(fe.meta.orig_size) + " bytes at offset "
-                    + std::to_string(block_pos) + ", block has "
-                    + std::to_string(current_block.size()) + " bytes)";
-                return res;
+
+            if (vstate) {
+                XXH64_update(vstate, current_block.data() + block_pos, to_consume);
             }
 
-            // SEC-006: Verifica integrita' in modalita' test
-            if (opts.verify && fe.meta.xxhash != 0) {
-                XXH64_state_t* const vstate = XXH64_createState();
-                if (vstate) {
-                    XXH64_reset(vstate, 0);
-                    XXH64_update(vstate, current_block.data() + block_pos,
-                                 static_cast<size_t>(fe.meta.orig_size));
-                    uint64_t extracted_hash = XXH64_digest(vstate);
-                    XXH64_freeState(vstate);
+            bytes_remaining -= to_consume;
+            block_pos += to_consume;
+        }
 
-                    if (extracted_hash != fe.meta.xxhash) {
-                        fclose(f);
-                        res.error = TarcError::IntegrityCheckFailed;
-                        res.message = "Integrity check failed: " + fe.name;
-                        return res;
-                    }
-                }
+        // Chiude file e imposta timestamp
+        if (file_written) {
+            out_file.close();
+            if (fe.meta.timestamp != 0) {
+                try {
+                    auto ft = fs::file_time_type(std::chrono::seconds(
+                        static_cast<time_t>(fe.meta.timestamp)));
+                    fs::last_write_time(full_output_path, ft);
+                } catch (...) {}
             }
         }
-        
+
+        // Verifica integrita' xxHash
+        if (vstate) {
+            uint64_t extracted_hash = XXH64_digest(vstate);
+            cleanup_vstate();
+            if (extracted_hash != fe.meta.xxhash) {
+                fclose(f);
+                res.error = TarcError::IntegrityCheckFailed;
+                res.message = "Integrity check failed: " + fe.name;
+                return res;
+            }
+        } else {
+            cleanup_vstate();
+        }
+
         res.bytes_out += fe.meta.orig_size;
-        block_pos += fe.meta.orig_size;
         g_stats.files_processed++;
     }
+done_extract_files:
     
     fclose(f);
     res.ok = true;
