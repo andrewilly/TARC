@@ -1321,7 +1321,7 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
     // Splitta file > UINT32_MAX in chunk multipli per non troncare raw_size
     while (remaining > 0 && ok) {
         uint32_t chunk_size = static_cast<uint32_t>(
-            std::min(remaining, static_cast<uint64_t>(UINT32_MAX))
+            std::min(remaining, static_cast<uint64_t>(TARC_MAX_CHUNK_SIZE))
         );
 
         // Calcola xxHash per questo chunk
@@ -1385,7 +1385,7 @@ static bool write_chunk_streaming(FILE* archive_f, const std::string& source_pat
 
     while (remaining > 0) {
         uint32_t segment_raw = static_cast<uint32_t>(
-            std::min(remaining, static_cast<uint64_t>(UINT32_MAX))
+            std::min(remaining, static_cast<uint64_t>(TARC_MAX_CHUNK_SIZE))
         );
 
         int64_t hdr_pos = IO::tarc_ftell(archive_f);
