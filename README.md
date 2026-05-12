@@ -1,151 +1,180 @@
-# TARC STRIKE v2.10_OpenAi
+# TARC STRIKE
 
-Advanced Solid Compression Archiver
+**T**he **A**dvanced **R**eal-time **C**ompressor — Solid-block compression archiver with native LZMA2, ZSTD, Brotli, LZ4/HC, and STORE codecs.
 
-## 🚀 Caratteristiche Principali
+[![CI](https://github.com/anomalyco/TARC/actions/workflows/main.yml/badge.svg)](https://github.com/anomalyco/TARC/actions/workflows/main.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 
-- **Solid Block Compression** - Chunk da 1GB per massimo ratio
-- **Deduplicazione** - XXH64 per identificare file identici
-- **Smart Codec Selection** - LZMA/ZSTD/LZ4/Brotli/STORE automatico
-- **SFX Archive** - Autoestrattore integrato (tarc.exe e' sia archiviatore che stub)
-- **Windows Native I/O** - API native per migliori performance
-- **Multi-threaded Compression** - Compressione parallela chunk
-- **Wildcard Support** - Gestione `*.ext`, `nome.*`, `cartella\*.ext` su Windows
-- **SIMD Accelerated** - AVX2/SSE4.2/NEON per copia buffer e checksum
-- **Path Traversal Protection** - Sicurezza Zip Slip integrata
-- **Streaming Compression** - File grandi compressi senza caricare in RAM
+---
 
-## 📋 Comandi
+## Features
+
+| Capability | Description |
+|---|---|
+| **5 codecs** | LZMA2, ZSTD, Brotli, LZ4/HC, STORE — per-file auto-select or override |
+| **Solid blocks** | Up to 1 GB chunks for maximum ratio |
+| **Deduplication** | XXH64 content hash — identical files stored once |
+| **Self-extracting** | `--sfx` creates standalone .exe archives |
+| **Streaming** | Files larger than RAM compress without loading fully |
+| **SIMD** | AVX2, SSE4.2, NEON for buffer ops and checksums |
+| **Anti-OOM** | Auto-detects RAM, caps dictionary/window/buffer |
+| **Integrity** | xxHash checksums on every chunk, verified on extract |
+| **Security** | Path traversal protection, filename validation |
+| **Portable** | macOS (Intel + Apple Silicon), Linux, Windows |
+
+## Quick Start
 
 ```bash
-# Crea archivio (level 1-9, default 3)
-tarc -c[N] archivio file...
-tarc -cbest archivio file...
+# Create an archive
+tarc -c7 backup.strk docs/ images/
 
-# Estrai
-tarc -x archivio
-tarc -x archivio "*.txt"
+# Extract everything
+tarc -x backup.strk
 
-# Elenca contenuto
-tarc -l archivio
+# Extract only .txt files
+tarc -x backup.strk "*.txt"
 
-# Testa integrità
-tarc -t archivio
+# List contents
+tarc -l backup.strk
+
+# Test integrity
+tarc -t backup.strk
 ```
 
-## ⚙️ Opzioni
+## Install
 
-| Opzione | Descrizione |
-|--------|-----------|
-| `--sfx` | Crea archivio autoestraente (.exe) |
-| `--flat` | Estrai senza percorsi |
-| `--force` | Sovrascrivi file esistenti |
-
-## 🏗️ Build
-
-### CMake (consigliato)
+### macOS (Homebrew)
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target tarc
+# Coming soon: brew install tarc
 ```
 
-### Makefile (macOS/Linux)
+### Linux (deb/rpm)
 ```bash
-make              # Compila tarc (release)
-make test         # Compila ed esegue i test
-make sfx          # Compila anche lo stub SFX
-make debug        # Compila con simboli di debug
+# Coming soon: apt install tarc / dnf install tarc
 ```
 
-### Windows (MSVC)
+### Download binary
+Get pre-built binaries from the [Releases page](https://github.com/anomalyco/TARC/releases):
+
+| Platform | File |
+|---|---|
+| Linux x86_64 | `tarc-<version>-linux-x86_64` |
+| macOS Universal | `tarc-<version>-macos-universal` |
+| Windows x64 | `tarc-<version>-windows-x64.exe` |
+
+### Build from source
+
+**Requires:** libzstd, liblz4, liblzma, libbrotli (enc+dec+common), xxhash (bundled)
+
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -A x64
-cmake --build build --config Release --target tarc
+# macOS
+brew install zstd lz4 xz brotli
+make
+
+# Linux (Debian/Ubuntu)
+sudo apt install libzstd-dev liblz4-dev liblzma-dev libbrotli-dev
+make
+
+# Windows (MinGW)
+pacman -S mingw-w64-x86_64-{zstd,lz4,xz,brotli}
+make
 ```
 
-L'eseguibile sarà in `build/tarc` (o `build/Release/tarc.exe` su Windows).
+See [docs/installation.md](docs/installation.md) for detailed instructions.
 
-## 📦 Dipendenze
-
-- liblzma (compressione LZMA)
-- zstd (supporto legacy)
-- lz4 (compressione veloce)
-- xxhash (checksum)
-
-## 📋 Struttura Progetto
+## Compression Levels
 
 ```
-tarc/
-├── include/           # Header files
-│   ├── types.h        # Tipi, error codes, Result
-│   ├── engine.h       # Motore compressione
-│   ├── io.h          # I/O archivio
-│   ├── ui.h          # Interfaccia utente
-│   └── license.h     # Gestione licenza
-├── src/             # Sorgenti
-│   ├── main.cpp      # Entry point, CLI
-│   ├── engine.cpp   # Compressione
-│   ├── io.cpp       # I/O
-│   ├── ui.cpp       # UI
-│   ├── license.cpp  # Licenza
-│   └── stub.cpp     # SFX
-└── CMakeLists.txt   # Build system
+-c1  to  -c9    Balance speed and ratio
+-c10 to -c19    Extreme presets (large dictionary, btultra strategy)
+-cfast          Alias for -c1
+-cbest          Alias for -c19
 ```
 
-## 🔧 Novità v2.10_OpenAi
+Default level is **7**.
 
-### Per-File Progress Output
-- **Compressione** - Ogni file processato mostra `[+] [CODEC] filename size ratio%`
-- **Estrazione** - Ogni file estratto mostra `[×] filename size`
-- **Deduplicazione** - File duplicati mostrano `→ DEDUP` invece del ratio
-- **Test integrità** - File verificati mostrano `[OK] filename size`
+## Codec Override
 
-### Thread Control
-- **`--threads N`** - Limita il numero di thread di compressione parallela
-- **Auto-detect** - Default: rileva automaticamente il numero di core CPU
-- **Semaphore-based** - Workers limitati senza sovraccarico del sistema
+By default TARC selects the best codec per file type. Override with:
 
-### Anti-OOM Streaming
-- **Streaming LZMA2** - Compressione a memoria costante (~128MB) per file grandi
-- **Streaming ZSTD** - Window log scalabile con limite RAM
-- **Streaming Brotli** - Quality e window size adattivi
-- **Streaming STORE** - Copia diretta da disco per file non comprimibili
+```
+--zstd          Good for mixed/binary data
+--lzma          Best ratio (default)
+--lz4           Fastest compression/decompression
+--brotli        Good for text
+--store         No compression
+```
 
-### SIMD Acceleration
-- **AVX2** - Copia buffer vettorizzata 256-bit
-- **SSE4.2/SSE2** - Fallback per CPU meno recenti
-- **NEON** - Supporto Apple Silicon ARM
-- **Runtime detection** - Auto-rileva e seleziona il percorso ottimale
+## Performance
 
-### Memory Safety
-- **MemoryManager** - Auto-detect RAM e limiti sicuri per dizionario/window/buffer
-- **LZMA2 dictionary** - Fino a 1GB, cappato alla RAM disponibile
-- **ZSTD window** - Fino a 1GB, scalabile per long-range matching
-- **Solid buffer** - Adattivo, 8MB-128MB in base alla RAM
+Benchmarked on 10 MB data (macOS x86_64, single thread):
 
-### Security
-- **Path Traversal Protection** - Blocco Zip Slip (attacchi `../` negli archivi)
-- **Filename Validation** - No null bytes, caratteri di controllo, o nomi unsafe
-- **xxHash Integrity** - Verifica checksum su ogni chunk decompresso
-- **SFX Validation** - Offset e dimensione verificati nel trailer
+| Codec | Level | Compress (MB/s) | Decompress (MB/s) | Ratio (text) |
+|---|---|---|---|---|
+| LZ4 | 1 | 33 | 26 | 99.5% |
+| LZ4 | 7 | 21 | 44 | 99.6% |
+| ZSTD | 1 | 30 | 39 | 100.0% |
+| ZSTD | 7 | 29 | 20 | 100.0% |
+| ZSTD | 19 | 16 | 24 | 100.0% |
+| Brotli | 1 | 23 | 26 | 100.0% |
+| Brotli | 7 | 26 | 31 | 100.0% |
+| LZMA2 | 1 | 14 | 25 | 100.0% |
+| LZMA2 | 7 | 4 | 33 | 100.0% |
+| LZMA2 | 19 | 5 | 24 | 100.0% |
+| STORE | — | 30 | 37 | 0.0% |
 
-### Codec Enhancements
-- **LZMA2** - Dizionario fino a 1GB vs 64MB della versione 1.x
-- **ZSTD** - Window log 23-30, strategia btultra/btultra2 ai livelli alti
-- **Brotli** - Quality 0-11, window 1MB-64MB
-- **LZ4/LZ4HC** - HC per livelli >= 4
-- **Smart CodecSelector** - Auto-scelta basata su estensione e dimensione
-- **Fallback a STORE** - Se la compressione non riduce (o OOM)
+Run the full suite: `python3 bench/benchmark.py`
 
-### SFX Enhancements
-- **Self-Extracting integrato** - tarc.exe e' sia archiviatore che stub SFX
-- **Menu interattivo** - Extract/List/Test/Help con menu numerico
-- **Modalità silenziosa** - `--extract`, `--list`, `--test` da riga di comando
-- **Temporary file cleanup** - Pulizia automatica dopo operazione
+## Documentation
 
-### Cross-Platform
-- **Windows MSVC** - Supporto sperimentale (ZSTD/LZ4 via FetchContent)
-- **macOS Intel/Apple Silicon** - Binary universale con CMake
-- **Linux** - Build con GCC/Clang
-- **C++17** - Standard moderno su tutte le piattaforme
-- **64-bit I/O** - `_fseeki64`/`fseeko` per file > 2GB
+| Resource | Description |
+|---|---|
+| [Usage Guide](docs/usage.md) | Full CLI reference with examples |
+| [Codec Guide](docs/codecs.md) | Codec details, tuning, trade-offs |
+| [Installation](docs/installation.md) | Build from source on all platforms |
+| [Format Spec](STRK_SPEC.md) | .strk archive binary format |
+| [Man Page](tarc.1) | `man tarc` |
+| [Development](docs/development.md) | Build, test, fuzz, contribute |
+
+## Project Structure
+
+```
+├── src/            # Source code
+│   ├── main.cpp    # Entry point, CLI parsing
+│   ├── engine.cpp  # Compression, decompression, codecs
+│   ├── io.cpp      # Archive I/O, TOC read/write
+│   ├── ui.cpp      # Terminal UI, progress bar
+│   └── sfx_stub.cpp # SFX self-extracting stub
+├── include/        # Headers
+├── test/           # Doctest-based test suite
+├── fuzz/           # Fuzz target + OSS-Fuzz config
+├── bench/          # Benchmark suite
+└── docs/           # Documentation website
+```
+
+## Testing
+
+```bash
+make test          # Run all 38 test cases
+make ASAN=1 test   # Compile and run with AddressSanitizer + UBSan
+make fuzz          # Build fuzz target (or: make fuzz && ./fuzz_archive seed/)
+```
+
+## Fuzzing
+
+A libFuzzer target exercises archive parsing with random data:
+
+```bash
+# With libFuzzer (LLVM Clang)
+make fuzz && ./fuzz_archive corpus/
+
+# Standalone mode (Apple Clang)
+make fuzz && ./fuzz_archive seed1.bin seed2.bin
+```
+
+OSS-Fuzz configuration is in `fuzz/ossfuzz/`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

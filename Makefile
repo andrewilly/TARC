@@ -30,8 +30,12 @@ CC       = cc
 CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic -Wno-unused-parameter -Wno-unused-variable
 CFLAGS   = -std=c11 -Wall
 
-# Release / Debug
-ifdef DEBUG
+# Release / Debug / Sanitize
+ifdef ASAN
+    CXXFLAGS += -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -DASAN
+    CFLAGS   += -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
+    LDFLAGS  += -fsanitize=address,undefined
+else ifdef DEBUG
     CXXFLAGS += -g -O0 -DDEBUG
     CFLAGS   += -g -O0
 else
@@ -112,13 +116,13 @@ SRCDIR   = src
 OBJDIR   = build
 
 C_SOURCES = $(SRCDIR)/xxhash.c
-SOURCES   = $(SRCDIR)/main.cpp $(SRCDIR)/ui.cpp $(SRCDIR)/license.cpp \
+SOURCES   = $(SRCDIR)/main.cpp $(SRCDIR)/ui.cpp \
            $(SRCDIR)/io.cpp $(SRCDIR)/engine.cpp
 
-TEST_SRC = test/tests.cpp $(SRCDIR)/ui.cpp $(SRCDIR)/license.cpp \
+TEST_SRC = test/tests.cpp $(SRCDIR)/ui.cpp \
            $(SRCDIR)/io.cpp $(SRCDIR)/engine.cpp
 
-SFX_SRC  = $(SRCDIR)/sfx_stub.cpp $(SRCDIR)/ui.cpp $(SRCDIR)/license.cpp \
+SFX_SRC  = $(SRCDIR)/sfx_stub.cpp $(SRCDIR)/ui.cpp \
            $(SRCDIR)/io.cpp $(SRCDIR)/engine.cpp
 
 OBJECTS  = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES)) \
@@ -136,7 +140,7 @@ SFX_TGT  = tarc_sfx_stub$(EXE_EXT)
 # ============================================================================
 # Build rules
 # ============================================================================
-.PHONY: all clean sfx test install info
+.PHONY: all clean sfx test install info asan ubsan
 
 all: info $(TARGET)
 
@@ -186,6 +190,54 @@ $(OBJDIR)/sfx_%.o: $(SRCDIR)/%.cpp | $(OBJDIR)
 
 $(OBJDIR)/sfx_%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+asan ubsan:
+	$(MAKE) ASAN=1 test
+
+FUZZ_TGT = fuzz_archive$(EXE_EXT)
+FUZZ_SRC = fuzz/fuzz_archive.cpp
+FUZZ_OBJ = $(OBJDIR)/fuzz_archive.o \
+           $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/fuzz_%.o,$(filter-out $(SRCDIR)/main.cpp,$(SOURCES))) \
+           $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/fuzz_%.o,$(C_SOURCES))
+
+# Check if libFuzzer is available (Apple Clang often lacks it)
+HAVE_LIBFUZZER := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=fuzzer -o /dev/null - 2>/dev/null && echo yes || echo no)
+
+.PHONY: fuzz
+fuzz: CXXFLAGS += -g -O1 -fno-omit-frame-pointer
+fuzz: CFLAGS   += -g -O1 -fno-omit-frame-pointer
+ifeq ($(HAVE_LIBFUZZER),yes)
+fuzz: CXXFLAGS += -fsanitize=fuzzer,address,undefined -D__LIBFUZZER__=1
+fuzz: CFLAGS   += -fsanitize=fuzzer,address,undefined
+fuzz: LDFLAGS  += -fsanitize=fuzzer,address,undefined
+else
+fuzz: CXXFLAGS += -fsanitize=address,undefined
+fuzz: CFLAGS   += -fsanitize=address,undefined
+fuzz: LDFLAGS  += -fsanitize=address,undefined
+endif
+fuzz: $(FUZZ_TGT)
+	@echo ""
+	@echo "  Fuzz target ready: $(FUZZ_TGT)"
+ifeq ($(HAVE_LIBFUZZER),yes)
+	@echo "  Run: ./$(FUZZ_TGT) [corpus-dir]"
+else
+	@echo "  Run: ./$(FUZZ_TGT) <seed-file> [seed-file...]"
+	@echo "  (libFuzzer not available; using standalone driver)"
+	@echo "  Install LLVM Clang for libFuzzer: brew install llvm"
+endif
+	@echo ""
+
+$(OBJDIR)/fuzz_%.o: $(SRCDIR)/%.cpp | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJDIR)/fuzz_%.o: $(SRCDIR)/%.c | $(OBJDIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJDIR)/fuzz_archive.o: fuzz/fuzz_archive.cpp | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(FUZZ_TGT): $(FUZZ_OBJ)
+	$(CXX) $(FUZZ_OBJ) -o $@ $(LDFLAGS)
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET) $(TEST_TGT) $(SFX_TGT)

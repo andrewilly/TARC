@@ -1,0 +1,5 @@
+remote_theme: pages-themes/cayman@v0.2.0
+title: TARC STRIKE
+description: The Advanced Real-time Compressor — Solid-block compression archiver
+show_downloads: true
+google_analytics:

@@ -1,0 +1,16 @@
+homepage: "https://github.com/anomalyco/TARC"
+language: c++
+primary_contact: "andrerizzo@users.noreply.github.com"
+auto_ccs:
+  - "andrerizzo@users.noreply.github.com"
+sanitizers:
+  - address
+  - undefined
+architectures:
+  - x86_64
+  - i386
+main_repo: "https://github.com/anomalyco/TARC.git"
+fuzzing_engines:
+  - libfuzzer
+  - afl
+  - honggfuzz
