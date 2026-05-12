@@ -75,7 +75,6 @@ target_include_directories(xxhash_lib PUBLIC ${xxhash_SOURCE_DIR})
 # ============================================================================
 set(TARC_CORE_SOURCES
     src/ui.cpp
-    src/license.cpp
     src/io.cpp
     src/engine.cpp
 )

@@ -1,5 +1,4 @@
 #include "ui.h"
-#include "license.h"
 #include "io.h"
 #include "engine.h"
 #include "types.h"
@@ -48,7 +47,6 @@ struct Command {
         List,
         Test,
         Help,
-        License,
         Version
     } type = None;
     
@@ -56,21 +54,22 @@ struct Command {
     bool sfx = false;
     bool flat = false;
     bool force = false;
-    bool verify = true;  // default: verify integrity
-    int threads = 0;     // 0 = auto
-    std::string output_dir;  // FEATURE #4: --output-dir
-    Codec codec_override = Codec::LZMA;  // FEATURE #6: codec override
-    bool has_codec_override = false;      // true se l'utente ha specificato --zstd/--lz4/etc.
+    bool verify = true;
+    int threads = 0;
+    std::string output_dir;
+    Codec codec_override = Codec::LZMA;
+    bool has_codec_override = false;
     std::string archive;
     std::vector<std::string> files;
     std::vector<std::string> filters;
+    std::string help_topic; // for contextual help: "create", "extract", etc.
 };
 
 static Command parse_args(int argc, char* argv[]) {
     Command cmd;
     
     if (argc < 2) {
-        cmd.type = Command::Help;
+        cmd.type = Command::None;
         return cmd;
     }
     
@@ -85,12 +84,13 @@ static Command parse_args(int argc, char* argv[]) {
         cmd.type = Command::Version;
         return cmd;
     }
-    
+
     if (arg == "--license") {
-        cmd.type = Command::License;
+        cmd.type = Command::Version;
+        cmd.help_topic = "license";
         return cmd;
     }
-    
+
     std::string prefix = arg.substr(0, 2);
     
     if (prefix == "-c") {
@@ -125,6 +125,14 @@ static Command parse_args(int argc, char* argv[]) {
     for (int i = 2; i < argc; ++i) {
         std::string val = argv[i];
         
+        if (val == "--help" || val == "-h") {
+            if (cmd.type == Command::Create) cmd.help_topic = "create";
+            else if (cmd.type == Command::Extract) cmd.help_topic = "extract";
+            else if (cmd.type == Command::List) cmd.help_topic = "list";
+            else if (cmd.type == Command::Test) cmd.help_topic = "test";
+            cmd.type = Command::Help;
+            continue;
+        }
         if (val == "--sfx") {
             cmd.sfx = true;
         } else if (val == "--flat") {
@@ -180,19 +188,6 @@ static int run_command(const Command& cmd) {
     int result = 0;
     
     switch (cmd.type) {
-        case Command::Help:
-            UI::show_help();
-            return 0;
-            
-        case Command::Version:
-            std::cout << "TARC STRIKE v2.10_OpenAi\n";
-            std::cout << "Build: " << __DATE__ << " " << __TIME__ << "\n";
-            return 0;
-            
-        case Command::License:
-            UI::show_license();
-            return 0;
-            
         case Command::Create: {
             if (cmd.archive.empty()) {
                 UI::print_error("Specify archive name.");
@@ -316,6 +311,10 @@ static int run_command(const Command& cmd) {
             UI::show_help();
             return 1;
         }
+        case Command::Help:
+        case Command::Version:
+            // handled in main() before run_command is reached
+            return 0;
     }
     
     auto elapsed = duration_cast<milliseconds>(TarcUtil::safe_now() - start);
@@ -631,23 +630,34 @@ int main(int argc, char* argv[]) {
     // ====================================================================
     // NORMAL MODE: tarc.exe come archiviatore standard
     // ====================================================================
-    bool show_license_full = false;
     Command cmd = parse_args(argc, argv);
     
-    if (cmd.type == Command::License) {
-        show_license_full = true;
-    }
-    
-    License::check_and_activate(show_license_full);
-    
-    if (cmd.type == Command::Help && argc < 2) {
-        UI::show_banner();
-        UI::show_help();
+    if (cmd.type == Command::None && argc < 2) {
+        UI::show_compact_help();
         return 0;
     }
     
-    if (cmd.type == Command::License) {
-        UI::show_license();
+    if (cmd.type == Command::Help) {
+        if (cmd.help_topic.empty()) {
+            UI::show_help();
+        } else {
+            if (cmd.help_topic == "create")   UI::show_help_create();
+            else if (cmd.help_topic == "extract")  UI::show_help_extract();
+            else if (cmd.help_topic == "list")     UI::show_help_list();
+            else if (cmd.help_topic == "test")     UI::show_help_test();
+            else UI::show_help();
+        }
+        return 0;
+    }
+    
+    if (cmd.type == Command::Version) {
+        if (cmd.help_topic == "license") {
+            std::cout << "TARC STRIKE v2.10_OpenAi\n"
+                      << "Copyright (c) 2026 Andre Willy Rizzo\n"
+                      << "Open source software — see LICENSE for details.\n";
+        } else {
+            std::cout << "TARC STRIKE v2.10_OpenAi\n";
+        }
         return 0;
     }
     

@@ -44,46 +44,6 @@
 namespace fs = std::filesystem;
 
 // ============================================================================
-// Ottieni il percorso completo dell'eseguibile corrente
-// ============================================================================
-static std::string get_self_path() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return "";
-    // Converti da wide char a UTF-8
-    int narrow_len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
-    if (narrow_len <= 0) return "";
-    std::string result(narrow_len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &result[0], narrow_len, nullptr, nullptr);
-    return result;
-#elif defined(__APPLE__)
-    // macOS: usa _NSGetExecutablePath (mach-o/dyld.h)
-    char buf[4096];
-    uint32_t buf_size = sizeof(buf);
-    if (_NSGetExecutablePath(buf, &buf_size) != 0) return "";
-    char resolved[4096];
-    if (realpath(buf, resolved) != nullptr) {
-        return std::string(resolved);
-    }
-    return std::string(buf);
-#else
-    // Linux: leggi il symlink /proc/self/exe
-    std::string result;
-    result.resize(4096);
-    ssize_t len = readlink("/proc/self/exe", &result[0], result.size());
-    if (len <= 0) return "";
-    if (static_cast<size_t>(len) >= result.size()) {
-        result.resize(len + 1);
-        len = readlink("/proc/self/exe", &result[0], result.size());
-        if (len <= 0) return "";
-    }
-    result.resize(static_cast<size_t>(len));
-    return result;
-#endif
-}
-
-// ============================================================================
 // Estrai l'archivio TARC embeddato nell'eseguibile SFX
 // ============================================================================
 static int extract_embedded(const std::string& self_path,
@@ -274,7 +234,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Ottieni il percorso dell'eseguibile stesso
-    std::string self_path = get_self_path();
+    std::string self_path = IO::get_self_path();
     if (self_path.empty()) {
         // Fallback: usa argv[0]
         self_path = argv[0];

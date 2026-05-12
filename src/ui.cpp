@@ -91,6 +91,18 @@ void show_banner() {
     std::cout << Color::DIM << "  SIMD: " << simd << Color::RESET << "\n";
 }
 
+void show_compact_help() {
+    std::cout << Color::CYAN << Color::BOLD
+              << "TARC STRIKE v2.10_OpenAi" << Color::RESET
+              << " — Advanced Solid Compression Tool\n\n";
+    std::cout << Color::BOLD << "Usage:" << Color::RESET << "\n";
+    std::cout << "  " << Color::GREEN << "tarc -c" << Color::RESET << "[level] " << Color::WHITE << "<archive> <file>..." << Color::RESET << "   Create archive\n";
+    std::cout << "  " << Color::YELLOW << "tarc -x" << Color::RESET << " " << Color::WHITE << "<archive>" << Color::RESET << " [filter]        Extract files\n";
+    std::cout << "  " << Color::CYAN << "tarc -l" << Color::RESET << " " << Color::WHITE << "<archive>" << Color::RESET << "                 List contents\n";
+    std::cout << "  " << Color::MAGENTA << "tarc -t" << Color::RESET << " " << Color::WHITE << "<archive>" << Color::RESET << "                 Test integrity\n\n";
+    std::cout << Color::DIM << "Try 'tarc --help' for full help, or 'tarc -c --help' for command-specific help.\n" << Color::RESET;
+}
+
 void show_help() {
     std::cout << Color::BOLD << "Usage: " << Color::BRIGHT_WHITE << "tarc [command] [options] archive [files...]" << Color::RESET << "\n\n";
     
@@ -99,6 +111,7 @@ void show_help() {
     std::cout << "  " << Color::YELLOW << "-x" << Color::RESET << " [filt]  Extract files (supports wildcards)\n";
     std::cout << "  " << Color::CYAN << "-l" << Color::RESET << "          List archive contents\n";
     std::cout << "  " << Color::MAGENTA << "-t" << Color::RESET << "          Test archive integrity\n";
+    std::cout << "  " << Color::DIM << "Use 'tarc -c --help' for detailed help on a specific command.\n" << Color::RESET;
     
     std::cout << "\n" << Color::BOLD << "Compression Levels:" << Color::RESET << "\n";
     std::cout << "  " << Color::GREEN << "-cbest" << Color::RESET << "    Maximum compression (level 19)\n";
@@ -130,18 +143,83 @@ void show_help() {
     std::cout << "  • Path traversal protection (Zip Slip safe)\n";
     std::cout << "  • xxHash integrity verification on extract\n";
     std::cout << "  • SIMD-accelerated buffer operations (" << SimdOpt::simd_info_string() << ")";
-    
-    std::cout << "\n" << Color::DIM << "Type 'tarc --license' for license information.\n" << Color::RESET;
+    std::cout << Color::RESET << "\n";
 }
 
-void show_license() {
-    std::cout << Color::CYAN << "═════════════════════════════════════════════════════════════════\n";
-    std::cout << "                     TARC LICENSE                        \n";
-    std::cout << "═════════════════════════════════════════════════════════════════" << Color::RESET << "\n\n";
-    std::cout << "TARC STRIKE v2.00_OpenAi\n";
-    std::cout << "Copyright (C) 2026 André Willy Rizzo\n\n";
-    std::cout << "This software is provided AS IS, without warranty of any kind.\n";
-    std::cout << Color::DIM << "TARC comes with ABSOLUTELY NO WARRANTY." << Color::RESET << "\n\n";
+void show_help_create() {
+    std::cout << Color::BOLD << "Create Archive — " << Color::BRIGHT_WHITE
+              << "tarc -c[level] <archive.strk> <file|dir>... [options]"
+              << Color::RESET << "\n\n";
+    std::cout << Color::BOLD << "Levels:" << Color::RESET << "\n";
+    std::cout << "  " << Color::GREEN << "-c1" << Color::RESET << " to " << Color::GREEN << "-c19"
+              << Color::RESET << "    Compression level (default: 7)\n";
+    std::cout << "  " << Color::GREEN << "-cbest" << Color::RESET << "               Maximum compression\n";
+    std::cout << "  " << Color::GREEN << "-cfast" << Color::RESET << "               Fastest compression\n";
+    std::cout << "  " << Color::DIM << "Levels 1-9 balance speed/ratio. Levels 10-19 use extreme presets.\n" << Color::RESET;
+    
+    std::cout << "\n" << Color::BOLD << "Codec Override:" << Color::RESET << "\n";
+    std::cout << "  " << Color::WHITE << "--zstd" << Color::RESET << "        ZSTD compression (good for mixed data)\n";
+    std::cout << "  " << Color::WHITE << "--lzma" << Color::RESET << "        LZMA2 compression (default, best ratio)\n";
+    std::cout << "  " << Color::WHITE << "--lz4" << Color::RESET << "         LZ4/LZ4HC compression (fastest)\n";
+    std::cout << "  " << Color::WHITE << "--brotli" << Color::RESET << "      Brotli compression (good for text)\n";
+    std::cout << "  " << Color::WHITE << "--store" << Color::RESET << "       No compression (store only)\n";
+    std::cout << "  " << Color::DIM << "Without override, TARC auto-selects the best codec per file type.\n" << Color::RESET;
+    
+    std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
+    std::cout << "  " << Color::WHITE << "--threads N" << Color::RESET << "   Parallel compression threads (default: auto)\n";
+    std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "         Create self-extracting .exe archive\n";
+    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "  Skip xxHash integrity verification\n";
+    
+    std::cout << "\n" << Color::BOLD << "Examples:" << Color::RESET << "\n";
+    std::cout << "  " << Color::DIM << "tarc -c7 backup.strk docs/ images/     Create with default level\n";
+    std::cout << "  tarc -c1 --lz4 fast.strk *.txt              Fast compression\n";
+    std::cout << "  tarc -cbest --sfx portable.exe src/          Max compression + SFX\n" << Color::RESET;
+}
+
+void show_help_extract() {
+    std::cout << Color::BOLD << "Extract Files — " << Color::BRIGHT_WHITE
+              << "tarc -x <archive.strk> [filter...] [options]"
+              << Color::RESET << "\n\n";
+    std::cout << Color::BOLD << "Filters:" << Color::RESET << "\n";
+    std::cout << "  " << Color::WHITE << "*.txt" << Color::RESET << "          Extract only .txt files\n";
+    std::cout << "  " << Color::WHITE << "dir/*" << Color::RESET << "          Extract files from a specific directory\n";
+    std::cout << "  " << Color::DIM << "Without filters, all files are extracted.\n" << Color::RESET;
+    
+    std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
+    std::cout << "  " << Color::WHITE << "--output-dir <path>" << Color::RESET << "  Extract to directory\n";
+    std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "          Flatten paths (no subdirectories)\n";
+    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "         Overwrite existing files\n";
+    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "  Skip xxHash integrity check\n";
+    
+    std::cout << "\n" << Color::BOLD << "Examples:" << Color::RESET << "\n";
+    std::cout << "  " << Color::DIM << "tarc -x backup.strk                     Extract all\n";
+    std::cout << "  tarc -x backup.strk \"*.cpp\" \"*.h\"         Extract sources only\n";
+    std::cout << "  tarc -x backup.strk --output-dir ./restore   Extract to directory\n" << Color::RESET;
+}
+
+void show_help_list() {
+    std::cout << Color::BOLD << "List Contents — " << Color::BRIGHT_WHITE
+              << "tarc -l <archive.strk>"
+              << Color::RESET << "\n\n";
+    std::cout << "Shows each file in the archive with its codec, size, and compression ratio.\n";
+    std::cout << "Duplicate files are marked with (DUPLICATE).\n";
+    
+    std::cout << "\n" << Color::BOLD << "Example:" << Color::RESET << "\n";
+    std::cout << "  " << Color::DIM << "tarc -l backup.strk\n" << Color::RESET;
+}
+
+void show_help_test() {
+    std::cout << Color::BOLD << "Test Integrity — " << Color::BRIGHT_WHITE
+              << "tarc -t <archive.strk>"
+              << Color::RESET << "\n\n";
+    std::cout << "Reads and decompresses all data, verifying xxHash checksums without\n";
+    std::cout << "writing any files to disk.\n";
+    
+    std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
+    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "  Skip xxHash verification (quick check only)\n";
+    
+    std::cout << "\n" << Color::BOLD << "Example:" << Color::RESET << "\n";
+    std::cout << "  " << Color::DIM << "tarc -t backup.strk\n" << Color::RESET;
 }
 
 std::string human_size(uint64_t b) {

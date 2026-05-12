@@ -46,8 +46,12 @@ namespace UI {
     void disable_vtp();
     
     void show_banner();
+    void show_compact_help();
     void show_help();
-    void show_license();
+    void show_help_create();
+    void show_help_extract();
+    void show_help_list();
+    void show_help_test();
     
     std::string human_size(uint64_t bytes);
     std::string compress_ratio(uint64_t orig, uint64_t comp);
