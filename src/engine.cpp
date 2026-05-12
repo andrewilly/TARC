@@ -16,6 +16,7 @@
 #include <functional>
 #include <fstream>
 #include <deque>
+#include <thread>
 
 #include <cmath>
 
@@ -46,6 +47,8 @@ namespace fs = std::filesystem;
 namespace {
     ProgressCallback* g_progress_callback = nullptr;
     std::atomic<bool> g_cancelled{false};
+    std::atomic<int> g_active_workers{0};
+    int g_max_workers = 0;
     Engine::CompressionStats g_stats;
 
     // End marker: tutti i campi zero — nessun chunk legittimo puo' avere
@@ -294,7 +297,6 @@ struct ChunkResult {
     uint32_t raw_size;
     Codec codec;
     bool success;
-    std::string error_message;
 };
 
 // ============================================================================
@@ -1514,6 +1516,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     TarcResult res;
     res.ok = false;
     reset_stats();
+    g_active_workers = 0;
+    g_max_workers = (opts.threads > 0) ? opts.threads
+                                       : static_cast<int>(std::thread::hardware_concurrency());
+    if (g_max_workers < 1) g_max_workers = 1;
     
     int level = opts.level;
     bool has_codec_override = opts.has_codec_override;
@@ -1585,6 +1591,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (check_cancelled()) return false;
         
         ChunkResult cr = fut.get();
+        g_active_workers--;
         if (!cr.success) return false;
         
         // FEATURE #5: registra l'offset del chunk prima di scriverlo
@@ -1904,6 +1911,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 pending_solid_ranges.push_back({solid_toc_begin, final_toc.size() - 1});
                 
                 // Avvia compressione async per il buffer solid corrente
+                // Rispetta il limite di thread (--threads N)
+                while (g_active_workers >= g_max_workers) {
+                    std::this_thread::yield();
+                }
+                g_active_workers++;
                 try {
                     future_chunk = std::async(
                         std::launch::async,
@@ -2036,6 +2048,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             }
         }
         
+        UI::print_add(fe.name, fe.meta.orig_size,
+                       static_cast<Codec>(fe.meta.codec),
+                       fe.meta.is_duplicate ? 1.0f : 0.0f);
         final_toc.push_back(fe);
         g_stats.files_processed++;
     }
@@ -2088,7 +2103,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     
     res.ok = true;
     res.bytes_in = g_stats.bytes_read;
-    res.bytes_out = res.bytes_out;
+    res.bytes_out = g_stats.bytes_out;
     res.message = "Compression completed.";
     return res;
 }
@@ -2338,6 +2353,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
                     std::ofstream out(full_path, std::ios::binary);
                 }
             }
+            UI::print_extract(fe.name, fe.meta.orig_size, opts.test_only, true);
             g_stats.files_processed++;
             continue;
         }
@@ -2477,6 +2493,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             cleanup_vstate();
         }
 
+        UI::print_extract(fe.name, fe.meta.orig_size, opts.test_only, true);
         res.bytes_out += fe.meta.orig_size;
         g_stats.files_processed++;
     }

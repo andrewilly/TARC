@@ -24,8 +24,6 @@ namespace Engine {
     struct CompressionStats {
         uint64_t files_processed = 0;
         uint64_t bytes_read = 0;
-        uint64_t bytes_written = 0;
-        uint64_t bytes_compressed = 0;
         uint64_t bytes_in = 0;
         uint64_t bytes_out = 0;
         uint64_t duplicates_skipped = 0;

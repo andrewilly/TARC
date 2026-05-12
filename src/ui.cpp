@@ -22,6 +22,10 @@ namespace {
 
 std::mutex cout_mutex;
 
+// Flag: when true, next print_progress must create a fresh bar
+// (per-file output was printed between progress updates)
+bool g_progress_interrupted = false;
+
 void safe_print(const std::string& s) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << s << std::flush;
@@ -109,6 +113,7 @@ void show_help() {
     std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "     Skip integrity verification\n";
     std::cout << "  " << Color::WHITE << "--output-dir" << Color::RESET << " <path>  Extract to directory\n";
     std::cout << "  " << Color::WHITE << "--threads" << Color::RESET << " N     Set compression threads (default: auto)\n";
+    std::cout << "  " << Color::WHITE << "--version, -v" << Color::RESET << "  Show version information\n";
     
     std::cout << "\n" << Color::BOLD << "Codec Override (create):" << Color::RESET << "\n";
     std::cout << "  " << Color::WHITE << "--zstd" << Color::RESET << "          Force ZSTD compression\n";
@@ -201,7 +206,11 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     static std::unique_ptr<ProgressBar> bar;
     static size_t last_total = 0;
 
-    if (!bar || last_total != total) {
+    if (!bar || last_total != total || g_progress_interrupted) {
+        if (g_progress_interrupted) {
+            bar.reset();
+            g_progress_interrupted = false;
+        }
         bar = std::make_unique<ProgressBar>(total, "");
         last_total = total;
     }
@@ -213,6 +222,7 @@ void print_progress_end() {
 }
 
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
+    g_progress_interrupted = true;
     bool is_dedup = (ratio >= 1.0f);
     
     std::cout << "\n" << Color::GREEN << "[+]" << Color::RESET << " ["
@@ -224,6 +234,7 @@ void print_add(const std::string& name, uint64_t size, Codec codec, float ratio)
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
+    g_progress_interrupted = true;
     if (!ok) {
         std::cout << Color::RED << "[✖]" << Color::RESET << " " << name << "\n";
         return;
@@ -231,10 +242,6 @@ void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
     std::cout << Color::CYAN << "[" << (test ? "OK" : "×") << "]" << Color::RESET << " "
               << std::left << std::setw(42) << name.substr(0, 42) << " "
               << std::right << std::setw(10) << human_size(size) << "\n";
-}
-
-void print_delete(const std::string& name) {
-    std::cout << Color::RED << "[-] " << Color::RESET << name << "\n";
 }
 
 void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {

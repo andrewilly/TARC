@@ -212,6 +212,7 @@ static int run_command(const Command& cmd) {
             auto cmd_start = TarcUtil::safe_now();
             CompressOptions copts;
             copts.level = cmd.level;
+            copts.threads = cmd.threads;
             if (cmd.has_codec_override) {
                 copts.codec = cmd.codec_override;
                 copts.has_codec_override = true;

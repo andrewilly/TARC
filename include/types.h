@@ -151,7 +151,8 @@ struct TarcResult {
 };
 
 struct CompressOptions {
-    int level = 3;
+    int level = 7;
+    int threads = 0;        // 0 = auto
     bool solid_mode = true;
     bool sfx_requested = false;
     bool verify = true;
