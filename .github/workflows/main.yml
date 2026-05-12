@@ -1,87 +1,164 @@
-name: TARC STRIKE Build
+name: Build & Release TARC
 
 on:
   push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      - '.gitignore'
-      - 'docs/**'
+    branches: [ main, master ]
+    tags:
+      - 'v*'
   pull_request:
-    branches: [ main ]
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
-  # --- JOB WINDOWS ---
-  build-windows:
-    name: Build on Windows
-    runs-on: windows-2022
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: tarc-linux-x86_64
+            exe: tarc
+            cmake_flags: ""
+
+          - os: windows-latest
+            artifact: tarc-windows-x64.exe
+            exe: tarc.exe
+            cmake_flags: "-A x64"
+
+          - os: macos-latest
+            artifact: tarc-macos-universal
+            exe: tarc
+            cmake_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'"
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup MSVC
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        shell: bash
+        run: |
+          mkdir -p build
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_C_STANDARD=11 \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            ${{ matrix.cmake_flags }}
 
       - name: Build
-        run: cmake --build build --config Release
+        shell: bash
+        run: |
+          cmake --build build --config Release --parallel 2
 
-      - name: Upload Artifact
+      - name: Locate executable
+        id: locate
+        shell: bash
+        run: |
+          exe=$(find build -name "${{ matrix.exe }}" -type f | head -1)
+          if [ -z "$exe" ]; then
+            echo "error: executable ${{ matrix.exe }} not found in build/"
+            find build -type f -name "*tarc*" -o -name "*${{ matrix.exe }}*"
+            exit 1
+          fi
+          echo "path=$exe" >> $GITHUB_OUTPUT
+
+      - name: Quick smoke test
+        shell: bash
+        run: |
+          chmod +x "${{ steps.locate.outputs.path }}" 2>/dev/null || true
+          "${{ steps.locate.outputs.path }}" --help
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tarc-windows
-          path: build/tarc.exe
+          name: ${{ matrix.artifact }}
+          path: ${{ steps.locate.outputs.path }}
+          if-no-files-found: error
 
-  # --- JOB MACOS (UNIVERSAL: INTEL + ARM) ---
-  build-macos:
-    name: Build on macOS (Universal)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: brew install cmake ninja
-
-      - name: Configure CMake
-        # Il flag CMAKE_OSX_ARCHITECTURES crea un binario compatibile sia con Intel che con Apple Silicon
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-
-      - name: Build
-        run: cmake --build build --config Release
-
-      - name: Verify Binary Architecture
-        # Questo comando stampa nel log la conferma che il file è "Universal"
-        run: file build/tarc
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tarc-macos-universal
-          path: build/tarc
-
-  # --- JOB UBUNTU ---
-  build-ubuntu:
-    name: Build on Ubuntu
+  asan:
+    name: ASan+UBSan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libzstd-dev liblz4-dev liblzma-dev libbrotli-dev
+      - run: make ASAN=1 -j$(nproc) tarc_test
+      - run: ./tarc_test
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, asan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-      - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build --config Release
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          name: tarc-ubuntu
-          path: build/tarc
+          path: artifacts
+
+      - name: Organize release assets
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p assets
+
+          # artifact_dir -> release_filename_suffix
+          for pair in \
+            "tarc-linux-x86_64|linux-x86_64" \
+            "tarc-windows-x64.exe|windows-x64.exe" \
+            "tarc-macos-universal|macos-universal"; do
+
+            dir="${pair%%|*}"
+            sfx="${pair##*|}"
+            out="tarc-$VERSION-$sfx"
+
+            file=$(find "artifacts/$dir" -type f 2>/dev/null | head -1)
+            if [ -n "$file" ]; then
+              cp "$file" "assets/$out"
+              echo "OK  $dir -> assets/$out"
+            else
+              echo "WARN artifact $dir not found"
+            fi
+          done
+
+          chmod +x assets/* 2>/dev/null || true
+          echo "--- assets ---"
+          ls -lh assets/
+
+      - name: Generate checksums
+        run: |
+          cd assets && sha256sum * | tee ../checksums.txt
+
+      - name: Publish Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading assets"
+            gh release upload "$TAG" assets/* checksums.txt --clobber
+          else
+            echo "Creating release $TAG"
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              assets/* checksums.txt
+          fi
