@@ -89,6 +89,7 @@ namespace UI {
         size_t current_;
         std::string label_;
         bool active_;
+        bool status_active_;
         std::chrono::steady_clock::time_point start_time;
         std::chrono::steady_clock::time_point last_update;
         bool start_set;

@@ -45,6 +45,13 @@ static int get_terminal_width() {
     return 80;
 }
 
+// Stores the last completed file info for display above the progress bar.
+// print_add() and print_extract() write here; ProgressBar::update() renders it.
+static std::string g_last_status_line;
+
+// When true, the progress bar should render the status line above it.
+static bool g_has_status_line = false;
+
 }
 
 namespace UI {
@@ -294,23 +301,30 @@ void print_progress_end() {
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
     bool is_dedup = (ratio >= 1.0f);
     
-    std::cout << "\r\x1b[2K"  // clear progress bar line
-              << Color::GREEN << "[+]" << Color::RESET << " ["
-              << Color::YELLOW << std::setw(5) << codec_name(codec) << Color::RESET << "] "
-              << std::left << std::setw(40) << name.substr(0, 40) << " "
-              << std::right << std::setw(10) << human_size(size) << "  "
-               << Color::DIM << (is_dedup ? "→ DEDUP" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio))).c_str())
-               << Color::RESET << "\n";
+    std::ostringstream os;
+    os << Color::GREEN << "[+]" << Color::RESET << " ["
+       << Color::YELLOW << std::setw(5) << codec_name(codec) << Color::RESET << "] "
+       << std::left << std::setw(40) << name.substr(0, 40) << " "
+       << std::right << std::setw(10) << human_size(size) << "  "
+       << Color::DIM << (is_dedup ? "→ DEDUP" : compress_ratio(size, static_cast<uint64_t>(size * (1.0f - ratio))).c_str())
+       << Color::RESET;
+    
+    g_last_status_line = os.str();
+    g_has_status_line = true;
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
     if (!ok) {
-        std::cout << "\r\x1b[2K" << Color::RED << "[✖]" << Color::RESET << " " << name << "\n";
+        g_last_status_line = std::string(Color::RED) + "[✖] " + Color::RESET + name;
+        g_has_status_line = true;
         return;
     }
-    std::cout << "\r\x1b[2K" << Color::CYAN << "[" << (test ? "OK" : "×") << "]" << Color::RESET << " "
-              << std::left << std::setw(42) << name.substr(0, 42) << " "
-              << std::right << std::setw(10) << human_size(size) << "\n";
+    std::ostringstream os;
+    os << Color::CYAN << "[" << (test ? "OK" : "×") << "]" << Color::RESET << " "
+       << std::left << std::setw(42) << name.substr(0, 42) << " "
+       << std::right << std::setw(10) << human_size(size);
+    g_last_status_line = os.str();
+    g_has_status_line = true;
 }
 
 void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Codec codec) {
@@ -373,6 +387,7 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
     : total_(total), current_(0), label_(label), active_(true),
+      status_active_(false),
       start_time(TarcUtil::safe_now()), last_update(TarcUtil::safe_now()),
       start_set(false) {
     if (total > 0) update(0);
@@ -441,7 +456,22 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
 
     std::lock_guard<std::mutex> lock(cout_mutex);
 
-    std::cout << "\r\x1b[2K  " << bar_color << "[";
+    if (g_has_status_line && !g_last_status_line.empty()) {
+        if (!status_active_) {
+            // First status line: insert above the progress bar
+            std::cout << "\r\x1b[2K" << g_last_status_line << "\n";
+            status_active_ = true;
+        } else {
+            // Subsequent: overwrite status line above, then progress bar
+            std::cout << "\x1b[A\r\x1b[2K" << g_last_status_line
+                      << "\x1b[B\r\x1b[2K";
+        }
+        g_has_status_line = false;
+    } else {
+        std::cout << "\r\x1b[2K";
+    }
+
+    std::cout << "  " << bar_color << "[";
 
     int bar_width = std::clamp(term_w - 55, 10, 40);
     int pos = static_cast<int>(bar_width * current / total_);
