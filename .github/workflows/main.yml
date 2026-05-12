@@ -38,7 +38,8 @@ jobs:
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          sudo rm -f /etc/apt/sources.list.d/azure*.list 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=10
           sudo apt-get install -y build-essential cmake ninja-build
 
       - name: Install dependencies (macOS)
@@ -97,7 +98,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          sudo apt-get update
+          sudo rm -f /etc/apt/sources.list.d/azure*.list 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=10
           sudo apt-get install -y build-essential libzstd-dev liblz4-dev liblzma-dev libbrotli-dev
       - run: make ASAN=1 -j$(nproc) tarc_test
       - run: ./tarc_test
