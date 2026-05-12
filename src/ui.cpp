@@ -22,10 +22,6 @@ namespace {
 
 std::mutex cout_mutex;
 
-// Flag: when true, next print_progress must create a fresh bar
-// (per-file output was printed between progress updates)
-bool g_progress_interrupted = false;
-
 void safe_print(const std::string& s) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << s << std::flush;
@@ -284,11 +280,7 @@ void print_progress(size_t current, size_t total, const std::string& current_fil
     static std::unique_ptr<ProgressBar> bar;
     static size_t last_total = 0;
 
-    if (!bar || last_total != total || g_progress_interrupted) {
-        if (g_progress_interrupted) {
-            bar.reset();
-            g_progress_interrupted = false;
-        }
+    if (!bar || last_total != total) {
         bar = std::make_unique<ProgressBar>(total, "");
         last_total = total;
     }
@@ -300,10 +292,10 @@ void print_progress_end() {
 }
 
 void print_add(const std::string& name, uint64_t size, Codec codec, float ratio) {
-    g_progress_interrupted = true;
     bool is_dedup = (ratio >= 1.0f);
     
-    std::cout << "\n" << Color::GREEN << "[+]" << Color::RESET << " ["
+    std::cout << "\r\x1b[2K"  // clear progress bar line
+              << Color::GREEN << "[+]" << Color::RESET << " ["
               << Color::YELLOW << std::setw(5) << codec_name(codec) << Color::RESET << "] "
               << std::left << std::setw(40) << name.substr(0, 40) << " "
               << std::right << std::setw(10) << human_size(size) << "  "
@@ -312,12 +304,11 @@ void print_add(const std::string& name, uint64_t size, Codec codec, float ratio)
 }
 
 void print_extract(const std::string& name, uint64_t size, bool test, bool ok) {
-    g_progress_interrupted = true;
     if (!ok) {
-        std::cout << Color::RED << "[✖]" << Color::RESET << " " << name << "\n";
+        std::cout << "\r\x1b[2K" << Color::RED << "[✖]" << Color::RESET << " " << name << "\n";
         return;
     }
-    std::cout << Color::CYAN << "[" << (test ? "OK" : "×") << "]" << Color::RESET << " "
+    std::cout << "\r\x1b[2K" << Color::CYAN << "[" << (test ? "OK" : "×") << "]" << Color::RESET << " "
               << std::left << std::setw(42) << name.substr(0, 42) << " "
               << std::right << std::setw(10) << human_size(size) << "\n";
 }
@@ -382,7 +373,7 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
     : total_(total), current_(0), label_(label), active_(true),
-      needs_clear_(false), start_time(TarcUtil::safe_now()), start_set(false) {
+      start_time(TarcUtil::safe_now()), start_set(false) {
     if (total > 0) update(0);
 }
 
@@ -398,9 +389,6 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     current_ = current;
     if (!active_ || total_ == 0) return;
 
-    float pct = static_cast<float>(current) / static_cast<float>(total_) * 100.0f;
-
-    // Calcola velocità
     if (!start_set && current > 0) {
         start_time = TarcUtil::safe_now();
         start_set = true;
@@ -419,49 +407,55 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     }
 
     int term_w = get_terminal_width();
-    int bar_width = std::clamp(term_w - 10, 20, 50);
-    int pos = static_cast<int>(bar_width * current / total_);
+    float pct = static_cast<float>(current) / static_cast<float>(total_) * 100.0f;
 
-    // Tronca nome file se troppo lungo per il terminale
+    // Elementi da mostrare: bar + pct + nome + contatore + velocità
+    char pct_buf[8];
+    snprintf(pct_buf, sizeof(pct_buf), "%.1f%%", pct);
+    std::string pct_str = pct_buf;
+
+    std::string count_str = std::to_string(current) + "/" + std::to_string(total_);
+
+    // Nome file troncato
     std::string display_name = status;
-    int max_name = std::clamp(term_w - 4, 20, 120);
-    if (static_cast<int>(display_name.size()) > max_name) {
-        display_name = display_name.substr(0, max_name - 3) + "...";
-    }
-
-    // Colore: cyan durante, green al completamento
     const char* bar_color = (current >= total_) ? Color::GREEN : Color::CYAN;
 
     std::lock_guard<std::mutex> lock(cout_mutex);
 
-    if (needs_clear_) {
-        // Risale di 2 righe per sovrascrivere il frame precedente
-        std::cout << "\x1b[2A";
-    }
-
-    // Riga 1: nome file
-    std::cout << "\x1b[2K\r"
-              << "  " << Color::BRIGHT_WHITE << display_name << Color::RESET << "\n";
-
-    // Riga 2: contatore file + velocità
-    std::cout << "\x1b[2K\r"
-              << Color::DIM << "  " << current << " / " << total_
-              << Color::RESET;
-    if (!speed_text.empty()) {
-        std::cout << Color::DIM << speed_text << Color::RESET;
-    }
-    std::cout << "\n";
-
-    // Riga 3: barra di progressione
-    std::cout << "\x1b[2K\r"
+    // Riga singola: barra + percentuale + nome file + contatore + velocità
+    std::cout << "\r\x1b[2K"
               << "  " << bar_color << "[";
+
+    // Larghezza barra adattiva: 20-40 caratteri
+    int overhead = 3 + 4 + 2 + static_cast<int>(pct_str.size())
+                   + 2 + static_cast<int>(count_str.size())
+                   + static_cast<int>(speed_text.size()) + 8;
+    int max_name = std::max(10, term_w - overhead - 5);
+    int bar_width = std::clamp(term_w - overhead - max_name - 2, 10, 40);
+    int pos = static_cast<int>(bar_width * current / total_);
+
+    // Ricalcola spazi dopo bar_width deciso
+    overhead = 3 + bar_width + 2 + static_cast<int>(pct_str.size()) + 2;
+
     for (int i = 0; i < bar_width; ++i) {
         std::cout << (i < pos ? "█" : "░");
     }
-    std::cout << "] " << std::fixed << std::setprecision(1) << pct << "%"
-              << Color::RESET << std::flush;
+    std::cout << "] " << Color::RESET << pct_str;
 
-    needs_clear_ = true;
+    // Nome file
+    int name_space = term_w - overhead - static_cast<int>(count_str.size())
+                     - static_cast<int>(speed_text.size()) - 4;
+    if (name_space < 10) name_space = 10;
+    std::string name = display_name;
+    if (static_cast<int>(name.size()) > name_space) {
+        name = name.substr(0, static_cast<size_t>(std::max(0, name_space - 3))) + "...";
+    }
+    std::cout << "  " << Color::BRIGHT_WHITE << name << Color::RESET;
+
+    // Contatore e velocità
+    std::cout << "  " << Color::DIM << count_str << Color::RESET
+              << speed_text
+              << std::flush;
 }
 
 void UI::ProgressBar::finish() {

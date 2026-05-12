@@ -89,7 +89,6 @@ namespace UI {
         size_t current_;
         std::string label_;
         bool active_;
-        bool needs_clear_;  // true dopo il primo render: serve a cancellare le 3 righe precedenti
         std::chrono::steady_clock::time_point start_time;
         bool start_set;
     };
