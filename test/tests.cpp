@@ -426,3 +426,334 @@ TEST_CASE("read-only mode does not create output files")
     // test-only mode should NOT create files even with output_dir
     CHECK(!sb.exists(fs::path(out) / "test_only.txt"));
 }
+
+// ============================================================================
+// Additional Maturity Tests
+// ============================================================================
+
+TEST_CASE("empty file list returns error")
+{
+    Sandbox sb;
+    auto arc = sb.arch_path("empty_list.strk");
+    auto cr = Engine::compress(arc, {});
+    CHECK(!cr.ok);
+    CHECK(cr.error == TarcError::FileNotFound);
+}
+
+TEST_CASE("all files missing returns error")
+{
+    Sandbox sb;
+    auto arc = sb.arch_path("no_files.strk");
+    auto cr = Engine::compress(arc, {"nonexistent1.txt", "nonexistent2.txt"});
+    CHECK(!cr.ok);
+    CHECK(cr.error == TarcError::FileNotFound);
+}
+
+TEST_CASE("some files missing skips missing and compresses rest")
+{
+    Sandbox sb;
+    auto src = sb.make_file("exists.txt", 64);
+    auto arc = sb.arch_path("partial.strk");
+    auto out = sb.out_dir("out_partial");
+
+    auto cr = Engine::compress(arc, {src, "nonexistent.txt"});
+    CHECK(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+    CHECK(sb.exists(fs::path(out) / "exists.txt"));
+}
+
+TEST_CASE("nested directory structure round-trip")
+{
+    Sandbox sb;
+    fs::create_directories(sb.dir / "sub" / "nested");
+    auto src_path = "sub/nested/deep.txt";
+    {
+        std::ofstream ofs(sb.dir / src_path);
+        ofs << "deep content";
+    }
+    auto arc = sb.arch_path("nested.strk");
+    auto out = sb.out_dir("out_nested");
+
+    auto cr = Engine::compress(arc, {src_path});
+    REQUIRE(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    REQUIRE(er.ok);
+
+    CHECK(sb.exists(fs::path(out) / "sub" / "nested" / "deep.txt"));
+    CHECK(sb.read_file(fs::path(out) / "sub" / "nested" / "deep.txt") == "deep content");
+}
+
+TEST_CASE("extract auto-creates output directory")
+{
+    Sandbox sb;
+    auto src = sb.make_file("auto_dir.txt", 64);
+    auto arc = sb.arch_path("auto_dir.strk");
+
+    auto cr = Engine::compress(arc, {src});
+    REQUIRE(cr.ok);
+
+    // output dir does not exist yet
+    auto out = (sb.dir / "auto_created_out").string();
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+    CHECK(sb.exists(fs::path(out) / "auto_dir.txt"));
+}
+
+TEST_CASE("zero-length archive returns error")
+{
+    Sandbox sb;
+    auto arc = sb.arch_path("empty_arc.strk");
+    { std::ofstream ofs(arc); }
+    auto er = Engine::extract(arc);
+    CHECK(!er.ok);
+}
+
+TEST_CASE("truncated archive returns error")
+{
+    Sandbox sb;
+    auto src = sb.make_file("trunc_test.bin", 1024);
+    auto arc = sb.arch_path("trunc.strk");
+
+    auto cr = Engine::compress(arc, {src});
+    REQUIRE(cr.ok);
+
+    std::error_code ec;
+    fs::resize_file(arc, sizeof(Header), ec);
+    REQUIRE(!ec);
+
+    auto er = Engine::extract(arc);
+    CHECK(!er.ok);
+}
+
+TEST_CASE("corrupt chunk data returns error")
+{
+    Sandbox sb;
+    auto src = sb.make_file("corrupt.bin", 4096, 'C');
+    auto arc = sb.arch_path("corrupt.strk");
+
+    CompressOptions opts;
+    opts.codec = Codec::STORE;
+    opts.has_codec_override = true;
+    auto cr = Engine::compress(arc, {src}, opts);
+    REQUIRE(cr.ok);
+
+    auto fsize = fs::file_size(arc);
+    REQUIRE(fsize > sizeof(Header) + sizeof(ChunkHeader));
+
+    std::fstream f(arc, std::ios::binary | std::ios::in | std::ios::out);
+    f.seekp(sizeof(Header) + sizeof(ChunkHeader) + 10, std::ios::beg);
+    char orig;
+    f.read(&orig, 1);
+    f.seekp(-1, std::ios::cur);
+    f.put(static_cast<char>(orig ^ 0xFF));
+    f.close();
+
+    auto er = Engine::extract(arc);
+    CHECK(!er.ok);
+    // Should fail with corruption error, not a file/header error
+    CHECK(er.error != TarcError::FileNotFound);
+    CHECK(er.error != TarcError::InvalidHeader);
+}
+
+TEST_CASE("unicode UTF-8 filename round-trip")
+{
+    Sandbox sb;
+    std::string uname = "démo-文件-αβγ.txt";
+    auto src = sb.make_file(uname, 256, 'U');
+    auto arc = sb.arch_path("unicode.strk");
+    auto out = sb.out_dir("out_unicode");
+
+    auto cr = Engine::compress(arc, {src});
+    REQUIRE(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    REQUIRE(er.ok);
+
+    CHECK(sb.exists(fs::path(out) / uname));
+    CHECK(sb.read_file(fs::path(out) / uname) == sb.read_file(src));
+}
+
+TEST_CASE("filename with special characters round-trips")
+{
+    Sandbox sb;
+    std::string special = "file with spaces_and_symbols!#$%&'().txt";
+    auto src = sb.make_file(special, 128, 'S');
+    auto arc = sb.arch_path("special.strk");
+    auto out = sb.out_dir("out_special");
+
+    auto cr = Engine::compress(arc, {src});
+    REQUIRE(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    REQUIRE(er.ok);
+
+    CHECK(sb.exists(fs::path(out) / special));
+}
+
+TEST_CASE("security: sanitize_extract_path rejects traversal")
+{
+    CHECK(IO::sanitize_extract_path("../../etc/passwd").empty());
+    CHECK(IO::sanitize_extract_path("subdir/../../../etc/passwd").empty());
+    CHECK(!IO::sanitize_extract_path("normal/file.txt").empty());
+    CHECK(!IO::sanitize_extract_path("file..txt").empty());
+    CHECK(!IO::sanitize_extract_path(".../file.txt").empty());
+}
+
+TEST_CASE("security: is_safe_filename rejects dangerous names")
+{
+    CHECK(IO::is_safe_filename("normal.txt"));
+    CHECK(!IO::is_safe_filename(std::string("bad\0name", 8)));
+    CHECK(!IO::is_safe_filename("bad\x01name.txt"));
+    CHECK(!IO::is_safe_filename(std::string(TARC_MAX_NAME_LEN + 1, 'a')));
+}
+
+TEST_CASE("single byte file with all codecs")
+{
+    Sandbox sb;
+    auto src = sb.make_file("onebyte.txt", 1, 'Z');
+
+    std::vector<Codec> codecs = {Codec::STORE, Codec::LZMA, Codec::ZSTD, Codec::LZ4, Codec::BR};
+    for (auto codec : codecs) {
+        auto arc = sb.arch_path("onebyte_" + std::to_string(static_cast<int>(codec)) + ".strk");
+        auto out = sb.out_dir("out_onebyte_" + std::to_string(static_cast<int>(codec)));
+
+        CompressOptions opts;
+        opts.codec = codec;
+        opts.has_codec_override = true;
+
+        auto cr = Engine::compress(arc, {src}, opts);
+        CHECK(cr.ok);
+
+        auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+        CHECK(er.ok);
+        CHECK(sb.read_file(fs::path(out) / "onebyte.txt") == sb.read_file(src));
+    }
+}
+
+TEST_CASE("incompressible random data with all codecs")
+{
+    Sandbox sb;
+    auto src = sb.make_random_file("random.dat", 16384);
+
+    std::vector<Codec> codecs = {Codec::STORE, Codec::LZMA, Codec::ZSTD, Codec::LZ4, Codec::BR};
+    for (auto codec : codecs) {
+        auto arc = sb.arch_path("random_" + std::to_string(static_cast<int>(codec)) + ".strk");
+        auto out = sb.out_dir("out_random_" + std::to_string(static_cast<int>(codec)));
+
+        CompressOptions opts;
+        opts.codec = codec;
+        opts.has_codec_override = true;
+
+        auto cr = Engine::compress(arc, {src}, opts);
+        CHECK(cr.ok);
+
+        auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+        CHECK(er.ok);
+        CHECK(sb.read_file(fs::path(out) / "random.dat") == sb.read_file(src));
+    }
+}
+
+TEST_CASE("three duplicate files all deduplicated")
+{
+    Sandbox sb;
+    auto src = sb.make_file("dedup_multi.txt", 512, 'D');
+    auto arc = sb.arch_path("dedup_multi.strk");
+    auto out = sb.out_dir("out_dedup_multi");
+
+    auto cr = Engine::compress(arc, {src, src, src});
+    CHECK(cr.ok);
+    auto s = Engine::get_stats();
+    CHECK(s.duplicates_skipped >= 2);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+    CHECK(sb.exists(fs::path(out) / "dedup_multi.txt"));
+    CHECK(sb.read_file(fs::path(out) / "dedup_multi.txt") == sb.read_file(src));
+}
+
+TEST_CASE("many small files under STORE threshold")
+{
+    Sandbox sb;
+    std::vector<std::string> files;
+    for (int i = 0; i < 20; ++i) {
+        files.push_back(sb.make_file("tiny_" + std::to_string(i) + ".txt", 100,
+                                     static_cast<char>('A' + (i % 26))));
+    }
+    auto arc = sb.arch_path("many_tiny.strk");
+    auto out = sb.out_dir("out_many_tiny");
+
+    auto cr = Engine::compress(arc, files);
+    CHECK(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+
+    for (auto& f : files) {
+        CHECK(sb.exists(fs::path(out) / f));
+        CHECK(sb.read_file(fs::path(out) / f) == sb.read_file(f));
+    }
+}
+
+TEST_CASE("list non-existent archive returns error")
+{
+    auto lr = Engine::list("/nonexistent/path/archive.strk");
+    CHECK(!lr.ok);
+    CHECK(lr.error == TarcError::FileNotFound);
+}
+
+TEST_CASE("higher compression level produces smaller output")
+{
+    Sandbox sb;
+    auto src = sb.make_file("ratio_test.bin", 65536, 'R');
+
+    CompressOptions opts1;
+    opts1.level = 1;
+    auto arc1 = sb.arch_path("level1.strk");
+    auto cr1 = Engine::compress(arc1, {src}, opts1);
+    REQUIRE(cr1.ok);
+
+    CompressOptions opts19;
+    opts19.level = 19;
+    auto arc19 = sb.arch_path("level19.strk");
+    auto cr19 = Engine::compress(arc19, {src}, opts19);
+    REQUIRE(cr19.ok);
+
+    auto size1 = fs::file_size(arc1);
+    auto size19 = fs::file_size(arc19);
+    CHECK(size19 <= size1);
+}
+
+TEST_CASE("no-verify mode extracts correctly")
+{
+    Sandbox sb;
+    auto src = sb.make_file("noverify.bin", 2048, 'N');
+    auto arc = sb.arch_path("noverify.strk");
+    auto out = sb.out_dir("out_noverify");
+
+    auto cr = Engine::compress(arc, {src});
+    REQUIRE(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, false, false, out});
+    CHECK(er.ok);
+    CHECK(sb.read_file(fs::path(out) / "noverify.bin") == sb.read_file(src));
+}
+
+TEST_CASE("extract with empty patterns extracts all")
+{
+    Sandbox sb;
+    auto src1 = sb.make_file("alpha.txt", 64, 'A');
+    auto src2 = sb.make_file("beta.txt", 64, 'B');
+    auto arc = sb.arch_path("all_files.strk");
+    auto out = sb.out_dir("out_all_files");
+
+    auto cr = Engine::compress(arc, {src1, src2});
+    REQUIRE(cr.ok);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+    CHECK(sb.exists(fs::path(out) / "alpha.txt"));
+    CHECK(sb.exists(fs::path(out) / "beta.txt"));
+}

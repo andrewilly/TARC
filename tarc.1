@@ -1,0 +1,118 @@
+.TH TARC 1 "2026-03-01" "TARC STRIKE v2.10" "User Commands"
+.SH NAME
+tarc \- TARC STRIKE advanced solid compression archiver
+.SH SYNOPSIS
+.B tarc
+\fIcommand\fR [\fIoptions\fR] \fIarchive\fR [\fIfiles\fR...]
+.SH DESCRIPTION
+TARC STRIKE is a multi-codec solid compression archiver supporting LZMA2,
+Zstandard, LZ4, Brotli, and store-only modes. It features deduplication,
+streaming compression for large files, SIMD-accelerated operations, and
+self-extracting archive (SFX) generation.
+.SH COMMANDS
+.TP
+.B \-c[\fIlevel\fR]
+Create archive. Level 1\-19 (default 7). Use \-cbest (level 19) or \-cfast (level 1).
+.TP
+.B \-x
+Extract files from archive. Supports wildcard filters.
+.TP
+.B \-l
+List archive contents.
+.TP
+.B \-t
+Test archive integrity (reads and decompresses all data, verifies checksums, writes nothing).
+.TP
+.B \-h, \-\-help
+Show help. Combine with \-c, \-x, \-l, \-t for command-specific help.
+.TP
+.B \-v, \-\-version
+Show version information.
+.TP
+.B \-\-license
+Show license information.
+.SH OPTIONS
+.TP
+.B \-\-sfx
+Create self-extracting archive (.exe).
+.TP
+.B \-\-flat
+Extract files without directory structure.
+.TP
+.B \-\-force
+Overwrite existing files during extraction.
+.TP
+.B \-\-verify
+Verify integrity after operation (default).
+.TP
+.B \-\-no-verify
+Skip integrity verification.
+.TP
+.B \-\-output-dir \fIpath\fR
+Extract files to the specified directory.
+.TP
+.B \-\-threads \fIN\fR
+Set compression threads (default: auto-detect CPU count).
+.SH CODECS
+.TP
+.B \-\-zstd
+Force Zstandard compression.
+.TP
+.B \-\-lzma
+Force LZMA2 compression (default).
+.TP
+.B \-\-lz4
+Force LZ4/LZ4HC compression (fastest).
+.TP
+.B \-\-brotli
+Force Brotli compression.
+.TP
+.B \-\-store
+No compression (store only).
+.PP
+Without a codec override, TARC auto-selects the best codec per file type.
+.SH EXAMPLES
+.TP
+Create archive with default level:
+tarc \-c7 backup.strk docs/ images/
+.TP
+Create with maximum compression and SFX:
+tarc \-cbest \-\-sfx portable.exe src/
+.TP
+Extract all files:
+tarc \-x backup.strk
+.TP
+Extract only .cpp files:
+tarc \-x backup.strk "*.cpp"
+.TP
+Extract to a specific directory:
+tarc \-x backup.strk \-\-output-dir ./restore
+.TP
+List archive contents:
+tarc \-l backup.strk
+.TP
+Test archive integrity:
+tarc \-t backup.strk
+.SH EXIT STATUS
+.TP
+0
+Success.
+.TP
+1
+General error (corrupt archive, file not found, I/O error, etc.).
+.SH FILES
+.TP
+.I *.strk
+TARC archive format.
+.SH SECURITY
+TARC includes path traversal protection (Zip Slip prevention), filename
+validation (null byte and control character rejection), and XXH64
+checksum verification on every decompressed chunk.
+.SH BUGS
+Report bugs at https://github.com/anomalyco/TARC/issues
+.SH SEE ALSO
+.BR gzip (1),
+.BR bzip2 (1),
+.BR xz (1),
+.BR zstd (1),
+.BR lz4 (1)
