@@ -373,7 +373,8 @@ void print_table_row(const std::vector<std::string>& cols, const std::vector<siz
 
 UI::ProgressBar::ProgressBar(size_t total, const std::string& label)
     : total_(total), current_(0), label_(label), active_(true),
-      start_time(TarcUtil::safe_now()), start_set(false) {
+      start_time(TarcUtil::safe_now()), last_update(TarcUtil::safe_now()),
+      start_set(false) {
     if (total > 0) update(0);
 }
 
@@ -389,73 +390,85 @@ void UI::ProgressBar::update(size_t current, const std::string& status) {
     current_ = current;
     if (!active_ || total_ == 0) return;
 
-    if (!start_set && current > 0) {
+    if (current == 0) return;
+
+    if (!start_set) {
         start_time = TarcUtil::safe_now();
         start_set = true;
-    }
-
-    std::string speed_text;
-    if (current > 0 && current < total_ && start_set) {
-        auto now = TarcUtil::safe_now();
-        double elapsed = std::chrono::duration<double>(now - start_time).count();
-        if (elapsed > 0.5) {
-            double mbps = (current / (1024.0 * 1024.0)) / elapsed;
-            char buf[48];
-            snprintf(buf, sizeof(buf), "  %.1f MB/s", mbps);
-            speed_text = buf;
-        }
     }
 
     int term_w = get_terminal_width();
     float pct = static_cast<float>(current) / static_cast<float>(total_) * 100.0f;
 
-    // Elementi da mostrare: bar + pct + nome + contatore + velocità
     char pct_buf[8];
     snprintf(pct_buf, sizeof(pct_buf), "%.1f%%", pct);
     std::string pct_str = pct_buf;
 
-    std::string count_str = std::to_string(current) + "/" + std::to_string(total_);
+    std::string count_str = std::to_string(current) + "/" + std::to_string(total_) + " files";
 
-    // Nome file troncato
     std::string display_name = status;
     const char* bar_color = (current >= total_) ? Color::GREEN : Color::CYAN;
 
+    auto now = TarcUtil::safe_now();
+    double elapsed = std::chrono::duration<double>(now - start_time).count();
+
+    std::string suffix;
+    if (current < total_ && elapsed > 0.5) {
+        double rate = current / elapsed;
+        char rate_buf[32];
+        snprintf(rate_buf, sizeof(rate_buf), "  %.1f f/s", rate);
+        suffix += rate_buf;
+
+        double remaining_sec = (total_ - current) / rate;
+        if (remaining_sec >= 1.0) {
+            char eta_buf[32];
+            if (remaining_sec >= 3600) {
+                snprintf(eta_buf, sizeof(eta_buf), "  ETA %d:%02d:%02d",
+                         static_cast<int>(remaining_sec / 3600),
+                         static_cast<int>(remaining_sec / 60) % 60,
+                         static_cast<int>(remaining_sec) % 60);
+            } else if (remaining_sec >= 60) {
+                snprintf(eta_buf, sizeof(eta_buf), "  ETA %d:%02d",
+                         static_cast<int>(remaining_sec / 60),
+                         static_cast<int>(remaining_sec) % 60);
+            } else {
+                snprintf(eta_buf, sizeof(eta_buf), "  ETA %ds",
+                         static_cast<int>(remaining_sec));
+            }
+            suffix += eta_buf;
+        }
+    }
+
     std::lock_guard<std::mutex> lock(cout_mutex);
 
-    // Riga singola: barra + percentuale + nome file + contatore + velocità
-    std::cout << "\r\x1b[2K"
-              << "  " << bar_color << "[";
+    std::cout << "\r\x1b[2K  " << bar_color << "[";
 
-    // Larghezza barra adattiva: 20-40 caratteri
-    int overhead = 3 + 4 + 2 + static_cast<int>(pct_str.size())
-                   + 2 + static_cast<int>(count_str.size())
-                   + static_cast<int>(speed_text.size()) + 8;
-    int max_name = std::max(10, term_w - overhead - 5);
-    int bar_width = std::clamp(term_w - overhead - max_name - 2, 10, 40);
+    int bar_width = std::clamp(term_w - 55, 10, 40);
     int pos = static_cast<int>(bar_width * current / total_);
-
-    // Ricalcola spazi dopo bar_width deciso
-    overhead = 3 + bar_width + 2 + static_cast<int>(pct_str.size()) + 2;
 
     for (int i = 0; i < bar_width; ++i) {
         std::cout << (i < pos ? "█" : "░");
     }
-    std::cout << "] " << Color::RESET << pct_str;
+    std::cout << "] " << Color::RESET
+              << Color::BOLD << pct_str << Color::RESET;
 
-    // Nome file
-    int name_space = term_w - overhead - static_cast<int>(count_str.size())
-                     - static_cast<int>(speed_text.size()) - 4;
-    if (name_space < 10) name_space = 10;
+    int remaining = term_w - 5 - bar_width - static_cast<int>(pct_str.size())
+                    - static_cast<int>(count_str.size())
+                    - static_cast<int>(suffix.size()) - 10;
+    if (remaining < 8) remaining = 8;
     std::string name = display_name;
-    if (static_cast<int>(name.size()) > name_space) {
-        name = name.substr(0, static_cast<size_t>(std::max(0, name_space - 3))) + "...";
+    if (static_cast<int>(name.size()) > remaining) {
+        name = name.substr(0, static_cast<size_t>(std::max(0, remaining - 3))) + "...";
     }
-    std::cout << "  " << Color::BRIGHT_WHITE << name << Color::RESET;
 
-    // Contatore e velocità
+    if (!name.empty()) {
+        std::cout << "  " << Color::BRIGHT_WHITE << name << Color::RESET;
+    }
     std::cout << "  " << Color::DIM << count_str << Color::RESET
-              << speed_text
+              << suffix
               << std::flush;
+
+    last_update = now;
 }
 
 void UI::ProgressBar::finish() {
