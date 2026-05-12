@@ -113,8 +113,6 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -124,7 +122,6 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p assets
 
-          # artifact_dir -> release_filename_suffix
           for pair in \
             "tarc-linux-x86_64|linux-x86_64" \
             "tarc-windows-x64.exe|windows-x64.exe" \
@@ -144,27 +141,19 @@ jobs:
           done
 
           chmod +x assets/* 2>/dev/null || true
-          echo "--- assets ---"
           ls -lh assets/
 
       - name: Generate checksums
         run: |
           cd assets && sha256sum * | tee ../checksums.txt
 
-      - name: Publish Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          REPO="${{ github.repository }}"
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "Release $TAG exists — uploading assets"
-            gh release upload "$TAG" assets/* checksums.txt --clobber --repo "$REPO"
-          else
-            echo "Creating release $TAG"
-            gh release create "$TAG" \
-              --repo "$REPO" \
-              --title "$TAG" \
-              --generate-notes \
-              assets/* checksums.txt
-          fi
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          artifacts: "assets/*,checksums.txt"
+          generateReleaseNotes: true
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
