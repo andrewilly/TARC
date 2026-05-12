@@ -156,12 +156,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.ref_name }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG exists — uploading assets"
-            gh release upload "$TAG" assets/* checksums.txt --clobber
+            gh release upload "$TAG" assets/* checksums.txt --clobber --repo "$REPO"
           else
             echo "Creating release $TAG"
             gh release create "$TAG" \
+              --repo "$REPO" \
               --title "$TAG" \
               --generate-notes \
               assets/* checksums.txt
