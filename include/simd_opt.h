@@ -1,14 +1,14 @@
 #pragma once
 // ============================================================================
-// simd_opt.h — SIMD-optimized buffer operations per TARC STRIKE
+// simd_opt.h — SIMD-optimized buffer operations for TARC STRIKE
 // ============================================================================
-// Fornisce versioni ottimizzate SIMD di memcpy, memset, memcmp e utilita
-// per le operazioni critiche del motore (SFX copy, solid buffer, verify).
+// Provides SIMD-optimized versions of memcpy, memset, memcmp and utilities
+// for critical engine operations (SFX copy, solid buffer, verify).
 //
-// Auto-detect CPU features a runtime e fallback graceful su hardware senza SIMD.
+// Auto-detect CPU features at runtime and graceful fallback on hardware without SIMD.
 // Supporta: AVX2 (256-bit), SSE4.2 (128-bit), NEON (ARM), Scalar fallback.
 //
-// Compilatori supportati: MSVC, GCC, Clang.
+// Supported compilers: MSVC, GCC, Clang.
 // ============================================================================
 
 #include <cstdint>
@@ -17,10 +17,10 @@
 #include <string>
 
 // ============================================================================
-// SIMD Headers — inclusi solo se supportati dal compilatore
+// SIMD Headers — included only if supported by the compiler
 // ============================================================================
 #if defined(_MSC_VER)
-    // MSVC: <intrin.h> fornisce __cpuid, __cpuidex, e tutte le x86 intrinsics
+    // MSVC: <intrin.h> provides __cpuid, __cpuidex, and all x86 intrinsics
     #include <intrin.h>
 #elif defined(__AVX2__)
     #include <immintrin.h>
@@ -33,11 +33,11 @@
 #endif
 
 // ============================================================================
-// Compile-time: quali set di intrinsics sono disponibili in questo build?
+// Compile-time: which sets of intrinsics are available in this build?
 // ============================================================================
-// Su MSVC x86_64, SSE2 e' sempre disponibile (garantito dall'architettura).
-// Su MSVC, __AVX2__ viene definito solo se /arch:AVX2 e' specificato.
-// Su GCC/Clang, __SSE2__ e __AVX2__ vengono definiti da -march/-msse2/-mavx2.
+// On MSVC x86_64, SSE2 is always available (guaranteed by the architecture).
+// On MSVC, __AVX2__ is defined only if /arch:AVX2 is specified.
+// On GCC/Clang, __SSE2__ and __AVX2__ are defined by -march/-msse2/-mavx2.
 // ============================================================================
 
 #if defined(__AVX2__)
@@ -71,7 +71,7 @@ inline uint32_t detect_cpu_features() {
     uint32_t features = SIMD_NONE;
 
 #if defined(_MSC_VER)
-    // MSVC: usa __cpuid / __cpuidex (da <intrin.h>)
+    // MSVC: uses __cpuid / __cpuidex (from <intrin.h>)
     int cpuinfo[4] = {};
     __cpuid(cpuinfo, 1);
     if (cpuinfo[2] & (1 << 20)) features |= SIMD_SSE42;
@@ -87,10 +87,10 @@ inline uint32_t detect_cpu_features() {
     features |= SIMD_SSE2;
 
 #elif defined(__x86_64__) || defined(__i386__)
-    // GCC/Clang: usa inline asm cpuid
+    // GCC/Clang: uses inline asm cpuid
     uint32_t eax, ebx, ecx, edx;
-    // "=b" gia' informa il compilatore che rbx viene sovrascritto da cpuid.
-    // Non serve il clobber "rbx" aggiuntivo (su PIC genera impossible constraints).
+    // "=b" already informs the compiler that rbx is overwritten by cpuid.
+    // The additional "rbx" clobber is not needed (on PIC it generates impossible constraints).
     __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
     if (edx & (1 << 26)) features |= SIMD_SSE2;
     if (ecx & (1 << 20)) features |= SIMD_SSE42;
@@ -107,7 +107,7 @@ inline uint32_t detect_cpu_features() {
     return features;
 }
 
-// Lazy-init singleton per CPU features (detect una sola volta)
+// Lazy-init singleton for CPU features (detect only once)
 inline uint32_t cpu_features() {
     static uint32_t features = detect_cpu_features();
     return features;
@@ -122,9 +122,9 @@ inline bool has_neon()   { return (cpu_features() & SIMD_NEON) != 0; }
 // SIMD-Accelerated Memory Operations
 // ============================================================================
 
-// --- simd_memcpy: copia ottimizzata con SIMD per buffer grandi ---
-// Per buffer < 4KB usa memcpy standard (overhead SIMD > beneficio).
-// Per buffer >= 4KB usa copia a blocchi 256-bit (AVX2) o 128-bit (SSE).
+// --- simd_memcpy: optimized copy with SIMD for large buffers ---
+// For buffers < 4KB uses standard memcpy (SIMD overhead > benefit).
+// For buffers >= 4KB uses block copy 256-bit (AVX2) or 128-bit (SSE).
 inline void* simd_memcpy(void* __restrict dst, const void* __restrict src, size_t len) {
     if (len < 4096 || len == 0) {
         return std::memcpy(dst, src, len);
@@ -193,7 +193,7 @@ inline void* simd_memcpy(void* __restrict dst, const void* __restrict src, size_
     return std::memcpy(dst, src, len);
 }
 
-// --- simd_memset_zero: zero-fill ottimizzato con SIMD ---
+// --- simd_memset_zero: zero-fill optimized with SIMD ---
 inline void* simd_memset_zero(void* dst, size_t len) {
     if (len == 0) return dst;
 
@@ -259,9 +259,9 @@ inline void* simd_memset_zero(void* dst, size_t len) {
     return std::memset(dst, 0, len);
 }
 
-// --- simd_memcmp: confronto ottimizzato con SIMD ---
+// --- simd_memcmp: comparison optimized with SIMD ---
 // Ritorna 0 se identici, !=0 altrimenti (come memcmp).
-// Per verification integrity: compara blocchi decompressi con expected.
+// For integrity verification: compares decompressed blocks with expected.
 inline int simd_memcmp(const void* a, const void* b, size_t len) {
     if (len == 0) return 0;
     if (len < 64) return std::memcmp(a, b, len);
@@ -333,7 +333,7 @@ inline int simd_memcmp(const void* a, const void* b, size_t len) {
     return std::memcmp(a, b, len);
 }
 
-// --- simd_buffer_xor: XOR two buffers (utile per diff/cipher) ---
+// --- simd_buffer_xor: XOR two buffers (useful for diff/cipher) ---
 inline void simd_buffer_xor(void* __restrict dst, const void* __restrict a,
                              const void* __restrict b, size_t len) {
     if (len == 0) return;
@@ -369,17 +369,17 @@ inline void simd_buffer_xor(void* __restrict dst, const void* __restrict a,
 }
 
 // ============================================================================
-// SIMD info — per il banner e il debug
+// SIMD info — for the banner and debug
 // ============================================================================
-// Mostra il livello SIMD piu' alto che il binario PUO' usare (compile-time)
-// E che la CPU SUPPORTA (runtime). Se il compilatore non ha AVX2 ma la CPU si,
-// mostra SSE4.2/SSE2 (il massimo disponibile nel build).
+// Shows the highest SIMD level the binary CAN use (compile-time)
+// And that the CPU SUPPORTS (runtime). If the compiler does not have AVX2 but the CPU does,
+// shows SSE4.2/SSE2 (the maximum available in the build).
 // ============================================================================
 inline std::string simd_info_string() {
     std::string info;
 
 #if defined(TARC_COMPILER_AVX2)
-    // Se il binario ha le intrinsics AVX2, mostra AVX2 se la CPU lo supporta
+    // If the binary has AVX2 intrinsics, show AVX2 if the CPU supports it
     if (has_avx2()) {
         info += "AVX2 ";
     } else if (has_sse42()) {
@@ -388,7 +388,7 @@ inline std::string simd_info_string() {
         info += "SSE2 ";
     }
 #elif defined(TARC_COMPILER_SSE2)
-    // Binario con solo SSE2 (MSVC x86_64 senza /arch:AVX2, o GCC/Clang -msse2)
+    // Binary with only SSE2 (MSVC x86_64 without /arch:AVX2, or GCC/Clang -msse2)
     if (has_sse42()) {
         info += "SSE4.2 ";
     } else if (has_sse2()) {
@@ -401,7 +401,7 @@ inline std::string simd_info_string() {
 #endif
 
     if (info.empty()) info = "Scalar";
-    else info.pop_back();  // rimuovi spazio finale
+    else info.pop_back();  // remove trailing space
     return info;
 }
 

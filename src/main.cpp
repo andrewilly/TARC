@@ -169,7 +169,7 @@ static Command parse_args(int argc, char* argv[]) {
         } else if (cmd.archive.empty()) {
             cmd.archive = val;
         } else {
-            // Per estrazione/lista, i parametri sono filtri, non file
+            // For extract/list, parameters are filters, not files
             if (cmd.type == Command::Extract || cmd.type == Command::List || cmd.type == Command::Test) {
                 cmd.filters.push_back(val);
             } else {
@@ -326,10 +326,10 @@ static int run_command(const Command& cmd) {
 }
 
 // ============================================================================
-// SFX Helper Functions — Menu interattivo, help, estrazione, lista, test
+// SFX Helper Functions — Interactive menu, help, extract, list, test
 // ============================================================================
 
-// Mostra l'help per la modalita SFX
+// Show help for SFX mode
 static void sfx_show_help(const char* exe_name) {
     std::string name = fs::path(exe_name).filename().string();
     std::cout << "\n";
@@ -362,11 +362,11 @@ static void sfx_show_help(const char* exe_name) {
               << Color::RESET << "\n";
 }
 
-// Legge una riga di input da stdin (cross-platform)
+// Read a line of input from stdin (cross-platform)
 static std::string sfx_read_line() {
     std::string line;
     std::getline(std::cin, line);
-    // Trim whitespace e converti a lowercase
+    // Trim whitespace and convert to lowercase
     std::string result;
     for (char c : line) {
         if (c == '\r' || c == '\n') continue;
@@ -375,7 +375,7 @@ static std::string sfx_read_line() {
     return result;
 }
 
-// Estrae l'archivio SFX embedded
+// Extract the embedded SFX archive
 static int sfx_do_extract(const std::string& self_path,
                            const std::string& output_dir, bool overwrite) {
     ProgressReporter reporter;
@@ -396,7 +396,7 @@ static int sfx_do_extract(const std::string& self_path,
     return res.ok ? 0 : 1;
 }
 
-// Estrae l'archivio SFX embedded in un file temporaneo (utility condivisa)
+// Extract the embedded SFX archive to a temporary file (shared utility)
 static bool sfx_extract_to_temp(const std::string& self_path,
                                   const std::string& temp_archive_path) {
     SfxTrailer trailer;
@@ -437,17 +437,17 @@ static bool sfx_extract_to_temp(const std::string& self_path,
     return true;
 }
 
-// Lista il contenuto dell'archivio SFX (estrae in temp, lista, cleanup)
+// List contents of the SFX archive (extract to temp, list, cleanup)
 static int sfx_do_list(const std::string& self_path) {
     fs::path temp_dir = fs::temp_directory_path();
     fs::path temp_archive = temp_dir / "tarc_sfx_list_temp.strk";
 
-    // Estrai l'archivio embeddato in un file temporaneo
+    // Extract the embedded archive to a temporary file
     if (!sfx_extract_to_temp(self_path, temp_archive.string())) {
         return 1;
     }
 
-    // Lista il contenuto
+    // List the contents
     auto res = Engine::list(temp_archive.string());
 
     // Cleanup
@@ -457,17 +457,17 @@ static int sfx_do_list(const std::string& self_path) {
     return res.ok ? 0 : 1;
 }
 
-// Testa l'integrita dell'archivio SFX (SENZA estrarre file su disco)
+// Test integrity of the SFX archive (WITHOUT extracting files to disk)
 static int sfx_do_test(const std::string& self_path) {
     fs::path temp_dir = fs::temp_directory_path();
     fs::path temp_archive = temp_dir / "tarc_sfx_test_temp.strk";
 
-    // Estrai l'archivio embeddato in un file temporaneo
+    // Extract the embedded archive to a temporary file
     if (!sfx_extract_to_temp(self_path, temp_archive.string())) {
         return 1;
     }
 
-    // Testa l'integrita con test_only=true (non scrive nulla su disco)
+    // Test integrity with test_only=true (writes nothing to disk)
     ProgressReporter reporter;
     Engine::set_progress_callback(&reporter);
 
@@ -496,7 +496,7 @@ static int sfx_do_test(const std::string& self_path) {
     return 0;
 }
 
-// Menu interattivo SFX
+// SFX interactive menu
 static int sfx_interactive_menu(const std::string& self_path,
                                  const std::string& output_dir, bool overwrite) {
     while (true) {
@@ -559,9 +559,9 @@ int main(int argc, char* argv[]) {
     UI::enable_vtp();
 
     // ====================================================================
-    // SFX MODE: se tarc.exe ha un trailer SFX, auto-estrae.
-    // Questo permette di usare tarc.exe come stub per archivi autoestraenti
-    // senza bisogno di un eseguibile separato.
+    // SFX MODE: if tarc.exe has an SFX trailer, auto-extract.
+    // This allows using tarc.exe as a stub for self-extracting archives
+    // without needing a separate executable.
     // ====================================================================
     std::string self_path = IO::get_self_path();
     if (self_path.empty() && argc > 0) {
@@ -570,13 +570,13 @@ int main(int argc, char* argv[]) {
 
     if (!self_path.empty() && Engine::is_sfx_mode(self_path)) {
         // ====================================================================
-        // SFX MODE: archivio autoestraente con menu interattivo
+        // SFX MODE: self-extracting archive with interactive menu
         // ====================================================================
 
-        // Parse opzioni da riga di comando
+        // Parse command line options
         std::string output_dir;
         bool overwrite = false;
-        bool silent_mode = false;  // true se specificato un comando diretto (no menu)
+        bool silent_mode = false;  // true if a direct command was specified (no menu)
         enum SfxAction { None, Extract, List, Test, Help } action = None;
 
         for (int i = 1; i < argc; ++i) {
@@ -597,7 +597,7 @@ int main(int argc, char* argv[]) {
         }
 
         // ====================================================================
-        // HELP: mostra l'help completo SFX
+        // HELP: show full SFX help
         // ====================================================================
         if (action == Help) {
             sfx_show_help(argv[0]);
@@ -605,7 +605,7 @@ int main(int argc, char* argv[]) {
         }
 
         // ====================================================================
-        // SILENT MODE: comando diretto da riga di comando (no menu)
+        // SILENT MODE: direct command from command line (no menu)
         // ====================================================================
         if (silent_mode) {
             ProgressReporter reporter;
@@ -622,13 +622,13 @@ int main(int argc, char* argv[]) {
         }
 
         // ====================================================================
-        // INTERACTIVE MENU: mostra il menu e aspetta la scelta dell'utente
+        // INTERACTIVE MENU: show the menu and wait for user choice
         // ====================================================================
         return sfx_interactive_menu(self_path, output_dir, overwrite);
     }
 
     // ====================================================================
-    // NORMAL MODE: tarc.exe come archiviatore standard
+    // NORMAL MODE: tarc.exe as standard archiver
     // ====================================================================
     Command cmd = parse_args(argc, argv);
     

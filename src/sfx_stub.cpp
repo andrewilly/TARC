@@ -1,22 +1,22 @@
 // ============================================================================
 // TARC SFX Stub — Self-Extracting Archive Launcher
 // ============================================================================
-// Questo file viene compilato come eseguibile separato (tarc_sfx_stub).
-// Viene poi concatenato con un archivio .strk per creare un .exe autoestraente:
+// This file is compiled as a separate executable (tarc_sfx_stub).
+// It is then concatenated with a .strk archive to create a self-extracting .exe:
 //
-//   [Stub EXE][Archivio TARC .strk][SfxTrailer (24 byte)]
+//   [Stub EXE][TARC .strk Archive][SfxTrailer (24 bytes)]
 //
-// All'avvio, il stub:
-//   1. Apre se stesso in modalita' binaria
-//   2. Legge gli ultimi 24 byte (SfxTrailer)
-//   3. Valida il magic "TARC_SFX"
-//   4. Estrae l'archivio TARC nella directory corrente (o --output-dir)
+// On startup, the stub:
+//   1. Opens itself in binary mode
+//   2. Reads the last 24 bytes (SfxTrailer)
+//   3. Validates the magic "TARC_SFX"
+//   4. Extracts the TARC archive to the current directory (or --output-dir)
 //
-// Uso:
-//   archive_sfx.exe                  Estrae nella cartella corrente
-//   archive_sfx.exe --output-dir X   Estrae nella cartella X
-//   archive_sfx.exe --force          Sovrascrive file esistenti
-//   archive_sfx.exe --help           Mostra help
+// Usage:
+//   archive_sfx.exe                  Extracts to current folder
+//   archive_sfx.exe --output-dir X   Extracts to folder X
+//   archive_sfx.exe --force          Overwrites existing files
+//   archive_sfx.exe --help           Shows help
 // ============================================================================
 
 #include "types.h"
@@ -44,7 +44,7 @@
 namespace fs = std::filesystem;
 
 // ============================================================================
-// Estrai l'archivio TARC embeddato nell'eseguibile SFX
+// Extract the TARC archive embedded in the SFX executable
 // ============================================================================
 static int extract_embedded(const std::string& self_path,
                             const std::string& output_dir,
@@ -140,7 +140,7 @@ static int extract_embedded(const std::string& self_path,
     }
     self.close();
 
-    // Mostra info
+    // Show info
     std::cout << Color::CYAN << "TARC SFX — Self-Extracting Archive\n"
               << Color::DIM << "  Embedded archive: "
               << (trailer.archive_size / (1024 * 1024)) << " MB\n"
@@ -171,7 +171,7 @@ static int extract_embedded(const std::string& self_path,
                   << temp_archive.string() << Color::RESET << "\n";
     }
 
-    // Mostra riepilogo
+    // Show summary
     std::cout << "\n";
     UI::print_summary(result, "SFX Extract", elapsed);
 
@@ -188,12 +188,12 @@ static int extract_embedded(const std::string& self_path,
 int main(int argc, char* argv[]) {
     UI::enable_vtp();
 
-    // Mostra banner
+    // Show banner
     std::cout << Color::CYAN << Color::BOLD
               << "  TARC STRIKE — Self-Extracting Archive\n"
               << Color::RESET << "\n";
 
-    // Parse opzioni minime
+    // Parse minimal options
     std::string output_dir;
     bool overwrite = false;
     bool show_help = false;
@@ -223,7 +223,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Mostra avviso se non si specifica --force e ci sono file gia' esistenti
+    // Show warning if --force is not specified and files already exist
     if (!overwrite && !output_dir.empty()) {
         fs::path out_path(output_dir);
         if (fs::exists(out_path)) {
@@ -233,14 +233,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Ottieni il percorso dell'eseguibile stesso
+    // Get the path of the executable itself
     std::string self_path = IO::get_self_path();
     if (self_path.empty()) {
-        // Fallback: usa argv[0]
+        // Fallback: use argv[0]
         self_path = argv[0];
     }
 
-    // Verifica che il file esista
+    // Verify that the file exists
     if (!fs::exists(self_path)) {
         std::cerr << "Error: cannot find self executable: " << self_path << "\n";
         return 1;

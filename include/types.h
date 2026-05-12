@@ -14,10 +14,10 @@
 #define TARC_MAX_CHUNK_SIZE  (2ULL * 1024 * 1024 * 1024)  // SEC-004: max 2GB per chunk (backward-compat)
 #define TARC_MAX_FILE_SIZE   (8UL * 1024 * 1024 * 1024)  // SEC-004: max 8GB per singolo file
 #define TARC_MAX_NAME_LEN    4096  // SEC-005: max filename length nel TOC (cross-platform)
-#define SFX_MAGIC            "TARC_SFX"  // Magic per identificare archivi SFX autoestraenti
+#define SFX_MAGIC            "TARC_SFX"  // Magic to identify self-extracting SFX archives
 #define SFX_TRAILER_SIZE     24          // sizeof(SfxTrailer): 8 + 8 + 8 bytes
 
-// ARCH-006: safe_now() centralizzato — evita duplicazione in engine.cpp, ui.cpp, main.cpp
+// ARCH-006: safe_now() centralized — avoids duplication in engine.cpp, ui.cpp, main.cpp
 #include <chrono>
 namespace TarcUtil {
     inline std::chrono::steady_clock::time_point safe_now() {
@@ -121,13 +121,13 @@ struct ChunkHeader {
     uint64_t checksum;
 };
 
-// SFX Trailer — scritto alla FINE del file EXE autoestraente
-// Layout: [Stub EXE][Archivio TARC .strk][SfxTrailer]
-// Il stub legge gli ultimi 24 byte per trovare offset e dimensione dell'archivio.
+// SFX Trailer — written at the END of the self-extracting EXE file
+// Layout: [Stub EXE][TARC .strk Archive][SfxTrailer]
+// The stub reads the last 24 bytes to find the archive offset and size.
 struct SfxTrailer {
     char     magic[8];      // "TARC_SFX"
-    uint64_t archive_offset; // offset dall'inizio del file dove inizia l'archivio TARC
-    uint64_t archive_size;   // dimensione in byte dell'archivio TARC embeddato
+    uint64_t archive_offset; // offset from file start where the TARC archive begins
+    uint64_t archive_size;   // size in bytes of the embedded TARC archive
 };
 #pragma pack(pop)
 

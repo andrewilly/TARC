@@ -23,12 +23,12 @@
 
 namespace fs = std::filesystem;
 
-// BUG FIX #3: helper glob matching per Unix (non usato su Windows)
+// BUG FIX #3: glob matching helper for Unix (not used on Windows)
 #ifndef _WIN32
 static bool glob_match(const std::string& name, const std::string& pattern) {
     if (pattern.empty()) return name.empty();
 
-    // Converti pattern glob in regex
+    // Convert glob pattern to regex
     std::string regex_str;
     for (size_t i = 0; i < pattern.size(); ++i) {
         char c = pattern[i];
@@ -63,14 +63,14 @@ std::string IO::ensure_ext(const std::string& path) {
 }
 
 bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) {
-    // Prima gestisci direttamente come percorso file/directory
+    // First handle directly as file/directory path
     if (fs::exists(pattern)) {
         if (fs::is_regular_file(pattern)) {
             out.push_back(pattern);
             return true;
         }
         if (fs::is_directory(pattern)) {
-            // BUG FIX #8: skip_permission_denied per evitare crash
+            // BUG FIX #8: skip_permission_denied to avoid crash
             for (auto& p : fs::recursive_directory_iterator(
                     pattern, fs::directory_options::skip_permission_denied)) {
                 if (p.is_regular_file()) {
@@ -83,12 +83,12 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     
     // Se non esiste direttamente, prova come pattern con wildcard
 #ifdef _WIN32
-    // Windows: la shell NON espande le wildcard (*, ?)
-    // FindFirstFileW gestisce Unicode e long path
+    // Windows: the shell does NOT expand wildcards (*, ?)
+    // FindFirstFileW handles Unicode and long paths
     std::string directory = "";
     std::string filePattern = pattern;
     
-    // Estrai directory e pattern file
+    // Extract directory and file pattern
     size_t last_slash = pattern.find_last_of("\\/");
     if (last_slash != std::string::npos) {
         directory = pattern.substr(0, last_slash + 1);
@@ -111,7 +111,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     HANDLE hFind = wsearchPath.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW(wsearchPath.c_str(), &findData);
     
     if (hFind == INVALID_HANDLE_VALUE) {
-        // Se fallisce con tutto il percorso, prova solo con il pattern
+        // If it fails with the full path, try with the pattern only
         int wpattern_len = MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, NULL, 0);
         std::wstring wpattern;
         if (wpattern_len > 1) {
@@ -120,7 +120,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         }
         hFind = wpattern.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW(wpattern.c_str(), &findData);
         if (hFind == INVALID_HANDLE_VALUE) return false;
-        directory = ""; // Reset directory se usiamo pattern senza percorso
+        directory = "";         // Reset directory if using pattern without path
     }
     
     do {
@@ -133,7 +133,7 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         }
         if (foundName != "." && foundName != "..") {
             std::string fullPath = directory + foundName;
-            // Rimuovi .\ iniziale se presente
+            // Remove leading .\ if present
             if (fullPath.substr(0, 2) == ".\\") fullPath = fullPath.substr(2);
             
             std::error_code _ec;
@@ -148,10 +148,10 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
     FindClose(hFind);
     return !out.empty();
 #else
-    // Unix: la shell espande le wildcard, ma gestiamo comunque con glob
+    // Unix: the shell expands wildcards, but we still handle with glob
     if (fs::exists(pattern)) {
         if (fs::is_directory(pattern)) {
-            // BUG FIX #8: protezione symlink circolari
+            // BUG FIX #8: circular symlink protection
             for (auto& p : fs::recursive_directory_iterator(
                     pattern, fs::directory_options::skip_permission_denied)) {
                 if (p.is_regular_file() && !p.is_symlink()) {
@@ -164,8 +164,8 @@ bool IO::expand_path(const std::string& pattern, std::vector<std::string>& out) 
         return true;
     }
 
-    // BUG FIX #3: fallback glob matching su Unix se il pattern contiene wildcard
-    // e la shell non le ha espanse (es. pattern quotato)
+    // BUG FIX #3: fallback glob matching on Unix if the pattern contains wildcards
+    // and the shell has not expanded them (e.g. quoted pattern)
     bool has_glob = (pattern.find('*') != std::string::npos ||
                      pattern.find('?') != std::string::npos);
     if (has_glob) {
@@ -277,7 +277,7 @@ bool IO::write_entry(FILE* f, const FileEntry& entry) {
 }
 
 // ============================================================================
-// SEC-001: Validazione magic header
+// SEC-001: Magic header validation
 // ============================================================================
 bool IO::validate_archive_header(const Header& h) {
     // Verifica magic bytes "TRC2"
@@ -296,7 +296,7 @@ bool IO::validate_archive_header(const Header& h) {
 }
 
 // ============================================================================
-// SEC-002: Sanitizzazione path per prevenire Zip Slip (path traversal)
+// SEC-002: Path sanitization to prevent Zip Slip (path traversal)
 // ============================================================================
 std::string IO::sanitize_extract_path(const std::string& raw_path) {
     // Rifiuta path vuoti
@@ -309,11 +309,11 @@ std::string IO::sanitize_extract_path(const std::string& raw_path) {
     std::string path = raw_path;
     std::replace(path.begin(), path.end(), '\\', '/');
 
-    // Normalizza path assoluti Unix (es. /BACKUP-Blustring/test/file.mdb)
-    // rimuovendo lo slash iniziale. Questo accade quando l'archivio e' stato
-    // creato su Linux/macOS con percorsi assoluti. Non e' un path traversal,
-    // semplicemente il path va trattato come relativo all'output_dir.
-    // NOTA: il successivo check ".." previene qualsiasi tentativo reale di traversal.
+    // Normalize Unix absolute paths (e.g. /BACKUP-Blustring/test/file.mdb)
+    // by removing the leading slash. This happens when the archive was
+    // created on Linux/macOS with absolute paths. It is not a path traversal,
+    // the path simply needs to be treated as relative to output_dir.
+    // NOTE: the subsequent ".." check prevents any actual traversal attempt.
     while (!path.empty() && path[0] == '/') {
         path = path.substr(1);
     }
@@ -342,15 +342,15 @@ std::string IO::sanitize_extract_path(const std::string& raw_path) {
     }
 
     // Risolvi . e .. nel path
-    // Blocca SOLO il componente ".." puro (directory traversal).
-    // I filename legittimi che contengono ".." come "AINELFS.R.L..mdb"
-    // o "file..old.txt" vengono accettati senza problemi.
+    // Block ONLY the pure ".." component (directory traversal).
+    // Legitimate filenames containing ".." like "AINELFS.R.L..mdb"
+    // or "file..old.txt" are accepted without issues.
     std::vector<std::string> resolved;
     for (const auto& part : parts) {
         if (part == ".") {
             continue;
         } else if (part == "..") {
-            // Path traversal: componente ".." puro (directory parent)
+            // Path traversal: pure ".." component (parent directory)
             return "";
         } else {
             resolved.push_back(part);
@@ -368,7 +368,7 @@ std::string IO::sanitize_extract_path(const std::string& raw_path) {
 }
 
 // ============================================================================
-// SEC-005: Validazione nome file
+// SEC-005: Filename validation
 // ============================================================================
 bool IO::is_safe_filename(const std::string& name) {
     if (name.empty()) return false;
@@ -382,16 +382,16 @@ bool IO::is_safe_filename(const std::string& name) {
         if (static_cast<unsigned char>(c) < 0x20 && c != '\t') return false;
     }
 
-    // NOTA: il controllo ".." (path traversal) e' delegato a sanitize_extract_path()
-    // che normalizza il path e rifiuta solo componenti ".." reali.
-    // Qui non rifiutiamo ".." nel nome perche' file legittimi come
-    // "mio_file_v2..bak.txt" o "file..old" devono essere accettati.
+    // NOTE: the ".." (path traversal) check is delegated to sanitize_extract_path()
+    // which normalizes the path and rejects only actual ".." components.
+    // Here we do not reject ".." in the name because legitimate files like
+    // "my_file_v2..bak.txt" or "file..old" must be accepted.
 
     return true;
 }
 
 // ============================================================================
-// SEC-007: Controllo esistenza file
+// SEC-007: File existence check
 // ============================================================================
 bool IO::file_exists(const std::string& path) {
     std::error_code ec;
@@ -399,7 +399,7 @@ bool IO::file_exists(const std::string& path) {
 }
 
 // ============================================================================
-// write_file_to_disk aggiornato con overwrite protection
+// write_file_to_disk updated with overwrite protection
 // ============================================================================
 bool IO::write_file_to_disk(const std::string& path, const char* data, size_t size,
                                uint64_t timestamp, bool overwrite) {
@@ -412,7 +412,7 @@ bool IO::write_file_to_disk(const std::string& path, const char* data, size_t si
 
         fs::path p(safe_path);
 
-        // SEC-007: Controlla se il file esiste gia' (protezione sovrascrittura)
+        // SEC-007: Check if the file already exists (overwrite protection)
         if (!overwrite && fs::exists(p)) {
             return false;
         }
@@ -463,7 +463,7 @@ bool IO::write_bytes(FILE* f, const void* buf, size_t size) {
 }
 
 // ============================================================================
-// Percorso dell'eseguibile corrente (cross-platform)
+// Path of the current executable (cross-platform)
 // ============================================================================
 std::string IO::get_self_path() {
 #ifdef _WIN32
@@ -476,19 +476,19 @@ std::string IO::get_self_path() {
     WideCharToMultiByte(CP_UTF8, 0, buf, -1, &result[0], narrow_len, nullptr, nullptr);
     return result;
 #elif defined(__APPLE__)
-    // macOS: usa _NSGetExecutablePath (mach-o/dyld.h)
-    // /proc/self/exe NON esiste su macOS!
+    // macOS: uses _NSGetExecutablePath (mach-o/dyld.h)
+    // /proc/self/exe does NOT exist on macOS!
     char buf[4096];
     uint32_t buf_size = sizeof(buf);
     if (_NSGetExecutablePath(buf, &buf_size) != 0) return "";
-    // Risolvi path relativo in assoluto
+    // Resolve relative path to absolute
     char resolved[4096];
     if (realpath(buf, resolved) != nullptr) {
         return std::string(resolved);
     }
     return std::string(buf);
 #else
-    // Linux / BSD con /proc filesystem
+    // Linux / BSD with /proc filesystem
     std::string result;
     result.resize(4096);
     ssize_t len = readlink("/proc/self/exe", &result[0], result.size());

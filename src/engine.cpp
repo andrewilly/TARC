@@ -51,11 +51,11 @@ namespace {
     int g_max_workers = 0;
     Engine::CompressionStats g_stats;
 
-    // End marker: tutti i campi zero — nessun chunk legittimo puo' avere
-    // codec=0 AND raw_size=0 AND comp_size=0 AND checksum=0 simultaneamente.
+    // End marker: all fields zero — no legitimate chunk can have
+    // codec=0 AND raw_size=0 AND comp_size=0 AND checksum=0 simultaneously.
     static constexpr ChunkHeader END_MARKER = {0, 0, 0, 0};
 
-    // RAII wrapper per FILE* — chiude automaticamente in distruttore
+    // RAII wrapper for FILE* — closes automatically in destructor
     struct FileGuard {
         FILE* f = nullptr;
         FileGuard(FILE* f) : f(f) {}
@@ -73,7 +73,7 @@ namespace {
         FILE* release() { FILE* tmp = f; f = nullptr; return tmp; }
     };
 
-    // Helper: tarc_ftell con controllo errore — restituisce false in caso di errore
+    // Helper: tarc_ftell with error checking — returns false on error
     static bool tell_pos(FILE* f, uint64_t& pos) {
         int64_t p = IO::tarc_ftell(f);
         if (p < 0) return false;
@@ -82,20 +82,20 @@ namespace {
     }
 
     // ========================================================================
-    // Memory Manager — Auto-detect RAM disponibile e limita le allocazioni
+    // Memory Manager — Auto-detect available RAM and limit allocations
     // ========================================================================
-    // Previene OOM su macchine con poca RAM o CI runners con limiti stretti.
-    // Calcola la RAM disponibile una sola volta (lazy init) e espone limiti
-    // sicuri per dizionario LZMA2, window ZSTD, e buffer solid.
+    // Prevents OOM on low-RAM machines or CI runners with tight limits.
+    // Calculates available RAM once (lazy init) and exposes safe limits
+    // for LZMA2 dictionary, ZSTD window, and solid buffer.
     // ========================================================================
     struct MemoryManager {
-        uint64_t total_ram = 0;       // RAM fisica totale (bytes)
-        uint64_t avail_ram = 0;       // RAM disponibile stimata (bytes)
-        uint64_t max_dict = 0;        // max dizionario LZMA2 sicuro
-        uint64_t max_window = 0;      // max window log ZSTD (come bytes)
-        size_t   max_solid = 0;       // max solid buffer size
+        uint64_t total_ram = 0;       // Total physical RAM (bytes)
+        uint64_t avail_ram = 0;       // Estimated available RAM (bytes)
+        uint64_t max_dict = 0;        // Max safe LZMA2 dictionary size
+        uint64_t max_window = 0;      // Max ZSTD window log (as bytes)
+        size_t   max_solid = 0;       // Max solid buffer size
         bool     initialized = false;
-        bool     low_memory = false;  // flag per macchine < 2GB
+        bool     low_memory = false;  // Flag for machines with < 2GB RAM
 
         void init() {
             if (initialized) return;
@@ -119,7 +119,7 @@ namespace {
                 avail_ram = static_cast<uint64_t>(avail_pages) * page_size;
             }
 #elif defined(__APPLE__)
-            // macOS: usiamo sysctl per RAM totale, stima 50% disponibile
+            // macOS: use sysctl for total RAM, estimate 50% available
             int mib[2] = {CTL_HW, HW_MEMSIZE};
             int64_t macos_ram = 0;
             size_t len = sizeof(macos_ram);
@@ -129,37 +129,37 @@ namespace {
             }
 #endif
 
-            // Fallback: assumiamo 512MB se non riusciamo a rilevare
+            // Fallback: assume 512MB if detection fails
             if (total_ram == 0) total_ram = 512ULL * 1024 * 1024;
             if (avail_ram == 0) avail_ram = total_ram / 3;
 
-            // Non usare mai piu del 40% della RAM disponibile per il dizionario
-            // (LZMA alloca ~2-3x il dizionario per le strutture interne)
+            // Never use more than 40% of available RAM for dictionary
+            // (LZMA allocates ~2-3x the dictionary for internal structures)
             max_dict = std::min(
                 static_cast<uint64_t>(avail_ram * 2 / 5),
                 static_cast<uint64_t>(1024ULL * 1024 * 1024)  // hard cap: 1GB
             );
-            // Arrotonda al potere di 2 inferiore (LZMA richiede potenze di 2)
+            // Round down to power of 2 (LZMA requires powers of 2)
             max_dict = round_down_pow2(max_dict);
-            // Minimo assoluto: 4MB
+            // Absolute minimum: 4MB
             max_dict = std::max(max_dict, static_cast<uint64_t>(4ULL * 1024 * 1024));
 
-            // ZSTD window: non piu del 30% della RAM disponibile
+            // ZSTD window: no more than 30% of available RAM
             max_window = std::min(
                 static_cast<uint64_t>(avail_ram * 3 / 10),
                 static_cast<uint64_t>(1024ULL * 1024 * 1024)  // hard cap: 1GB
             );
             max_window = round_down_pow2(max_window);
-            max_window = std::max(max_window, static_cast<uint64_t>(8ULL * 1024 * 1024)); // minimo 8MB
+            max_window = std::max(max_window, static_cast<uint64_t>(8ULL * 1024 * 1024)); // minimum 8MB
 
-            // Solid buffer: non piu del 25% della RAM disponibile
+            // Solid buffer: no more than 25% of available RAM
             max_solid = static_cast<size_t>(
                 std::min(
                     static_cast<uint64_t>(avail_ram / 4),
                     static_cast<uint64_t>(128ULL * 1024 * 1024)  // hard cap: 128MB
                 )
             );
-            max_solid = std::max(max_solid, static_cast<size_t>(8 * 1024 * 1024)); // min 8MB
+            max_solid = std::max(max_solid, static_cast<size_t>(8 * 1024 * 1024)); // minimum 8MB
 
             low_memory = (total_ram < 2ULL * 1024 * 1024 * 1024);
         }
@@ -174,13 +174,13 @@ namespace {
             v |= v >> 8;
             v |= v >> 16;
             v |= v >> 32;
-            return v + 1;  // potenza di 2 <= v
+            return v + 1;  // power of 2 <= v
         }
     };
 
     MemoryManager g_mem;
 
-    // Inizializza il memory manager all'avvio
+    // Initialize memory manager at startup
     static MemoryManager& ensure_mem() {
         g_mem.init();
         return g_mem;
@@ -215,14 +215,14 @@ namespace CodecSelector {
         
         if (!is_compressible(ext)) return Codec::STORE;
         
-        // PDF e documenti: ZSTD gestisce meglio i flussi gia compressi
-        // (PDF contiene stream zlib/deflate interni che LZMA non comprime bene)
+        // PDF and documents: ZSTD handles already-compressed streams better
+        // (PDF contains internal zlib/deflate streams that LZMA does not compress well)
         if (ext == ".pdf" || ext == ".xps" || ext == ".oxps" ||
             ext == ".epub" || ext == ".mobi") {
             return Codec::ZSTD;
         }
         
-        // File di testo e codice sorgente: LZMA2 con dizionario grande
+        // Text files and source code: LZMA2 with large dictionary
         if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".hpp" ||
             ext == ".c" || ext == ".py" || ext == ".js" || ext == ".ts" ||
             ext == ".json" || ext == ".xml" || ext == ".html" || ext == ".css" ||
@@ -231,13 +231,13 @@ namespace CodecSelector {
             return Codec::LZMA;
         }
         
-        // Database: ZSTD con dizionario grande
+        // Database: ZSTD with large dictionary
         if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde" ||
             ext == ".db" || ext == ".sqlite" || ext == ".sqlite3") {
             return Codec::ZSTD;
         }
         
-        // Immagini gia compresse: STORE (non riduce)
+        // Already compressed images: STORE (no reduction)
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
             ext == ".bmp" || ext == ".ico" || ext == ".webp" ||
             ext == ".mp3" || ext == ".mp4" || ext == ".avi" || ext == ".mkv" ||
@@ -245,17 +245,17 @@ namespace CodecSelector {
             return Codec::STORE;
         }
         
-        // Office (ZIP-based): LZMA per solid blocks
+        // Office (ZIP-based): LZMA for solid blocks
         if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt") {
             return Codec::LZMA;
         }
         
-        // File piccoli: LZ4 veloce
+        // Small files: fast LZ4
         if (size < 64 * 1024) {
             return Codec::LZ4;
         }
         
-        // Default: LZMA2 (miglior compressione per dati sconosciuti)
+        // Default: LZMA2 (best compression for unknown data)
         return Codec::LZMA;
     }
 }
@@ -285,7 +285,7 @@ namespace Engine {
 
 std::string normalize_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
-    // BUG FIX #7: rimuovi prefisso ./ iniziale
+    // BUG FIX #7: remove leading ./ prefix
     while (path.size() >= 2 && path[0] == '.' && path[1] == '/') {
         path = path.substr(2);
     }
@@ -300,16 +300,16 @@ struct ChunkResult {
 };
 
 // ============================================================================
-// LZMA2 Codec — UPGRADE: LZMA2 + dizionario scalabile fino a 1GB
-// Prima si usava lzma_easy_buffer_encode (solo LZMA1, max ~64MB dict).
-// Ora si usa lzma_stream_buffer_encode con LZMA_FILTER_LZMA2 per:
-//   - Miglior compressione su blocchi solid (come 7-Zip)
-//   - Dizionario fino a 1GB ai livelli alti (vs 64MB)
-//   - LZMA2 gestisce meglio i dati misti (testo + binario)
+// LZMA2 Codec — UPGRADE: LZMA2 + scalable dictionary up to 1GB
+// Previously used lzma_easy_buffer_encode (LZMA1 only, max ~64MB dict).
+// Now uses lzma_stream_buffer_encode with LZMA_FILTER_LZMA2 for:
+//   - Better compression on solid blocks (like 7-Zip)
+//   - Dictionary up to 1GB at high levels (vs 64MB)
+//   - LZMA2 handles mixed data better (text + binary)
 // ============================================================================
 
-// Mappa livello CLI → dimensione dizionario LZMA2
-// Rispetta il limite di RAM disponibile (g_mem.max_dict)
+// Map CLI level → LZMA2 dictionary size
+// Respect available RAM limit (g_mem.max_dict)
 static uint32_t lzma2_dict_size(int level) {
     uint32_t ideal;
     if (level <= 1)  ideal =   4 * 1024 * 1024; //   4 MB
@@ -322,7 +322,7 @@ static uint32_t lzma2_dict_size(int level) {
     else if (level <= 15) ideal = 512 * 1024 * 1024; // 512 MB
     else ideal = 1024UL * 1024 * 1024;              //   1 GB (level 16-19)
 
-    // Cap alla RAM disponibile (non allocare piu di quanto il sistema puo' sostenere)
+    // Cap to available RAM (don't allocate more than the system can sustain)
     ensure_mem();
     if (static_cast<uint64_t>(ideal) > g_mem.max_dict) {
         ideal = static_cast<uint32_t>(g_mem.max_dict);
@@ -348,7 +348,7 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     try {
         res.compressed_data.resize(max_out);
     } catch (const std::bad_alloc&) {
-        // OOM: fallback a STORE (non comprimere piuttosto che crashare)
+        // OOM: fallback to STORE (don't crash rather than not compress)
         report_warning("[MEMORY] LZMA2 output buffer allocation failed ("
             + std::to_string(max_out / (1024 * 1024)) + "MB), falling back to STORE");
         res.compressed_data = raw_data;
@@ -358,7 +358,7 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
     }
     size_t out_pos = 0;
     
-    // Configura opzioni LZMA2 con dizionario scalabile
+    // Configure LZMA2 options with scalable dictionary
     lzma_options_lzma opt;
     uint32_t preset = static_cast<uint32_t>(std::min(level, 9));
     if (level >= 7) {
@@ -373,18 +373,18 @@ ChunkResult compress_lzma_optimal(const std::vector<char>& raw_data, int level) 
         return res;
     }
     
-    // Sovrascrivi il dizionario con la dimensione calcolata dal livello
-    // (preset 9 = 64MB, ma noi vogliamo fino a 1GB ai livelli alti)
+    // Override dictionary with level-calculated size
+    // (preset 9 = 64MB, but we want up to 1GB at high levels)
     uint32_t custom_dict = lzma2_dict_size(level);
     if (custom_dict > opt.dict_size) {
         opt.dict_size = custom_dict;
     }
     
-    // Usa LZMA2 filter (piu efficiente di LZMA1 per blocchi solid)
+    // Use LZMA2 filter (more efficient than LZMA1 for solid blocks)
     lzma_filter filters[2] = {};
     filters[0].id = LZMA_FILTER_LZMA2;
     filters[0].options = &opt;
-    filters[1].id = UINT64_MAX;  // terminator (equivalente a LZMA_VLI_END, cross-platform)
+    filters[1].id = UINT64_MAX;  // terminator (equivalent to LZMA_VLI_END, cross-platform)
     
     lzma_ret ret = lzma_stream_buffer_encode(
         filters,
@@ -431,12 +431,12 @@ bool decompress_lzma(const std::vector<char>& compressed, std::vector<char>& dec
 }
 
 // ============================================================================
-// ZSTD Codec — UPGRADE: API avanzata con window log grande
-// Prima si usava ZSTD_compress() semplice (max efficiente per default).
-// Ora si usa ZSTD_CCtx + parametri avanzati:
-//   - ZSTD_c_windowLog grande per long-range matching su blocchi solid
-//   - ZSTD_c_strategy ultra a livelli alti (ZSTD_btultra2)
-//   - Supporto completo livelli 1-19
+// ZSTD Codec — UPGRADE: advanced API with large window log
+// Previously used simple ZSTD_compress() (max efficient by default).
+// Now uses ZSTD_CCtx + advanced parameters:
+//   - Large ZSTD_c_windowLog for long-range matching on solid blocks
+//   - ZSTD_c_strategy ultra at high levels (ZSTD_btultra2)
+//   - Full support for levels 1-19
 // ============================================================================
 
 ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
@@ -455,7 +455,7 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
     try {
         res.compressed_data.resize(bound);
     } catch (const std::bad_alloc&) {
-        // OOM: fallback a STORE
+        // OOM: fallback to STORE
         report_warning("[MEMORY] ZSTD output buffer allocation failed ("
             + std::to_string(bound / (1024 * 1024)) + "MB), falling back to STORE");
         res.compressed_data = raw_data;
@@ -466,10 +466,10 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
     
     int zstd_level = std::clamp(level, 1, 19);
     
-    // Crea contesto avanzato per ottimizzare la compressione
+    // Create advanced context for optimized compression
     ZSTD_CCtx* cctx = ZSTD_createCCtx();
     if (!cctx) {
-        // Fallback: API semplice
+        // Fallback: simple API
         size_t comp_size = ZSTD_compress(
             res.compressed_data.data(), bound,
             raw_data.data(), raw_data.size(),
@@ -485,14 +485,14 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
         return res;
     }
     
-    // Window log grande per long-range matching su blocchi solid
-    // Standard: log2(8MB) = 23. A livelli alti usiamo fino a 30 (1GB window)
+    // Large window log for long-range matching on solid blocks
+    // Default: log2(8MB) = 23. At high levels we use up to 30 (1GB window)
     int window_log = 23; // 8MB default
     if (zstd_level >= 10) window_log = 27;      // 128MB
     if (zstd_level >= 14) window_log = 29;      // 512MB
     if (zstd_level >= 17) window_log = 30;      // 1GB
 
-    // Cap window log alla RAM disponibile
+    // Cap window log to available RAM
     ensure_mem();
     uint64_t window_bytes = 1ULL << window_log;
     if (window_bytes > g_mem.max_window) {
@@ -501,14 +501,14 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
             + std::to_string(g_mem.max_window / (1024 * 1024)) + "MB (available RAM limit)");
     }
 
-    // Assicura che il window log non ecceda la dimensione dei dati
+    // Ensure window log does not exceed data size
     size_t data_bits = 0;
     size_t tmp = raw_data.size();
     while (tmp > 0) { data_bits++; tmp >>= 1; }
     if (window_log > 0 && static_cast<int>(data_bits) < window_log) {
         window_log = static_cast<int>(data_bits);
     }
-    // ZSTD richiede window_log >= 10
+    // ZSTD requires window_log >= 10
     if (window_log < 10) window_log = 10;
     
     if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, zstd_level))) {
@@ -526,7 +526,7 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
         return res;
     }
     
-    // Usa strategia ultra ai livelli piu alti (miglior compressione)
+    // Use ultra strategy at highest levels (best compression)
     if (zstd_level >= 16) {
         if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_strategy, ZSTD_btultra2))) {
             ZSTD_freeCCtx(cctx);
@@ -545,7 +545,7 @@ ChunkResult compress_zstd(const std::vector<char>& raw_data, int level) {
         }
     }
     
-    // Abilita checksum a livelli alti per integrita
+    // Enable checksum at high levels for integrity
     if (zstd_level >= 10) {
         if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1))) {
             ZSTD_freeCCtx(cctx);
@@ -616,7 +616,7 @@ bool decompress_zstd(const std::vector<char>& compressed, std::vector<char>& dec
 }
 
 // ============================================================================
-// LZ4 Codec — FEATURE #1: implementazione nativa
+// LZ4 Codec — FEATURE #1: native implementation
 // ============================================================================
 
 ChunkResult compress_lz4(const std::vector<char>& raw_data, int level) {
@@ -644,14 +644,14 @@ ChunkResult compress_lz4(const std::vector<char>& raw_data, int level) {
     
     int comp_size;
     if (level >= 4) {
-        // LZ4HC per livelli alti (miglior compressione, piu lento)
+        // LZ4HC for high levels (better compression, slower)
         int hc_level = std::clamp(level, 4, 12);
         comp_size = LZ4_compress_HC(
             raw_data.data(), res.compressed_data.data(),
             src_size, max_out, hc_level
         );
     } else {
-        // LZ4 default veloce
+        // Fast default LZ4
         comp_size = LZ4_compress_default(
             raw_data.data(), res.compressed_data.data(),
             src_size, max_out
@@ -659,7 +659,7 @@ ChunkResult compress_lz4(const std::vector<char>& raw_data, int level) {
     }
     
     if (comp_size <= 0 || static_cast<size_t>(comp_size) >= raw_data.size()) {
-        // Compressione fallita o non riduce: fallback STORE
+        // Compression failed or does not reduce size: fallback STORE
         res.compressed_data = raw_data;
         res.codec = Codec::STORE;
         res.success = true;
@@ -676,7 +676,7 @@ bool decompress_lz4(const std::vector<char>& compressed, std::vector<char>& deco
     int dst_capacity = static_cast<int>(decompressed.size());
     
     if (dst_capacity == 0) {
-        // Dimensione target sconosciuta: usare buffer generoso
+        // Unknown target size: use generous buffer
         dst_capacity = std::max(src_size * 4, 65536);
         decompressed.resize(static_cast<size_t>(dst_capacity));
     }
@@ -687,7 +687,7 @@ bool decompress_lz4(const std::vector<char>& compressed, std::vector<char>& deco
     );
     
     if (dec_size < 0) {
-        // Buffer troppo piccolo: ritentare con dimensione doppia (fino a 8 tentativi)
+        // Buffer too small: retry with doubled size (up to 8 attempts)
         for (int attempt = 0; attempt < 8; ++attempt) {
             dst_capacity *= 2;
             decompressed.resize(static_cast<size_t>(dst_capacity));
@@ -705,10 +705,10 @@ bool decompress_lz4(const std::vector<char>& compressed, std::vector<char>& deco
 }
 
 // ============================================================================
-// Brotli Codec — UPGRADE: window size scalabile con il livello
-// Prima: lgwin fisso a 22 (4MB) per tutti i livelli.
-// Ora: lgwin scala da 20 (1MB) a 26 (64MB) in base al livello,
-// permettendo long-range matching su blocchi solid grandi.
+// Brotli Codec — UPGRADE: window size scales with level
+// Before: lgwin fixed at 22 (4MB) for all levels.
+// Now: lgwin scales from 20 (1MB) to 26 (64MB) based on level,
+// allowing long-range matching on large solid blocks.
 // ============================================================================
 
 ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
@@ -723,14 +723,14 @@ ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
         return res;
     }
     
-    // Brotli bound: input_size + input_size/8 + 1024 (raccomandazione ufficiale)
+    // Brotli bound: input_size + input_size/8 + 1024 (official recommendation)
     size_t max_out = raw_data.size() + raw_data.size() / 8 + 1024;
     res.compressed_data.resize(max_out);
     
     int quality = std::clamp(level, 0, 11);
     
-    // Window size scalabile: da 1MB (livello 1) a 64MB (livello 11+)
-    // Livelli alti beneficiano di window piu grande per long-range matching
+    // Scalable window size: from 1MB (level 1) to 64MB (level 11+)
+    // High levels benefit from larger window for long-range matching
     int lgwin = 20; // 1MB default
     if (quality >= 3)  lgwin = 22; //   4 MB
     if (quality >= 5)  lgwin = 23; //   8 MB
@@ -738,7 +738,7 @@ ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
     if (quality >= 9)  lgwin = 25; //  32 MB
     if (quality >= 11) lgwin = 26; //  64 MB
     
-    // Assicura che il window non ecceda la dimensione dei dati
+    // Ensure window does not exceed data size
     size_t data_bits = 0;
     size_t tmp = raw_data.size();
     while (tmp > 0) { data_bits++; tmp >>= 1; }
@@ -764,7 +764,7 @@ ChunkResult compress_brotli(const std::vector<char>& raw_data, int level) {
         return res;
     }
     
-    // Se la compressione non riduce la dimensione, fallback STORE
+    // If compression does not reduce size, fallback STORE
     if (encoded_size >= raw_data.size()) {
         res.compressed_data = raw_data;
         res.codec = Codec::STORE;
@@ -781,7 +781,7 @@ bool decompress_brotli(const std::vector<char>& compressed, std::vector<char>& d
     size_t decoded_size = decompressed.size();
     
     if (decoded_size == 0) {
-        // Dimensione target sconosciuta: stimare
+        // Unknown target size: estimate
         decoded_size = compressed.size() * 4;
         if (decoded_size < 65536) decoded_size = 65536;
         decompressed.resize(decoded_size);
@@ -800,7 +800,7 @@ bool decompress_brotli(const std::vector<char>& compressed, std::vector<char>& d
     }
     
     if (result == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) {
-        // Buffer troppo piccolo: ritentare con dimensione doppia
+        // Buffer too small: retry with doubled size
         for (int attempt = 0; attempt < 4; ++attempt) {
             decoded_size = decompressed.size() * 2;
             decompressed.resize(decoded_size);
@@ -821,7 +821,7 @@ bool decompress_brotli(const std::vector<char>& compressed, std::vector<char>& d
 }
 
 // ============================================================================
-// compress_worker — FEATURE #1: dispatch al codec selezionato (non piu' solo LZMA)
+// compress_worker — FEATURE #1: dispatch to selected codec (not only LZMA anymore)
 // ============================================================================
 
 ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_codec) {
@@ -865,17 +865,17 @@ ChunkResult compress_worker(std::vector<char> raw_data, int level, Codec chosen_
             res = compress_brotli(raw_data, level);
             break;
         default:
-            // Fallback sicuro: LZMA
+            // Safe fallback: LZMA
             res = compress_lzma_optimal(raw_data, level);
             break;
     }
     
-    res.raw_size = saved_raw_size; // preserva il raw_size corretto
+    res.raw_size = saved_raw_size; // preserve correct raw_size
     return res;
 }
 
 // ============================================================================
-// decompress_chunk — FEATURE #1: dispatch al decompressore corretto
+// decompress_chunk — FEATURE #1: dispatch to correct decompressor
 // ============================================================================
 
 bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& decompressed, Codec codec) {
@@ -899,18 +899,18 @@ bool decompress_chunk(const std::vector<char>& compressed, std::vector<char>& de
 }
 
 // ============================================================================
-// SFX — Self-Extracting Archive (integrato in tarc.exe)
+// SFX — Self-Extracting Archive (integrated into tarc.exe)
 // ============================================================================
-// Layout del file SFX generato:
-//   [tarc.exe][Archivio TARC .strk][SfxTrailer (24 byte)]
+// Layout of the generated SFX file:
+//   [tarc.exe][TARC Archive .strk][SfxTrailer (24 bytes)]
 //
-// Quando l'utente lancia il file .exe generato, tarc.exe rileva il trailer
-// SFX alla fine del file e auto-estrae l'archivio embeddato.
-// Non serve nessun stub separato — tarc.exe e' sia il compressore che lo stub.
+// When the user launches the generated .exe, tarc.exe detects the SFX trailer
+// at the end of the file and self-extracts the embedded archive.
+// No separate stub needed — tarc.exe is both the compressor and the stub.
 // ============================================================================
 
 // ============================================================================
-// Legge il trailer SFX dagli ultimi 24 byte di un file
+// Read the SFX trailer from the last 24 bytes of a file
 // ============================================================================
 static bool read_sfx_trailer(const std::string& exe_path, SfxTrailer& trailer) {
     std::ifstream f(exe_path, std::ios::binary);
@@ -926,7 +926,7 @@ static bool read_sfx_trailer(const std::string& exe_path, SfxTrailer& trailer) {
 
     if (std::memcmp(trailer.magic, SFX_MAGIC, 8) != 0) return false;
 
-    // Validazione coerenza offset/dimensione
+    // Validate offset/size consistency
     uint64_t fsize = static_cast<uint64_t>(file_size);
     if (trailer.archive_offset >= fsize) return false;
     if (trailer.archive_offset + trailer.archive_size > fsize - SFX_TRAILER_SIZE) return false;
@@ -945,7 +945,7 @@ TarcResult extract_sfx(const std::string& exe_path,
     TarcResult res;
     res.ok = false;
 
-    // Leggi il trailer
+    // Read the trailer
     SfxTrailer trailer;
     if (!read_sfx_trailer(exe_path, trailer)) {
         res.error = TarcError::CorruptedArchive;
@@ -953,7 +953,7 @@ TarcResult extract_sfx(const std::string& exe_path,
         return res;
     }
 
-    // Estrai l'archivio TARC embeddato in un file temporaneo
+    // Extract the embedded TARC archive to a temporary file
     fs::path temp_dir = fs::temp_directory_path();
     fs::path temp_archive = temp_dir / "tarc_sfx_temp.strk";
 
@@ -975,7 +975,7 @@ TarcResult extract_sfx(const std::string& exe_path,
         self.clear();
         self.seekg(static_cast<std::streamoff>(trailer.archive_offset));
 
-        // Buffer allineato a 64 byte per ottimale SIMD copy
+        // 64-byte aligned buffer for optimal SIMD copy
         const size_t BUF_SIZE = 1024 * 1024;
         std::vector<char> buf(BUF_SIZE);
         uint64_t remaining = trailer.archive_size;
@@ -991,7 +991,7 @@ TarcResult extract_sfx(const std::string& exe_path,
                 res.message = "Failed to read embedded archive.";
                 return res;
             }
-            // SIMD-optimized write per buffer >= 4KB
+            // SIMD-optimized write for buffers >= 4KB
             out.write(buf.data(), to_read);
             remaining -= to_read;
         }
@@ -1007,7 +1007,7 @@ TarcResult extract_sfx(const std::string& exe_path,
         }
     }
 
-    // Estrai usando il motore TARC
+    // Extract using TARC engine
     ExtractOptions xopts;
     xopts.test_only = false;
     xopts.verify = true;
@@ -1018,7 +1018,7 @@ TarcResult extract_sfx(const std::string& exe_path,
 
     res = extract(temp_archive.string(), {}, xopts);
 
-    // Cleanup temporaneo
+    // Temporary cleanup
     std::error_code ec;
     fs::remove(temp_archive, ec);
 
@@ -1029,7 +1029,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     TarcResult res;
     res.ok = false;
 
-    // Usa l'eseguibile corrente (tarc.exe) come stub
+    // Use current executable (tarc.exe) as stub
     std::string stub_path = IO::get_self_path();
     if (stub_path.empty()) {
         res.error = TarcError::FileNotFound;
@@ -1037,14 +1037,14 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
         return res;
     }
 
-    // Verifica che l'archivio esista
+    // Verify archive exists
     if (!fs::exists(archive_path)) {
         res.error = TarcError::FileNotFound;
         res.message = "Archive not found: " + archive_path;
         return res;
     }
 
-    // Determina le dimensioni dei file
+    // Determine file sizes
     uint64_t stub_size = static_cast<uint64_t>(fs::file_size(stub_path));
     uint64_t archive_size = static_cast<uint64_t>(fs::file_size(archive_path));
 
@@ -1059,16 +1059,16 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
         return res;
     }
 
-    // L'archivio TARC inizia subito dopo lo stub
+    // TARC archive starts right after the stub
     uint64_t archive_offset = stub_size;
 
-    // Costruisci il trailer
+    // Build the trailer
     SfxTrailer trailer;
     std::memcpy(trailer.magic, SFX_MAGIC, 8);
     trailer.archive_offset = archive_offset;
     trailer.archive_size = archive_size;
 
-    // Apri tutti i file
+    // Open all files
     std::ifstream stub_in(stub_path, std::ios::binary);
     std::ifstream archive_in(archive_path, std::ios::binary);
     std::ofstream sfx_out(sfx_name, std::ios::binary);
@@ -1079,11 +1079,11 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
         return res;
     }
 
-    // Buffer ottimizzato SIMD per copia SFX (1MB, allineato cache line)
+    // SIMD-optimized buffer for SFX copy (1MB, cache-line aligned)
     const size_t COPY_BUF = 1024 * 1024;
     std::vector<char> buf(COPY_BUF);
 
-    // 1) Copia stub
+    // 1) Copy stub
     uint64_t remaining = stub_size;
     while (remaining > 0) {
         size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(COPY_BUF)));
@@ -1098,7 +1098,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     }
     stub_in.close();
 
-    // 2) Copia archivio TARC
+    // 2) Copy TARC archive
     remaining = archive_size;
     while (remaining > 0) {
         size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(COPY_BUF)));
@@ -1113,7 +1113,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     }
     archive_in.close();
 
-    // 3) Scrivi il trailer (ultimi 24 byte)
+    // 3) Write the trailer (last 24 bytes)
     sfx_out.write(reinterpret_cast<const char*>(&trailer), SFX_TRAILER_SIZE);
     sfx_out.flush();
 
@@ -1124,7 +1124,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     }
     sfx_out.close();
 
-    // Calcola dimensione finale per il report
+    // Calculate final size for the report
     uint64_t sfx_total = stub_size + archive_size + SFX_TRAILER_SIZE;
     res.ok = true;
     res.bytes_in = archive_size;
@@ -1135,7 +1135,7 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
 }
 
 // ============================================================================
-// ARCH-003: Helper per scrivere un chunk con checksum xxHash e error handling
+// ARCH-003: Helper to write a chunk with xxHash checksum and error handling
 // ============================================================================
 
 static bool write_chunk(FILE* f, Codec codec, uint32_t raw_size,
@@ -1159,16 +1159,16 @@ static bool write_chunk(FILE* f, Codec codec, uint32_t raw_size,
 }
 
 // ============================================================================
-// STREAMING COMPRESSION — Anti-OOM per file grandi
+// STREAMING COMPRESSION — Anti-OOM for large files
 // ============================================================================
-// Legge il file sorgente a blocchi di 256KB e comprime usando API streaming.
-// Memory usage costante: ~128-256MB (indipendente dalla dimensione del file).
-// Il decompressore esistente funziona senza modifiche (formati compatibili).
+// Reads the source file in 256KB blocks and compresses using streaming API.
+// Constant memory usage: ~128-256MB (independent of file size).
+// The existing decompressor works without changes (compatible formats).
 // ============================================================================
 
 constexpr size_t STREAM_BUF_SIZE = 256 * 1024;  // 256KB I/O buffers
 
-// Helper: flush del solid buffer (usato dallo streaming path)
+// Helper: flush the solid buffer (used by the streaming path)
 static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& solid_has_files,
                                 size_t solid_toc_begin, Codec solid_codec, int level,
                                 std::vector<FileEntry>& final_toc, uint64_t& bytes_out) {
@@ -1192,7 +1192,7 @@ static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& soli
     return true;
 }
 
-// Streaming LZMA2 — memory costante (~128MB encoder)
+// Streaming LZMA2 — constant memory (~128MB encoder)
 static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
                                    uint64_t& out_comp_size, uint64_t& out_checksum,
                                    uint64_t input_limit = UINT64_MAX) {
@@ -1201,7 +1201,7 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
     if (level >= 7) preset |= LZMA_PRESET_EXTREME;
     if (lzma_lzma_preset(&opt, preset) != LZMA_OK) return false;
 
-    // Cap dict in base alla RAM disponibile per streaming
+    // Cap dict based on available RAM for streaming
     ensure_mem();
     uint64_t stream_dict_limit = std::min(g_mem.max_dict, static_cast<uint64_t>(64ULL * 1024 * 1024));
     if (opt.dict_size > static_cast<uint32_t>(stream_dict_limit))
@@ -1257,7 +1257,7 @@ static bool stream_compress_lzma2(FILE* src_f, FILE* dst_f, int level,
     return ok;
 }
 
-// Streaming ZSTD — memory costante
+// Streaming ZSTD — constant memory
 static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
                                   uint64_t& out_comp_size, uint64_t& out_checksum,
                                   uint64_t input_limit = UINT64_MAX) {
@@ -1272,7 +1272,7 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
     if (zl >= 10) wlog = 25; // 32MB
     if (zl >= 16) wlog = 27; // 128MB
 
-    // Cap window log in base alla RAM disponibile
+    // Cap window log based on available RAM
     ensure_mem();
     if ((1ULL << wlog) > g_mem.max_window) {
         wlog = static_cast<int>(std::log2(static_cast<double>(g_mem.max_window)));
@@ -1320,7 +1320,7 @@ static bool stream_compress_zstd(FILE* src_f, FILE* dst_f, int level,
     return ok;
 }
 
-// Streaming Brotli — memory costante
+// Streaming Brotli — constant memory
 static bool stream_compress_brotli(FILE* src_f, FILE* dst_f, int level,
                                     uint64_t& out_comp_size, uint64_t& out_checksum,
                                     uint64_t input_limit = UINT64_MAX) {
@@ -1379,10 +1379,10 @@ done_brotli:
 }
 
 // ============================================================================
-// BUG FIX #15: Streaming STORE — file grandi con codec STORE copiati direttamente
-// Senza questo fix, i file STORE > MAX_IN_MEMORY venivano inseriti nel solid
-// buffer con data vuota (0 byte), causando hash mismatch durante la verifica.
-// Ora il file viene scritto direttamente da disco a archivio, senza caricare in RAM.
+// BUG FIX #15: Streaming STORE — large files with STORE codec copied directly
+// Without this fix, STORE files > MAX_IN_MEMORY were inserted into the solid
+// buffer with empty data (0 bytes), causing hash mismatch during verification.
+// Now the file is written directly from disk to archive, without loading into RAM.
 // ============================================================================
 static bool write_chunk_store_streaming(FILE* archive_f, const std::string& source_path,
                                          uintmax_t source_size, uint64_t& bytes_out) {
@@ -1395,13 +1395,13 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
     uint64_t remaining = source_size;
     bool ok = true;
 
-    // Splitta file > UINT32_MAX in chunk multipli per non troncare raw_size
+    // Split files > UINT32_MAX into multiple chunks to avoid truncating raw_size
     while (remaining > 0 && ok) {
         uint32_t chunk_size = static_cast<uint32_t>(
             std::min(remaining, static_cast<uint64_t>(TARC_MAX_CHUNK_SIZE))
         );
 
-        // Calcola xxHash per questo chunk
+        // Calculate xxHash for this chunk
         uint64_t cksum = 0;
         XXH64_state_t* xxh = XXH64_createState();
         if (xxh) XXH64_reset(xxh, 0);
@@ -1445,12 +1445,12 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
     return ok;
 }
 
-// Scrive un chunk usando compressione streaming (seek-back per ChunkHeader)
-// Per file > UINT32_MAX, splitta in chunk multipli raw_size <= UINT32_MAX
+// Write a chunk using streaming compression (seek-back for ChunkHeader)
+// For files > UINT32_MAX, split into multiple chunks with raw_size <= UINT32_MAX
 static bool write_chunk_streaming(FILE* archive_f, const std::string& source_path,
                                     uintmax_t source_size, int level, Codec codec,
                                     uint64_t& bytes_out) {
-    // LZ4 non ha streaming buono → fallback ZSTD
+    // LZ4 has no good streaming API → fallback ZSTD
     Codec actual = codec;
     if (codec == Codec::LZ4) actual = Codec::ZSTD;
 
@@ -1501,7 +1501,7 @@ static bool write_chunk_streaming(FILE* archive_f, const std::string& source_pat
 }
 
 // ============================================================================
-// Struttura per tracciare i file appartenenti a un chunk solid
+// Structure to track files belonging to a solid chunk
 // ============================================================================
 struct SolidChunkFiles {
     size_t toc_begin; // primo indice in final_toc
@@ -1509,7 +1509,7 @@ struct SolidChunkFiles {
 };
 
 // ============================================================================
-// COMPRESS — con Feature #1 (codec nativi), Feature #5 (Entry.offset)
+// COMPRESS — with Feature #1 (native codecs), Feature #5 (Entry.offset)
 // ============================================================================
 
 TarcResult compress(const std::string& arch_path, const std::vector<std::string>& inputs, CompressOptions opts) {
@@ -1555,10 +1555,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         return res;
     }
 
-    // FEATURE #5: traccia l'offset dei chunk nell'archivio
+    // FEATURE #5: track chunk offsets in the archive
     uint64_t data_offset = sizeof(Header);
 
-    // Anti-OOM: adatta il solid buffer e la soglia streaming alla RAM disponibile
+    // Anti-OOM: adapt solid buffer and streaming threshold to available RAM
     ensure_mem();
     report_warning("[MEMORY] Total RAM: " + std::to_string(g_mem.total_ram / (1024 * 1024)) + "MB"
         + " | Available: ~" + std::to_string(g_mem.avail_ram / (1024 * 1024)) + "MB"
@@ -1567,7 +1567,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         + " | Solid buffer: " + std::to_string(g_mem.max_solid / (1024 * 1024)) + "MB"
         + (g_mem.low_memory ? " | LOW MEMORY MODE" : ""));
     const size_t CHUNK_THRESHOLD = g_mem.max_solid;
-    // File piu grandi di questo vengono compressi in streaming (non caricati in RAM)
+    // Files larger than this are compressed via streaming (not loaded into RAM)
     const size_t MAX_IN_MEMORY = std::min(
         g_mem.max_solid * 2,
         static_cast<size_t>(256 * 1024 * 1024)
@@ -1578,13 +1578,13 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     std::future<ChunkResult> future_chunk;
     bool worker_active = false;
     
-    // FEATURE #5: traccia quali toc index appartengono al chunk pending (solid async)
+    // FEATURE #5: track which toc indices belong to the pending chunk (solid async)
     std::deque<SolidChunkFiles> pending_solid_ranges;
     
-    // FEATURE #5: traccia il primo toc index della generazione solid corrente
+    // FEATURE #5: track the first toc index of the current solid generation
     size_t solid_toc_begin = 0;
     bool solid_has_files = false;
-    // Codec per il buffer solid corrente (il primo file del chunk decide il codec)
+    // Codec for the current solid buffer (first file of the chunk decides the codec)
     Codec solid_codec = Codec::LZMA;
 
     auto write_pending_chunk = [&](std::future<ChunkResult>& fut) -> bool {
@@ -1594,7 +1594,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         g_active_workers--;
         if (!cr.success) return false;
         
-        // FEATURE #5: registra l'offset del chunk prima di scriverlo
+        // FEATURE #5: record the chunk offset before writing it
         int64_t _cpos = IO::tarc_ftell(f);
         if (_cpos < 0) return false;
         uint64_t chunk_offset = static_cast<uint64_t>(_cpos);
@@ -1602,14 +1602,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out))
             return false;
         
-        // FEATURE #5: aggiorna Entry.offset per tutti i file in questo chunk solid
+        // FEATURE #5: update Entry.offset for all files in this solid chunk
         if (!pending_solid_ranges.empty()) {
             SolidChunkFiles range = pending_solid_ranges.front();
             pending_solid_ranges.pop_front();
             for (size_t j = range.toc_begin; j <= range.toc_end; ++j) {
                 final_toc[j].meta.offset = chunk_offset;
-                // BUG FIX: Aggiorna ANCHE il codec nel TOC per i file nel chunk async
-                // Prima il codec non veniva aggiornato, causando incoerenza
+                // BUG FIX: Update ALSO the codec in TOC for files in the async chunk
+                // Previously the codec was not updated, causing inconsistency
                 final_toc[j].meta.codec = static_cast<uint8_t>(cr.codec);
             }
         }
@@ -1642,7 +1642,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         }
         
         // ============================================================
-        // Anti-OOM: file grandi → streaming (non caricati in RAM)
+        // Anti-OOM: large files → streaming (not loaded into RAM)
         // ============================================================
         bool use_streaming = (fsize > MAX_IN_MEMORY);
         
@@ -1663,7 +1663,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         FILE* in_f = fopen(disk_path.c_str(), "rb");
         if (in_f) {
             if (use_streaming) {
-                // Streaming: calcola hash leggendo a blocchi (senza caricare tutto)
+                // Streaming: calculate hash by reading in blocks (without loading all)
                 std::vector<char> hbuf(64 * 1024);
                 size_t n;
                 while ((n = fread(hbuf.data(), 1, hbuf.size(), in_f)) > 0) {
@@ -1699,15 +1699,15 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
 
         constexpr size_t STORE_THRESHOLD = 2048;
 
-        // FEATURE #1 / #6: il codec nel TOC riflette il codec REALMENTE usato
+        // FEATURE #1 / #6: TOC codec reflects the codec ACTUALLY used
         Codec selected_codec;
-        if (has_codec_override) {
-            selected_codec = opts.codec;  // override CLI: --zstd, --lz4, etc.
-        } else {
-            selected_codec = CodecSelector::select(disk_path, fsize);  // auto
-        }
+    if (has_codec_override) {
+        selected_codec = opts.codec;  // CLI override: --zstd, --lz4, etc.
+    } else {
+        selected_codec = CodecSelector::select(disk_path, fsize);  // auto-detect
+    }
 
-        // Timestamp: gestisce eccezioni su file in uso o speciali (Windows)
+        // Timestamp: handle exceptions for in-use or special files (Windows)
         try {
             fe.meta.timestamp = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
@@ -1715,25 +1715,25 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 ).count()
             );
         } catch (...) {
-            fe.meta.timestamp = 0;  // fallback: nessun timestamp
+            fe.meta.timestamp = 0;  // fallback: no timestamp
         }
 
         if (hash_map.count(h64)) {
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
             fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
-            fe.meta.offset = 0; // duplicati non hanno dati
+            fe.meta.offset = 0; // duplicates have no data
             g_stats.duplicates_skipped++;
         } else {
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
             fe.meta.is_duplicate = 0;
 
             // ============================================================
-            // STREAMING: file grandi compressi direttamente da disco
-            // Non carica il file in RAM, usa ~128-256MB costanti
+            // STREAMING: large files compressed directly from disk
+            // Does not load the file into RAM, uses ~128-256MB constant
             // ============================================================
             if (use_streaming && selected_codec != Codec::STORE) {
-                // Flush solid buffer pendente prima dello streaming
+                // Flush pending solid buffer before streaming
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
@@ -1749,7 +1749,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     return res;
                 }
 
-                // Stream-comprime il file grande direttamente
+                // Stream-compress the large file directly
                 uint64_t stream_offset;
                 if (!tell_pos(f, stream_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                 Codec stream_codec = selected_codec;
@@ -1760,7 +1760,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     return res;
                 }
 
-                // Aggiorna TOC
+                // Update TOC
                 fe.meta.offset = stream_offset;
                 if (stream_codec == Codec::LZ4) stream_codec = Codec::ZSTD; // fallback
                 fe.meta.codec = static_cast<uint8_t>(stream_codec);
@@ -1770,14 +1770,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 data_offset = static_cast<uint64_t>(_data_tell);
             } else if (use_streaming && selected_codec == Codec::STORE) {
                 // ============================================================
-                // BUG FIX #15: Streaming STORE — file grandi non compressibili
-                // (.mp4, .avi, .jpg, ecc.) che superano MAX_IN_MEMORY.
-                // Prima: data era vuota (0 byte), il file veniva tracciato nel
-                // solid buffer senza dati → hash mismatch durante verifica.
-                // Ora: il file viene copiato direttamente da disco ad archivio
-                // con un buffer di 1MB, senza caricare in RAM.
+                // BUG FIX #15: Streaming STORE — large non-compressible files
+                // (.mp4, .avi, .jpg, etc.) that exceed MAX_IN_MEMORY.
+                // Before: data was empty (0 bytes), the file was tracked in the
+                // solid buffer without data → hash mismatch during verification.
+                // Now: the file is copied directly from disk to archive
+                // with a 1MB buffer, without loading into RAM.
                 // ============================================================
-                // Flush solid buffer pendente
+                // Flush pending solid buffer
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
@@ -1793,7 +1793,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     return res;
                 }
 
-                // Scrivi il file come chunk STORE diretto (streaming)
+                // Write the file as a direct STORE chunk (streaming)
                 uint64_t store_offset;
                 if (!tell_pos(f, store_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
 
@@ -1813,11 +1813,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             } else if (fsize <= STORE_THRESHOLD) {
                 // ============================================================
                 // BUG FIX: flush pending solid buffer BEFORE writing STORE chunk
-                // Senza questo, i chunk solid vengono scritti DOPO i chunk STORE,
-                // causando ordinamento errato sul disco e fallimento dell'estrazione.
+                // Without this, solid chunks are written AFTER STORE chunks,
+                // causing wrong ordering on disk and extraction failure.
                 // ============================================================
                 if (solid_has_files && !solid_buf.empty()) {
-                    // Attendiamo eventuale compressione async pending
+                    // Wait for any pending async compression
                     if (worker_active && !write_pending_chunk(future_chunk)) {
                         res.error = TarcError::CompressionFailed;
                         res.message = "Chunk compression failed.";
@@ -1825,7 +1825,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     }
                     worker_active = false;
 
-                    // Comprimi e scrivi il solid buffer accumulato
+                    // Compress and write the accumulated solid buffer
                     ChunkResult solid_cr = compress_worker(std::move(solid_buf), level, solid_codec);
                     if (!solid_cr.success) {
                         res.error = TarcError::CompressionFailed;
@@ -1841,12 +1841,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         return res;
                     }
 
-                    // Aggiorna Entry.offset per tutti i file in questo gruppo solid
+                    // Update Entry.offset for all files in this solid group
                     for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
                         final_toc[j].meta.offset = solid_offset;
                     }
-                    // Aggiorna il codec nel TOC al codec REALMENTE usato
-                    // (compress_worker puo' cambiare codec a STORE per buffer < 4096)
+                    // Update TOC codec to the ACTUAL codec used
+                    // (compress_worker may change codec to STORE for buffers < 4096)
                     Codec actual_codec = solid_cr.codec;
                     for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
                         final_toc[j].meta.codec = static_cast<uint8_t>(actual_codec);
@@ -1855,35 +1855,35 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     solid_buf.clear();
                     solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
                     solid_has_files = false;
-                    // Sincronizza data_offset con la posizione reale sul file
+                    // Sync data_offset with the actual file position
                     int64_t _data_tell = IO::tarc_ftell(f);
                     if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                     data_offset = static_cast<uint64_t>(_data_tell);
                 }
 
-                // BUG FIX #2: File vuoti non producono chunk su disco.
-                // Un chunk con raw_size=0 viene confuso con l'end marker {0,0,0,0}
-                // dal decompressore (read_next_block), causando "Archive corrupted".
+                // BUG FIX #2: Empty files do not produce chunks on disk.
+                // A chunk with raw_size=0 is confused with the end marker {0,0,0,0}
+                // by the decompressor (read_next_block), causing "Archive corrupted".
                 if (fsize == 0) {
-                    // File vuoto: aggiungi al TOC ma non scrivere nessun chunk.
-                    // L'estrattore salta i file con orig_size==0.
+                    // Empty file: add to TOC but do not write any chunk.
+                    // The extractor skips files with orig_size==0.
                     fe.meta.offset = 0;
                     fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
                     g_stats.bytes_read += 0;
-                    // Non incrementare data_offset perche' nessun chunk e' stato scritto.
-                    // BUG FIX #9: NON resettare solid_has_files qui!
-                    // Il solid buffer e' gia' stato svuotato dal flush sopra.
-                    // Resettarlo qui non fa nulla, ma rimuoviamo il rischio
-                    // se in futuro la logica dovesse cambiare.
+                    // Do not increment data_offset because no chunk was written.
+                    // BUG FIX #9: Do NOT reset solid_has_files here!
+                    // The solid buffer was already flushed above.
+                    // Resetting it here does nothing, but we remove the risk
+                    // if the logic should change in the future.
                 } else {
-                    // File STORE: scritti direttamente, NON nel solid_buf
+                    // STORE files: written directly, NOT in solid_buf
                     ChunkResult cr;
                     cr.compressed_data = data;
                     cr.raw_size = static_cast<uint32_t>(fsize);
                     cr.codec = Codec::STORE;
                     cr.success = true;
 
-                    // FEATURE #5: offset del chunk STORE
+                    // FEATURE #5: offset of the STORE chunk
                     fe.meta.offset = data_offset;
                     fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
 
@@ -1894,12 +1894,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     }
                     data_offset += sizeof(ChunkHeader) + data.size();
                     g_stats.bytes_read += fsize;
-                    solid_has_files = false; // resetta tracciamento solid
+                    solid_has_files = false; // reset solid tracking
                 }
             } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
-                // Solid buffer pieno: scarica il blocco corrente
+                // Solid buffer full: flush the current block
                 
-                // Scrivi il chunk pending precedente (se async compress in corso)
+                // Write the previous pending chunk (if async compress in progress)
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
@@ -1907,11 +1907,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 }
                 worker_active = false;
                 
-                // Registra i toc index per questo chunk solid che sta per essere compresso
+                // Record the toc indices for this solid chunk about to be compressed
                 pending_solid_ranges.push_back({solid_toc_begin, final_toc.size() - 1});
                 
-                // Avvia compressione async per il buffer solid corrente
-                // Rispetta il limite di thread (--threads N)
+                // Start async compression for the current solid buffer
+                // Respects the thread limit (--threads N)
                 while (g_active_workers >= g_max_workers) {
                     std::this_thread::yield();
                 }
@@ -1922,10 +1922,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         compress_worker,
                         std::move(solid_buf),
                         level,
-                        solid_codec  // FEATURE #1: usa il codec del buffer solid
+                        solid_codec  // FEATURE #1: use the solid buffer codec
                     );
                 } catch (const std::system_error&) {
-                    // Thread creation fallita: sync fallback
+                    // Thread creation failed: sync fallback
                     pending_solid_ranges.pop_back();
                     ChunkResult cr = compress_worker(std::move(solid_buf), level, solid_codec);
                     if (!cr.success) {
@@ -1957,25 +1957,25 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 solid_buf.clear();
                 solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
 
-                // Inizia nuova generazione solid con il file corrente
+                // Start new solid generation with the current file
                 solid_buf.insert(solid_buf.end(), data.begin(), data.end());
                 solid_toc_begin = final_toc.size(); // questo file sara' a questo index
-                solid_codec = selected_codec;       // il codec del nuovo chunk solid
+                solid_codec = selected_codec;       // codec of the new solid chunk
                 solid_has_files = true;
                 g_stats.bytes_read += fsize;
             } else try {
-                // File va nel buffer solid corrente
+                // File goes into the current solid buffer
                 solid_buf.insert(solid_buf.end(), data.begin(), data.end());
                 g_stats.bytes_read += fsize;
 
                 if (!solid_has_files) {
-                    // Primo file del chunk solid: registra inizio e codec
+                    // First file of the solid chunk: record start and codec
                     solid_toc_begin = final_toc.size();
                     solid_codec = selected_codec;
                     solid_has_files = true;
                 }
             } catch (const std::bad_alloc&) {
-                // Solid buffer OOM: flush immediato e retry
+                // Solid buffer OOM: immediate flush and retry
                 report_warning("[MEMORY] Solid buffer OOM, flushing early");
                 if (worker_active && !write_pending_chunk(future_chunk)) {
                     res.error = TarcError::CompressionFailed;
@@ -1992,8 +1992,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     return res;
                 }
 
-                // BUG FIX #15b: Se data e' vuota (file troppo grande per RAM),
-                // non inserire nel solid buffer. Scrivi come STORE chunk streaming.
+                // BUG FIX #15b: If data is empty (file too large for RAM),
+                // do not insert into solid buffer. Write as streaming STORE chunk.
                 if (data.empty()) {
                     report_warning("[MEMORY] File too large for RAM, using streaming STORE: " + disk_path);
                     uint64_t store_offset;
@@ -2011,7 +2011,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     data_offset = static_cast<uint64_t>(_data_tell);
                     solid_has_files = false;
                 } else {
-                    // Retry dopo flush: file singolo come mini-chunk
+                    // Retry after flush: single file as mini-chunk
                     try {
                         solid_buf = data; // copy singola
                         solid_toc_begin = final_toc.size();
@@ -2019,7 +2019,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         solid_has_files = true;
                         g_stats.bytes_read += fsize;
                     } catch (...) {
-                        // Il file stesso e' troppo grande per la RAM: fallback STORE streaming
+                        // The file itself is too large for RAM: fallback to streaming STORE
                         report_warning("[MEMORY] File too large for RAM, using streaming STORE: " + disk_path);
                         uint64_t store_offset;
                         if (!tell_pos(f, store_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
@@ -2039,10 +2039,10 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 }
             }
             
-            // FEATURE #1: imposta il codec nel TOC al codec realmente usato
-            // BUG FIX #15c: NON sovrascrivere il codec se il file e' stato gestito
-            // dai percorsi streaming (use_streaming), che hanno gia' impostato
-            // il codec corretto nel blocco if/else sopra.
+            // FEATURE #1: set TOC codec to the codec actually used
+            // BUG FIX #15c: Do NOT overwrite the codec if the file was handled
+            // by the streaming paths (use_streaming), which already set
+            // the correct codec in the if/else block above.
             if (!use_streaming && fsize > STORE_THRESHOLD) {
                 fe.meta.codec = static_cast<uint8_t>(solid_codec);
             }
@@ -2055,7 +2055,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         g_stats.files_processed++;
     }
 
-    // Scrivi l'ultimo chunk pending (se compressione async in corso)
+    // Write the last pending chunk (if async compression in progress)
     if (worker_active && !write_pending_chunk(future_chunk)) {
         res.error = TarcError::CompressionFailed;
         res.message = "Final chunk failed.";
@@ -2063,11 +2063,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     }
     worker_active = false;
     
-    // Scrive il buffer solid finale (se non vuoto)
+    // Write the final solid buffer (if not empty)
     if (!solid_buf.empty()) {
         ChunkResult last = compress_worker(std::move(solid_buf), level, solid_codec);
         
-        // FEATURE #5: offset del chunk finale
+        // FEATURE #5: offset of the final chunk
         uint64_t last_chunk_offset;
         if (!tell_pos(f, last_chunk_offset)) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
         
@@ -2077,9 +2077,9 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             return res;
         }
         
-        // BUG FIX #4: Aggiorna ANCHE il codec nel TOC per i file dell'ultimo chunk solid.
-        // Prima veniva aggiornato solo l'offset ma non il codec, causando incoerenza
-        // quando compress_worker cambiava codec (es. solid < 4096 bytes → STORE).
+        // BUG FIX #4: Update ALSO the codec in TOC for files in the last solid chunk.
+        // Previously only offset was updated but not the codec, causing inconsistency
+        // when compress_worker changed codec (e.g., solid < 4096 bytes → STORE).
         Codec actual_last_codec = last.codec;
         for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
             final_toc[j].meta.offset = last_chunk_offset;
@@ -2156,7 +2156,7 @@ static bool match_pattern(const std::string& full_path, const std::string& patte
 }
 
 // ============================================================================
-// ARCH-001: Helper per leggere il prossimo chunk decompresso
+// ARCH-001: Helper to read the next decompressed chunk
 // ============================================================================
 
 static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& block_pos) {
@@ -2166,13 +2166,14 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
             return TarcError::CorruptedArchive;
         }
 
-        // End marker detection: {0,0,0,0} — nessun chunk legittimo puo'
-        // avere tutti e 4 i campi zero (Codec::ZSTD=0 ma comp_size > 0).
+        // End marker detection: {0,0,0,0} — no legitimate chunk can
+        // have all 4 fields zero (Codec::ZSTD=0 but comp_size > 0).
         if (std::memcmp(&ch, &END_MARKER, sizeof(ChunkHeader)) == 0) {
             return TarcError::CorruptedArchive;  // end marker raggiunto
         }
 
         if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
+            // Chunk size validation
             return TarcError::CorruptedArchive;
         }
 
@@ -2181,7 +2182,7 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
             return TarcError::CorruptedArchive;
         }
 
-        // BUG FIX #3: Verifica checksum del chunk (xxHash64 dei dati compressi)
+        // BUG FIX #3: Verify chunk checksum (xxHash64 of compressed data)
         if (ch.comp_size > 0 && ch.checksum != 0) {
             uint64_t actual_cksum = XXH64(comp.data(), comp.size(), 0);
             if (actual_cksum != ch.checksum) {
@@ -2189,7 +2190,7 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
             }
         }
 
-        // BUG FIX #12: Dimensione raw_size deve essere ragionevole
+        // BUG FIX #12: raw_size must be reasonable
         if (ch.raw_size > TARC_MAX_CHUNK_SIZE) {
             return TarcError::CorruptedArchive;
         }
@@ -2199,9 +2200,9 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
         if (!decompress_chunk(comp, block, codec)) {
             return TarcError::DecompressionFailed;
         }
-        // BUG FIX #13: Verifica che la decompressione produca la dimensione attesa.
-        // Se il decompressore produce una dimensione diversa da ch.raw_size,
-        // i file successivi nel solid block avranno offset sbagliato.
+        // BUG FIX #13: Verify decompression produces the expected size.
+        // If the decompressor produces a different size than ch.raw_size,
+        // subsequent files in the solid block will have wrong offset.
         if (block.size() != static_cast<size_t>(ch.raw_size)) {
             return TarcError::DecompressionFailed;
         }
@@ -2211,7 +2212,7 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
 }
 
 // ============================================================================
-// EXTRACT — Feature #4: supporto output_dir + ExtractOptions
+// EXTRACT — Feature #4: output_dir support + ExtractOptions
 // ============================================================================
 
 TarcResult extract(const std::string& arch_path, const std::vector<std::string>& patterns,
@@ -2263,7 +2264,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     size_t block_pos = 0;
     std::map<std::string, int> flat_names_counter;
 
-    // FEATURE #4: crea la directory di output se specificata
+    // FEATURE #4: create output directory if specified
     if (!opts.output_dir.empty()) {
         fs::path out_dir(opts.output_dir);
         if (out_dir.is_relative()) {
@@ -2278,7 +2279,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
     }
 
-    // Conta i file reali (non duplicati, non vuoti) che devono avere chunk data
+    // Count real files (not duplicates, not empty) that must have chunk data
     size_t expected_real_files = 0;
     for (const auto& fe : toc) {
         if (!fe.meta.is_duplicate && fe.meta.orig_size > 0) expected_real_files++;
@@ -2307,9 +2308,9 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         if (!should_extract) {
             if (fe.meta.is_duplicate) continue;
-            // BUG FIX #2: File vuoti (orig_size==0) non hanno chunk su disco
+            // BUG FIX #2: Empty files (orig_size==0) have no chunks on disk
             if (fe.meta.orig_size == 0) continue;
-            // Salta TUTTI i chunk per questo file (potenzialmente multi-chunk se >4GB)
+            // Skip ALL chunks for this file (potentially multi-chunk if >4GB)
             size_t remaining_skip = static_cast<size_t>(fe.meta.orig_size);
             while (remaining_skip > 0) {
                 TarcError err = read_next_block(f, current_block, block_pos);
@@ -2333,7 +2334,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         if (fe.meta.is_duplicate) continue;
 
-        // BUG FIX #2: File vuoti non hanno chunk su disco, salta lettura
+        // BUG FIX #2: Empty files have no chunks on disk, skip reading
         if (fe.meta.orig_size == 0) {
             if (!opts.test_only) {
                 std::string safe_path = IO::sanitize_extract_path(fe.name);
@@ -2379,7 +2380,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             final_path = filename;
         }
 
-        // Lettura potenzialmente multi-chunk del file
+        // Potentially multi-chunk file reading
         size_t bytes_remaining = static_cast<size_t>(fe.meta.orig_size);
 
         XXH64_state_t* vstate = nullptr;
@@ -2390,7 +2391,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
 
         auto cleanup_vstate = [&]() { if (vstate) XXH64_freeState(vstate); };
 
-        // Determina path di output (solo per test_only=false)
+        // Determine output path (only for test_only=false)
         std::string full_output_path;
         std::ofstream out_file;
         bool file_written = false;
@@ -2416,7 +2417,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
         }
 
-        // Legge chunk finche' non abbiamo tutto il file
+        // Read chunks until we have the entire file
         while (bytes_remaining > 0) {
             TarcError err = read_next_block(f, current_block, block_pos);
             if (err == TarcError::CorruptedArchive) {
@@ -2468,7 +2469,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
         if (end_marker_hit) break;
 
-        // Chiude file e imposta timestamp
+        // Close file and set timestamp
         if (file_written) {
             out_file.close();
             if (fe.meta.timestamp != 0) {
@@ -2480,7 +2481,7 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             }
         }
 
-        // Verifica integrita' xxHash
+        // Verify xxHash integrity
         if (vstate) {
             uint64_t extracted_hash = XXH64_digest(vstate);
             cleanup_vstate();

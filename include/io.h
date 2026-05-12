@@ -47,17 +47,17 @@ namespace IO {
     bool write_file_to_disk(const std::string& path, const char* data, size_t size,
                                uint64_t timestamp, bool overwrite = false);
 
-    // SEC-001: Validazione magic header dell'archivio
+    // SEC-001: Archive magic header validation
     bool validate_archive_header(const Header& h);
 
-    // SEC-002: Sanitizzazione path per prevenire Zip Slip (path traversal)
-    // Ritorna il path pulito o vuoto se non sicuro
+    // SEC-002: Path sanitization to prevent Zip Slip (path traversal)
+    // Returns the cleaned path or empty if not safe
     std::string sanitize_extract_path(const std::string& raw_path);
 
-    // SEC-005: Validazione nome file (null bytes, caratteri pericolosi)
+    // SEC-005: Filename validation (null bytes, dangerous characters)
     bool is_safe_filename(const std::string& name);
 
-    // SEC-007: Controllo sovrascrittura file
+    // SEC-007: File overwrite check
     bool file_exists(const std::string& path);
 
     bool read_bytes(FILE* f, void* buf, size_t size);
@@ -68,7 +68,7 @@ namespace IO {
 
     Result<FileEntry> read_entry(FILE* f);
 
-    // Percorso dell'eseguibile corrente (usato da SFX)
+    // Path of the current executable (used by SFX)
     std::string get_self_path();
 
 }

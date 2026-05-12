@@ -82,7 +82,7 @@ void show_banner() {
               << "                  Advanced Solid Compression Tool\n"
               << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";
-    // Mostra SIMD features attive
+    // Show active SIMD features
     std::string simd = SimdOpt::simd_info_string();
     std::cout << Color::DIM << "  SIMD: " << simd << Color::RESET << "\n";
 }
@@ -329,7 +329,7 @@ void print_summary(const TarcResult& result, const std::string& op,
     std::cout << "\n";
     
     if (!result.ok) {
-        // Usa cout per visibilita' garantita (stderr potrebbe non essere visibile in alcuni terminali)
+        // Use cout for guaranteed visibility (stderr may not be visible in some terminals)
         std::cout << Color::RED << "[FAIL] " << op << " failed: " << result.message << Color::RESET << "\n";
         if (result.error != TarcError::None) {
             std::cout << Color::DIM << "  Code: " << error_message(result.error) << Color::RESET << "\n";
@@ -342,7 +342,7 @@ void print_summary(const TarcResult& result, const std::string& op,
         std::cout << "  " << human_size(result.bytes_in) << " → " << human_size(result.bytes_out) << "  "
                   << Color::DIM << "(" << compress_ratio(result.bytes_in, result.bytes_out) << ")" << Color::RESET << "\n";
         
-        // Mostra velocità se abbiamo durata
+        // Show speed if we have duration
         if (elapsed.count() > 0) {
             double seconds = elapsed.count() / 1000.0;
             double mbps = (result.bytes_in / (1024.0 * 1024.0)) / seconds;
