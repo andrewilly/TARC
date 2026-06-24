@@ -4,11 +4,11 @@ title: Installation
 nav_order: 2
 ---
 
-# Installation
+# Installation Guide
 
 ## Pre-built Binaries
 
-Download from the [Releases page](https://github.com/andrewilly/TARC/releases):
+Download the latest release from the [Releases page](https://github.com/andrewilly/TARC/releases):
 
 | Platform | File |
 |---|---|
@@ -45,25 +45,52 @@ make
 ### Build with CMake
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target tarc
+mkdir build && cd build
+cmake ..
+make
 ```
 
-The binary will be at `build/tarc` (or `build/Release/tarc.exe` on Windows).
+### Platform-specific Notes
+
+#### macOS
+
+The Makefile auto-detects Intel (x86_64) and Apple Silicon (arm64). No additional flags needed.
+
+```bash
+brew install zstd lz4 xz brotli
+make
+```
+
+The binary is built with native architecture optimization (`-march=native`).
+
+#### Linux
+
+```bash
+# Debian / Ubuntu
+sudo apt install build-essential libzstd-dev liblz4-dev liblzma-dev libbrotli-dev
+make
+
+# Fedora
+sudo dnf install gcc-c++ libzstd-devel lz4-devel xz-devel brotli-devel
+make
+```
+
+#### Windows (MinGW / MSYS2)
+
+```bash
+pacman -S mingw-w64-x86_64-{zstd,lz4,xz,brotli} mingw-w64-x86_64-{cmake,make}
+make
+```
 
 ### Build Options
 
-| Option | Description |
+| Command | Description |
 |---|---|
-| `make debug` | Debug symbols (`-g -O0`) |
-| `make ASAN=1 test` | Build with AddressSanitizer + UBSan and run tests |
-| `make fuzz` | Build fuzz target for archive parsing |
-| `make sfx` | Build standalone SFX stub |
-| `cmake -DTARC_BUILD_TESTS=ON` | Build test suite |
-
-### Verify Installation
-
-```bash
-./tarc --version
-./tarc --help
-```
+| `make` | Release build with LTO (`-O3 -flto`) |
+| `make debug` | Debug build (`-g -O0`) |
+| `make ASAN=1` | Build with AddressSanitizer + UBSan |
+| `make test` | Build and run test suite |
+| `make sfx` | Build SFX stub separately |
+| `make fuzz` | Build fuzz target |
+| `make clean` | Remove build artifacts |
+| `make install` | Install to `/usr/local/bin` |

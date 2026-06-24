@@ -1,25 +1,29 @@
-## TARC STRIKE v2.11 — Bug Fix & Optimization Release
+# Release Notes — TARC STRIKE v2.11
 
-### Changes since v2.10
+**Release date:** 2026-06-24
 
-#### Bug Fixes
+## Changes Since v2.10
 
-- **UI: Compression ratio always 0% in `tarc -l`** — `print_list_entry()` passava `orig` invece di `comp` a `compress_ratio()`, mostrando sempre 0% di compressione per file non-duplicati. Corretto.
-- **MemoryManager: `round_down_pow2()` arrotondava in su invece che in giù** — La funzione `round_down_pow2()` in realtà faceva ceiling alla potenza di 2 successiva, causando un Anti-OOM meno efficace (es. 513MB → 1024MB invece del floor 512MB). Riscritto l'algoritmo per eseguire floor power-of-2 correttamente.
-- **Badge CI rotto nel README** — Il badge CI puntava a `github.com/anomalyco/TARC` invece di `andrewilly/TARC`.
-- **Race condition su `g_stats`** — Aggiunto `std::mutex` a protezione delle statistiche di compressione per accesso thread-safe.
+### Bug Fixes
 
-#### Optimizations
+- **`tarc -l` compression ratio displayed as 0%** — `print_list_entry()` was passing `orig` instead of `comp` to `compress_ratio()`, causing non-duplicate files to always show 0% compression. Fixed.
+- **`MemoryManager::round_down_pow2()` rounded up instead of down** — The function was performing ceiling to the next power of two (e.g., 513 MiB → 1024 MiB), making the Anti-OOM protection less effective than intended. Rewritten to correctly compute floor power-of-two.
+- **Broken CI badge in README** — Badge URL pointed to `anomalyco/TARC` instead of `andrewilly/TARC`. Fixed.
+- **Thread safety for compression stats** — Added `std::mutex` guard around `g_stats` access to prevent potential data races.
 
-- **LTO (Link-Time Optimization)**: Aggiunto `-flto` al `Makefile` e `CMAKE_INTERPROCEDURAL_OPTIMIZATION` al `CMakeLists.txt` per i build Release. Riduce la dimensione del binario e migliora le performance del 5-15%.
-- **CodecSelector ottimizzato**: Convertito il set di estensioni da `std::set<std::string>` a `std::unordered_set<std::string_view>`, eliminando allocazioni per ogni lookup di estensione file. Aggiunte nuove estensioni (.rs, .go, .swift, .tex).
-- **Codice sorgente**: Sostituito `std::transform` su ogni char con un loop `for` diretto per la conversione lowercase — più leggibile e senza overhead di allocazione intermedia.
+### Optimizations
 
-#### Version Bump
+- **LTO (Link-Time Optimization)** — Added `-flto` to the Makefile and `CMAKE_INTERPROCEDURAL_OPTIMIZATION` to CMakeLists.txt for Release builds. Reduces binary size and improves runtime performance by 5–15%.
+- **CodecSelector performance** — Converted the extension registry from `std::set<std::string>` to `std::unordered_set<std::string_view>`, eliminating heap allocations on every file extension lookup. Added support for additional extensions (`.rs`, `.go`, `.swift`, `.tex`).
+- **Lowercase conversion** — Replaced `std::transform` with a direct `for` loop for locale-independent case folding, reducing abstraction overhead.
 
-- Versione aggiornata a **2.11** in tutti i file (CMakeLists.txt, Makefile, main.cpp, ui.cpp).
+### Version
 
-### Building
+- Version bumped to **2.11** across all source and build files.
+
+---
+
+## Building
 
 ```bash
 # Dependencies: zstd, lz4, xz, brotli
@@ -37,9 +41,13 @@ pacman -S mingw-w64-x86_64-{zstd,lz4,xz,brotli}
 make
 ```
 
-### Testing
+## Testing
 
 ```bash
-make test          # 38 test cases
+make test          # 38 test cases, 191 assertions
 make ASAN=1 test   # Compile and run with AddressSanitizer + UBSan
 ```
+
+---
+
+*Full documentation: [README.md](README.md) | [Usage Guide](docs/usage.md) | [Codec Reference](docs/codecs.md)*

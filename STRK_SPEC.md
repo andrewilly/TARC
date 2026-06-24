@@ -1,4 +1,4 @@
-# TARC .strk Archive Format Specification v2.10
+# TARC .strk Archive Format Specification v2.11
 
 ## 1. Overview
 

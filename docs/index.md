@@ -14,39 +14,46 @@ nav_order: 1
 # Create an archive
 tarc -c7 backup.strk docs/ images/
 
-# Extract
+# Extract all files
 tarc -x backup.strk
 
-# List contents
+# List archive contents
 tarc -l backup.strk
 
-# Test integrity
+# Verify integrity
 tarc -t backup.strk
 ```
 
-## Why TARC?
+## Key Features
 
-- **Multiple codecs** — Per-file auto-selection or manual override (5 codecs)
-- **Solid compression** — Up to 1 GB blocks for better ratios
-- **Deduplication** — Identical files stored once via XXH64 hash
-- **Self-extracting** — Create standalone `.exe` archives with `--sfx`
-- **Streaming** — Files larger than RAM compress without loading fully
-- **Safe** — Path traversal protection, xxHash integrity, anti-OOM
-- **Fast** — SIMD-accelerated (AVX2, SSE4.2, NEON)
+- **Multi-codec engine** — Per-file auto-selection or manual override (5 codecs)
+- **Solid compression** — Up to 1 GiB blocks for superior ratios
+- **Deduplication** — Identical files stored once via XXH64 content hashing
+- **Self-extracting archives** — Create standalone executables with `--sfx`
+- **Streaming I/O** — Process files larger than available RAM
+- **Security** — Path traversal protection, xxHash integrity, anti-OOM safeguards
+- **Performance** — SIMD-accelerated (AVX2, SSE4.2, NEON) with LTO builds
 
-## Quick Comparison
+## Codec Comparison
 
 | Codec | Compress Speed | Decompress Speed | Ratio |
 |---|---|---|---|
 | LZ4 | ⚡ Fastest | ⚡ Fastest | Good |
 | ZSTD | ⚡ Fast | ⚡ Fast | Better |
-| LZMA2 | 🐢 Slow | ⚡ Fast | Best |
-| Brotli | 🐢 Slow (high levels) | ⚡ Fast | Best |
+| LZMA2 | Moderate | ⚡ Fast | Best |
+| Brotli | Moderate | ⚡ Fast | Best (text) |
 | STORE | ⚡ Native | ⚡ Native | None |
 
-## Next Steps
+## Documentation
 
 - [Installation Guide](installation.md)
 - [Usage Reference](usage.md)
-- [Codec Details](codecs.md)
-- [Development](development.md)
+- [Codec Guide](codecs.md)
+- [Development Guide](development.md)
+- [Format Specification](https://github.com/andrewilly/TARC/blob/main/STRK_SPEC.md)
+
+## Project Links
+
+- [GitHub Repository](https://github.com/andrewilly/TARC)
+- [Releases](https://github.com/andrewilly/TARC/releases)
+- [Issue Tracker](https://github.com/andrewilly/TARC/issues)
