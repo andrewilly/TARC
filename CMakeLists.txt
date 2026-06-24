@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(tarc VERSION 2.10 LANGUAGES CXX C)
+project(tarc VERSION 2.11 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,14 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# LTO (Link-Time Optimization) for release builds
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported)
+if(ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "  LTO        : Enabled (IPO)")
 endif()
 
 find_package(Threads REQUIRED)
@@ -284,13 +292,13 @@ endif()
 
 message(STATUS "")
 message(STATUS "  ╔════════════════════════════════════════════╗")
-message(STATUS "  ║         TARC v2.10 - BUILD CONFIG  ║")
+message(STATUS "  ║         TARC v2.11 - BUILD CONFIG  ║")
 message(STATUS "  ╠════════════════════════════════════════════╣")
 message(STATUS "  ║  Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  ║  Standard   : C++17")
 message(STATUS "  ║  Parallel   : Enabled (Multi-threaded)")
 message(STATUS "  ║  Codecs     : LZMA + ZSTD + LZ4 + BROTLI")
 message(STATUS "  ║  SFX Stub   : ${TARC_BUILD_SFX}")
-message(STATUS "  ║  Version    : 2.10")
+message(STATUS "  ║  Version    : 2.11")
 message(STATUS "  ╚════════════════════════════════════════════╝")
 message(STATUS "")

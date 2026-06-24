@@ -2,7 +2,7 @@
 
 **T**he **A**dvanced **R**eal-time **C**ompressor — Solid-block compression archiver with native LZMA2, ZSTD, Brotli, LZ4/HC, and STORE codecs.
 
-[![CI](https://github.com/anomalyco/TARC/actions/workflows/main.yml/badge.svg)](https://github.com/anomalyco/TARC/actions/workflows/main.yml)
+[![CI](https://github.com/andrewilly/TARC/actions/workflows/main.yml/badge.svg)](https://github.com/andrewilly/TARC/actions/workflows/main.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 

@@ -39,8 +39,9 @@ else ifdef DEBUG
     CXXFLAGS += -g -O0 -DDEBUG
     CFLAGS   += -g -O0
 else
-    CXXFLAGS += -O3 -DNDEBUG
-    CFLAGS   += -O3 -DNDEBUG
+    CXXFLAGS += -O3 -DNDEBUG -flto
+    CFLAGS   += -O3 -DNDEBUG -flto
+    LDFLAGS  += -flto
 endif
 
 # ============================================================================
@@ -146,7 +147,7 @@ all: info $(TARGET)
 
 info:
 	@echo ""
-	@echo "  TARC STRIKE v2.10 — Build"
+	@echo "  TARC STRIKE v2.11 — Build"
 	@echo "  OS:        $(MSG_OS)"
 	@echo "  Compiler:  $(CXX)"
 	@echo "  Flags:     $(CXXFLAGS)"

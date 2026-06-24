@@ -86,7 +86,7 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN << Color::BOLD
-              << "                       TARC STRIKE v2.10_OpenAi\n"
+              << "                       TARC STRIKE v2.11\n"
               << "                  Advanced Solid Compression Tool\n"
               << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";
@@ -97,7 +97,7 @@ void show_banner() {
 
 void show_compact_help() {
     std::cout << Color::CYAN << Color::BOLD
-              << "TARC STRIKE v2.10_OpenAi" << Color::RESET
+              << "TARC STRIKE v2.11" << Color::RESET
               << " — Advanced Solid Compression Tool\n\n";
     std::cout << Color::BOLD << "Usage:" << Color::RESET << "\n";
     std::cout << "  " << Color::GREEN << "tarc -c" << Color::RESET << "[level] " << Color::WHITE << "<archive> <file>..." << Color::RESET << "   Create archive\n";
@@ -335,7 +335,7 @@ void print_list_entry(const std::string& name, uint64_t orig, uint64_t comp, Cod
               << std::left << std::setw(42) << name.substr(0, 42) << " "
               << std::right << std::setw(10) << human_size(orig) << "  "
               << Color::DIM 
-              << (is_duplicate ? "(DUPLICATE)" : compress_ratio(orig, is_duplicate ? 0 : orig))
+              << (is_duplicate ? "(DUPLICATE)" : compress_ratio(orig, comp))
               << Color::RESET << "\n";
 }
 

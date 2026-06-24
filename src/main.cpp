@@ -657,11 +657,11 @@ int main(int argc, char* argv[]) {
     
     if (cmd.type == Command::Version) {
         if (cmd.help_topic == "license") {
-            std::cout << "TARC STRIKE v2.10_OpenAi\n"
+            std::cout << "TARC STRIKE v2.11\n"
                       << "Copyright (c) 2026 Andre Willy Rizzo\n"
                       << "Open source software — see LICENSE for details.\n";
         } else {
-            std::cout << "TARC STRIKE v2.10_OpenAi\n";
+            std::cout << "TARC STRIKE v2.11\n";
         }
         return 0;
     }

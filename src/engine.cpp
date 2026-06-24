@@ -12,8 +12,11 @@
 #include <future>
 #include <algorithm>
 #include <set>
+#include <unordered_set>
+#include <string_view>
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <fstream>
 #include <deque>
 #include <thread>
@@ -50,6 +53,7 @@ namespace {
     std::atomic<int> g_active_workers{0};
     int g_max_workers = 0;
     Engine::CompressionStats g_stats;
+    std::mutex g_stats_mtx;  // protects g_stats (single-threaded per-op, but belt-and-suspenders)
 
     // End marker: all fields zero — no legitimate chunk can have
     // codec=0 AND raw_size=0 AND comp_size=0 AND checksum=0 simultaneously.
@@ -165,16 +169,17 @@ namespace {
         }
 
     private:
+        // Returns the greatest power of 2 <= v (floor power of 2)
         static uint64_t round_down_pow2(uint64_t v) {
             if (v == 0) return 1;
-            v--;
             v |= v >> 1;
             v |= v >> 2;
             v |= v >> 4;
             v |= v >> 8;
             v |= v >> 16;
             v |= v >> 32;
-            return v + 1;  // power of 2 <= v
+            // v is now (2^(n+1)) - 1; v - (v >> 1) isolates the MSB
+            return v - (v >> 1);
         }
     };
 
@@ -192,70 +197,67 @@ void Engine::set_progress_callback(ProgressCallback* callback) {
 }
 
 Engine::CompressionStats Engine::get_stats() {
+    std::lock_guard<std::mutex> lock(g_stats_mtx);
     return g_stats;
 }
 
 void Engine::reset_stats() {
+    std::lock_guard<std::mutex> lock(g_stats_mtx);
     g_stats = {};
     g_cancelled = false;
 }
 
 namespace CodecSelector {
-    static const std::set<std::string> skip = { ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip", ".strk" };
+    // Use a hash set of string_view for O(1) lookup without allocations
+    static const std::unordered_set<std::string_view> skip = {
+        ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".lz", ".7zip", ".strk"
+    };
     
     bool is_compressible(const std::string& ext) {
         std::string e = ext;
         std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return skip.find(e) == skip.end();
+        return skip.find(std::string_view(e)) == skip.end();
     }
     
+    /** Map file extension to the best codec */
     Codec select(const std::string& path, size_t size) {
         std::string ext = fs::path(path).extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         
         if (!is_compressible(ext)) return Codec::STORE;
         
-        // PDF and documents: ZSTD handles already-compressed streams better
-        // (PDF contains internal zlib/deflate streams that LZMA does not compress well)
-        if (ext == ".pdf" || ext == ".xps" || ext == ".oxps" ||
-            ext == ".epub" || ext == ".mobi") {
+        // Documents: ZSTD handles already-compressed streams better
+        if (ext == ".pdf" || ext == ".xps" || ext == ".oxps" || ext == ".epub" || ext == ".mobi")
             return Codec::ZSTD;
-        }
         
-        // Text files and source code: LZMA2 with large dictionary
+        // Text / source code: LZMA2 with large dictionary
         if (ext == ".txt" || ext == ".cpp" || ext == ".h" || ext == ".hpp" ||
             ext == ".c" || ext == ".py" || ext == ".js" || ext == ".ts" ||
             ext == ".json" || ext == ".xml" || ext == ".html" || ext == ".css" ||
             ext == ".sql" || ext == ".md" || ext == ".yaml" || ext == ".yml" ||
-            ext == ".log" || ext == ".csv" || ext == ".ini" || ext == ".cfg") {
+            ext == ".log" || ext == ".csv" || ext == ".ini" || ext == ".cfg" ||
+            ext == ".rs" || ext == ".go" || ext == ".swift" || ext == ".tex")
             return Codec::LZMA;
-        }
         
-        // Database: ZSTD with large dictionary
+        // Database: ZSTD
         if (ext == ".mdb" || ext == ".accdb" || ext == ".mde" || ext == ".accde" ||
-            ext == ".db" || ext == ".sqlite" || ext == ".sqlite3") {
+            ext == ".db" || ext == ".sqlite" || ext == ".sqlite3")
             return Codec::ZSTD;
-        }
         
-        // Already compressed images: STORE (no reduction)
+        // Already compressed: STORE
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
             ext == ".bmp" || ext == ".ico" || ext == ".webp" ||
             ext == ".mp3" || ext == ".mp4" || ext == ".avi" || ext == ".mkv" ||
-            ext == ".wav" || ext == ".flac" || ext == ".ogg") {
+            ext == ".wav" || ext == ".flac" || ext == ".ogg")
             return Codec::STORE;
-        }
         
-        // Office (ZIP-based): LZMA for solid blocks
-        if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt") {
+        // ZIP-based Office: LZMA in solid blocks
+        if (ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".odt")
             return Codec::LZMA;
-        }
         
         // Small files: fast LZ4
-        if (size < 64 * 1024) {
-            return Codec::LZ4;
-        }
+        if (size < 64 * 1024) return Codec::LZ4;
         
-        // Default: LZMA2 (best compression for unknown data)
         return Codec::LZMA;
     }
 }
