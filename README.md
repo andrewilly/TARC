@@ -23,6 +23,19 @@
 | **Security** | Path traversal protection, filename validation |
 | **Portable** | macOS (Intel + Apple Silicon), Linux, Windows |
 
+---
+
+## v2.11 Highlights
+
+| Area | Improvement |
+|---|---|
+| **Bug fixes** | `tarc -l` ratio, MemoryManager floor-pow2, CI badge, thread-safe stats |
+| **LTO** | Link-Time Optimization for release builds — smaller binary, 5-15% faster |
+| **CodecSelector** | O(1) extension lookup via `unordered_set<string_view>`, new extensions (`.rs`, `.go`, `.swift`, `.tex`) |
+| **Build** | LTO enabled by default in both Makefile and CMake |
+
+Full changelog: [RELEASE_v2.11.md](RELEASE_v2.11.md)
+
 ## Quick Start
 
 ```bash
@@ -55,7 +68,7 @@ tarc -t backup.strk
 ```
 
 ### Download binary
-Get pre-built binaries from the [Releases page](https://github.com/anomalyco/TARC/releases):
+Get pre-built binaries from the [Releases page](https://github.com/andrewilly/TARC/releases):
 
 | Platform | File |
 |---|---|
