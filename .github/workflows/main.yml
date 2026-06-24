@@ -1,0 +1,159 @@
+name: Build & Release TARC
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: tarc-linux-x86_64
+            exe: tarc
+            cmake_flags: ""
+
+          - os: windows-latest
+            artifact: tarc-windows-x64.exe
+            exe: tarc.exe
+            cmake_flags: "-A x64"
+
+          - os: macos-latest
+            artifact: tarc-macos-universal
+            exe: tarc
+            cmake_flags: "-DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/azure*.list 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=10
+          sudo apt-get install -y build-essential cmake ninja-build
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          mkdir -p build
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_C_STANDARD=11 \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            ${{ matrix.cmake_flags }}
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build --config Release --parallel 2
+
+      - name: Locate executable
+        id: locate
+        shell: bash
+        run: |
+          exe=$(find build -name "${{ matrix.exe }}" -type f | head -1)
+          if [ -z "$exe" ]; then
+            echo "error: executable ${{ matrix.exe }} not found in build/"
+            find build -type f -name "*tarc*" -o -name "*${{ matrix.exe }}*"
+            exit 1
+          fi
+          echo "path=$exe" >> $GITHUB_OUTPUT
+
+      - name: Quick smoke test
+        shell: bash
+        run: |
+          chmod +x "${{ steps.locate.outputs.path }}" 2>/dev/null || true
+          "${{ steps.locate.outputs.path }}" --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ steps.locate.outputs.path }}
+          if-no-files-found: error
+
+  asan:
+    name: ASan+UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo rm -f /etc/apt/sources.list.d/azure*.list 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=10
+          sudo apt-get install -y build-essential libzstd-dev liblz4-dev liblzma-dev libbrotli-dev
+      - run: make ASAN=1 -j$(nproc) tarc_test
+      - run: ./tarc_test
+
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, asan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize release assets
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p assets
+
+          for pair in \
+            "tarc-linux-x86_64|linux-x86_64" \
+            "tarc-windows-x64.exe|windows-x64.exe" \
+            "tarc-macos-universal|macos-universal"; do
+
+            dir="${pair%%|*}"
+            sfx="${pair##*|}"
+            out="tarc-$VERSION-$sfx"
+
+            file=$(find "artifacts/$dir" -type f 2>/dev/null | head -1)
+            if [ -n "$file" ]; then
+              cp "$file" "assets/$out"
+              echo "OK  $dir -> assets/$out"
+            else
+              echo "WARN artifact $dir not found"
+            fi
+          done
+
+          chmod +x assets/* 2>/dev/null || true
+          ls -lh assets/
+
+      - name: Generate checksums
+        run: |
+          cd assets && sha256sum * | tee ../checksums.txt
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          artifacts: "assets/*,checksums.txt"
+          generateReleaseNotes: true
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}

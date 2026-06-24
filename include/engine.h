@@ -1,0 +1,56 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include "types.h"
+
+namespace CodecSelector {
+    Codec select(const std::string& path, size_t size);
+    bool is_compressible(const std::string& ext);
+}
+
+class ProgressCallback {
+public:
+    virtual ~ProgressCallback() = default;
+    virtual void on_progress(size_t current, size_t total, const std::string& current_file) = 0;
+    virtual void on_warning(const std::string& msg) = 0;
+    virtual bool is_cancelled() const = 0;
+};
+
+namespace Engine {
+
+    struct CompressionStats {
+        uint64_t files_processed = 0;
+        uint64_t bytes_read = 0;
+        uint64_t bytes_in = 0;
+        uint64_t bytes_out = 0;
+        uint64_t duplicates_skipped = 0;
+        std::chrono::milliseconds elapsed{};
+    };
+
+    TarcResult compress(const std::string& arch_path, const std::vector<std::string>& files, 
+                       CompressOptions opts = {});
+    
+    TarcResult extract(const std::string& arch_path,
+                       const std::vector<std::string>& patterns = {},
+                       ExtractOptions opts = {});
+    
+    TarcResult list(const std::string& arch_path, size_t offset = 0);
+    
+    TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_path);
+
+    // SFX integrato: tarc.exe rileva se stesso come archivio SFX e auto-estrae
+    bool is_sfx_mode(const std::string& exe_path);
+    TarcResult extract_sfx(const std::string& exe_path,
+                           const std::string& output_dir = "",
+                           bool overwrite = false);
+
+    void set_progress_callback(ProgressCallback* callback);
+
+    CompressionStats get_stats();
+    
+    void reset_stats();
+
+}
