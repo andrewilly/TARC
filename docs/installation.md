@@ -8,7 +8,7 @@ nav_order: 2
 
 ## Pre-built Binaries
 
-Download from the [Releases page](https://github.com/anomalyco/TARC/releases):
+Download from the [Releases page](https://github.com/andrewilly/TARC/releases):
 
 | Platform | File |
 |---|---|
@@ -37,7 +37,7 @@ xxHash is bundled (`include/xxhash.h` + `src/xxhash.c`).
 ### Quick Build (Makefile)
 
 ```bash
-git clone https://github.com/anomalyco/TARC.git
+git clone https://github.com/andrewilly/TARC.git
 cd TARC
 make
 ```

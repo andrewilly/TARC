@@ -1,4 +1,4 @@
-homepage: "https://github.com/anomalyco/TARC"
+homepage: "https://github.com/andrewilly/TARC"
 language: c++
 primary_contact: "andrerizzo@users.noreply.github.com"
 auto_ccs:
@@ -9,7 +9,7 @@ sanitizers:
 architectures:
   - x86_64
   - i386
-main_repo: "https://github.com/anomalyco/TARC.git"
+main_repo: "https://github.com/andrewilly/TARC.git"
 fuzzing_engines:
   - libfuzzer
   - afl
