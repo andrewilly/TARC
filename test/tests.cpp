@@ -757,3 +757,255 @@ TEST_CASE("extract with empty patterns extracts all")
     CHECK(sb.exists(fs::path(out) / "alpha.txt"));
     CHECK(sb.exists(fs::path(out) / "beta.txt"));
 }
+
+// ---------------------------------------------------------------------------
+// Regressioni: bug corretti in questa revisione
+// ---------------------------------------------------------------------------
+
+TEST_CASE("dedup: duplicate with a different name is extracted too")
+{
+    Sandbox sb;
+    auto a = sb.make_file("alpha.txt", 4096, 'D');
+    auto b = sb.make_file("beta.txt", 4096, 'D');   // contenuto identico
+    auto arc = sb.arch_path("dedup_names.strk");
+    auto out = sb.out_dir("out_dedup_names");
+
+    auto cr = Engine::compress(arc, {a, b});
+    REQUIRE(cr.ok);
+    Engine::CompressionStats s = Engine::get_stats();
+    CHECK(s.duplicates_skipped >= 1);
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+
+    // Entrambi i file devono esistere: prima il duplicato spariva in silenzio
+    CHECK(sb.exists(fs::path(out) / "alpha.txt"));
+    CHECK(sb.exists(fs::path(out) / "beta.txt"));
+    CHECK(sb.read_file(fs::path(out) / "beta.txt") == sb.read_file(b));
+    CHECK(sb.read_file(fs::path(out) / "beta.txt") == sb.read_file(a));
+
+    // In modalita' test i duplicati non vanno contati due volte
+    auto tr = Engine::extract(arc, {}, {true, false, true, false, {}});
+    CHECK(tr.ok);
+    Engine::CompressionStats ts = Engine::get_stats();
+    CHECK(ts.files_processed == 2);
+}
+
+TEST_CASE("dedup: two empty files are both extracted")
+{
+    Sandbox sb;
+    auto e1 = sb.make_file("vuoto1.txt", 0);
+    auto e2 = sb.make_file("vuoto2.txt", 0);
+    auto arc = sb.arch_path("dedup_empty.strk");
+    auto out = sb.out_dir("out_dedup_empty");
+
+    REQUIRE(Engine::compress(arc, {e1, e2}).ok);
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(er.ok);
+    CHECK(sb.exists(fs::path(out) / "vuoto1.txt"));
+    CHECK(sb.exists(fs::path(out) / "vuoto2.txt"));
+}
+
+TEST_CASE("existing files are not overwritten without --force")
+{
+    Sandbox sb;
+    auto src = sb.make_file("keep.txt", 512, 'K');
+    auto arc = sb.arch_path("keep.strk");
+    auto out = sb.out_dir("out_keep");
+
+    REQUIRE(Engine::compress(arc, {src}).ok);
+    REQUIRE(Engine::extract(arc, {}, {false, false, true, false, out}).ok);
+
+    {
+        std::ofstream ofs((fs::path(out) / "keep.txt").string(), std::ios::binary);
+        ofs << "MODIFICATO-DALL-UTENTE";
+    }
+
+    // Seconda estrazione senza --force: il file non viene toccato
+    auto e2 = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(e2.ok);
+    CHECK(sb.read_file((fs::path(out) / "keep.txt").string()) == "MODIFICATO-DALL-UTENTE");
+    CHECK(!e2.warnings.empty());
+
+    // Con --force (overwrite=true) viene ripristinato
+    auto e3 = Engine::extract(arc, {}, {false, false, true, true, out});
+    CHECK(e3.ok);
+    CHECK(sb.read_file((fs::path(out) / "keep.txt").string()) == sb.read_file(src));
+}
+
+TEST_CASE("compression does not clobber an existing archive without --force")
+{
+    Sandbox sb;
+    auto a = sb.make_file("a.txt", 256, 'A');
+    auto b = sb.make_file("b.txt", 256, 'B');
+    auto arc = sb.arch_path("clobber.strk");
+
+    REQUIRE(Engine::compress(arc, {a}).ok);
+    const std::string before = sb.read_file(arc);
+
+    CompressOptions no_force;
+    no_force.overwrite = false;
+    auto cr = Engine::compress(arc, {b}, no_force);
+    CHECK(!cr.ok);
+    CHECK(sb.read_file(arc) == before);
+
+    CompressOptions force;
+    force.overwrite = true;
+    auto cr2 = Engine::compress(arc, {b}, force);
+    CHECK(cr2.ok);
+    CHECK(sb.read_file(arc) != before);
+}
+
+TEST_CASE("archives are byte-identical across runs")
+{
+    Sandbox sb;
+    auto a = sb.make_file("det_a.txt", 3000, 'X');
+    auto b = sb.make_file("det_b.txt", 1500, 'Y');
+    auto arc1 = sb.arch_path("det1.strk");
+    auto arc2 = sb.arch_path("det2.strk");
+
+    REQUIRE(Engine::compress(arc1, {a, b}).ok);
+    REQUIRE(Engine::compress(arc2, {a, b}).ok);
+    // Prima comp_size usciva da memoria non inizializzata: due archivi
+    // degli stessi input differivano per pochi byte.
+    CHECK(sb.read_file(arc1) == sb.read_file(arc2));
+}
+
+TEST_CASE("solid mode off writes one chunk per file")
+{
+    Sandbox sb;
+    auto a = sb.make_file("s1.bin", 8192, 'A');
+    auto b = sb.make_file("s2.bin", 8192, 'B');
+    auto arc = sb.arch_path("solid_off.strk");
+
+    CompressOptions opts;
+    opts.solid_mode = false;
+    REQUIRE(Engine::compress(arc, {a, b}, opts).ok);
+
+    FILE* f = fopen(arc.c_str(), "rb");
+    REQUIRE(f != nullptr);
+    Header h{};
+    REQUIRE(fread(&h, sizeof(h), 1, f) == 1);
+    std::vector<FileEntry> toc;
+    REQUIRE(IO::read_toc(f, h, toc));
+    fclose(f);
+
+    REQUIRE(toc.size() == 2);
+    CHECK(toc[0].meta.offset != toc[1].meta.offset);
+    CHECK(toc[0].meta.comp_size > 0);
+    CHECK(toc[1].meta.comp_size > 0);
+}
+
+TEST_CASE("corrupted chunk data fails extraction")
+{
+    Sandbox sb;
+    auto a = sb.make_file("corrupt.txt", 200000, 'Z');
+    auto arc = sb.arch_path("corrupt.strk");
+    auto out = sb.out_dir("out_corrupt");
+
+    REQUIRE(Engine::compress(arc, {a}).ok);
+
+    // Corrompe un byte dentro i dati del primo chunk (header 20 + ChunkHeader 20)
+    {
+        std::fstream f(arc, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(f.good());
+        char c = 0;
+        f.seekg(41);
+        f.read(&c, 1);
+        c = static_cast<char>(c ^ 0xFF);
+        f.seekp(41);
+        f.write(&c, 1);
+        f.close();
+    }
+
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(!er.ok);
+}
+
+TEST_CASE("malformed header with absurd file_count is rejected")
+{
+    Sandbox sb;
+    auto a = sb.make_file("dos.txt", 4096, 'Q');
+    auto arc = sb.arch_path("dos.strk");
+    auto out = sb.out_dir("out_dos");
+
+    REQUIRE(Engine::compress(arc, {a}).ok);
+
+    // Header packed: magic[4] + version(4) + toc_offset(8) + file_count(4) a 16
+    {
+        std::fstream f(arc, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(f.good());
+        uint32_t bogus = 0xFFFFFFFFu;
+        f.seekp(16);
+        f.write(reinterpret_cast<const char*>(&bogus), 4);
+        f.close();
+    }
+
+    auto lr = Engine::list(arc);
+    CHECK(!lr.ok);
+    auto er = Engine::extract(arc, {}, {false, false, true, false, out});
+    CHECK(!er.ok);
+}
+
+TEST_CASE("verify on create validates and preserves the stats")
+{
+    Sandbox sb;
+    auto a = sb.make_file("ver.txt", 100000, 'V');
+    auto arc = sb.arch_path("ver.strk");
+
+    CompressOptions opts;
+    opts.verify = true;
+    auto cr = Engine::compress(arc, {a}, opts);
+    CHECK(cr.ok);
+    CHECK(cr.bytes_in > 0);
+    CHECK(cr.bytes_out > 0);
+
+    // La verifica azzera le statistiche globali: devono essere ripristinate
+    Engine::CompressionStats s = Engine::get_stats();
+    CHECK(s.bytes_read > 0);
+}
+
+TEST_CASE("SFX output is created executable and keeps a valid trailer")
+{
+    Sandbox sb;
+    auto a = sb.make_file("sfx_src.txt", 2048, 'S');
+    auto arc = sb.arch_path("sfx_in.strk");
+    REQUIRE(Engine::compress(arc, {a}).ok);
+
+    auto sfx = sb.arch_path("sfx_out.bin");
+    auto r = Engine::create_sfx(arc, sfx);
+    REQUIRE(r.ok);
+    CHECK(sb.file_size(sfx) > 0);
+
+    std::ifstream in(sfx, std::ios::binary | std::ios::ate);
+    REQUIRE(in.good());
+    auto size = static_cast<uint64_t>(in.tellg());
+    REQUIRE(size >= SFX_TRAILER_SIZE);
+    in.seekg(-static_cast<std::streamoff>(SFX_TRAILER_SIZE), std::ios::end);
+    SfxTrailer tr{};
+    in.read(reinterpret_cast<char*>(&tr), SFX_TRAILER_SIZE);
+    in.close();
+
+    CHECK(std::memcmp(tr.magic, SFX_MAGIC, 8) == 0);
+    CHECK(tr.archive_size > 0);
+    CHECK(tr.archive_offset + tr.archive_size + SFX_TRAILER_SIZE == size);
+
+#ifndef _WIN32
+    // Senza bit eseguibile l'SFX non e' un eseguibile autonomo
+    auto perms = fs::status(sfx).permissions();
+    CHECK((perms & fs::perms::owner_exec) != fs::perms::none);
+#endif
+}
+
+TEST_CASE("test mode succeeds on an archive of only empty files")
+{
+    Sandbox sb;
+    auto e1 = sb.make_file("t1.txt", 0);
+    auto e2 = sb.make_file("t2.txt", 0);
+    auto arc = sb.arch_path("only_empty.strk");
+
+    REQUIRE(Engine::compress(arc, {e1, e2}).ok);
+    auto er = Engine::extract(arc, {}, {true, false, true, false, {}});
+    CHECK(er.ok);
+    CHECK(er.bytes_out == 0);   // valido anche se non c'e' nulla da scrivere
+}
