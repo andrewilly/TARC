@@ -71,4 +71,10 @@ namespace IO {
     // Path of the current executable (used by SFX)
     std::string get_self_path();
 
+    // SEC: percorso di un file temporaneo con nome non predicibile.
+    // Crea davvero il file (mkstemp / GetTempFileName) e ne restituisce il
+    // path, cosi' un attaccante non puo' pre-creare un symlink nella stessa
+    // posizione (attacco classico ai nomi fissi in /tmp).
+    std::string unique_temp_path(const std::string& stem);
+
 }

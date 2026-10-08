@@ -956,8 +956,8 @@ TarcResult extract_sfx(const std::string& exe_path,
     }
 
     // Extract the embedded TARC archive to a temporary file
-    fs::path temp_dir = fs::temp_directory_path();
-    fs::path temp_archive = temp_dir / "tarc_sfx_temp.strk";
+    // SEC: nome non predicibile, creato dal sistema (niente path fisso in /tmp)
+    fs::path temp_archive = IO::unique_temp_path("tarc_sfx");
 
     {
         std::ifstream self(exe_path, std::ios::binary);
@@ -1126,6 +1126,19 @@ TarcResult create_sfx(const std::string& archive_path, const std::string& sfx_na
     }
     sfx_out.close();
 
+    // L'archivio autoestraente deve essere eseguibile quanto lo stub da cui
+    // deriva: std::ofstream crea i file con i permessi dell'umask (0644), quindi
+    // senza questo passaggio 'tarc --sfx' produceva un file che non partiva.
+    {
+        std::error_code pec;
+        auto stub_status = fs::status(stub_path, pec);
+        if (!pec) {
+            std::error_code wec;
+            fs::permissions(sfx_name, stub_status.permissions(),
+                            fs::perm_options::replace, wec);
+        }
+    }
+
     // Calculate final size for the report
     uint64_t sfx_total = stub_size + archive_size + SFX_TRAILER_SIZE;
     res.ok = true;
@@ -1186,6 +1199,7 @@ static bool flush_solid_buffer(FILE* f, std::vector<char>& solid_buf, bool& soli
     for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
         final_toc[j].meta.offset = solid_offset;
         final_toc[j].meta.codec = static_cast<uint8_t>(actual_codec);
+        final_toc[j].meta.comp_size = solid_cr.compressed_data.size();
     }
     solid_buf.clear();
     ensure_mem();
@@ -1443,7 +1457,7 @@ static bool write_chunk_store_streaming(FILE* archive_f, const std::string& sour
         remaining -= chunk_size;
     }
 
-    src_fg.release();
+    // BUG FIX: release() scartava la FILE* senza chiuderla (fd leak)
     return ok;
 }
 
@@ -1456,7 +1470,9 @@ static bool write_chunk_streaming(FILE* archive_f, const std::string& source_pat
     Codec actual = codec;
     if (codec == Codec::LZ4) actual = Codec::ZSTD;
 
-    FILE* src_f = fopen(source_path.c_str(), "rb");
+    // BUG FIX: la FILE* non veniva mai chiusa (fd leak a ogni file in streaming)
+    FileGuard src_fg(fopen(source_path.c_str(), "rb"));
+    FILE* src_f = src_fg.get();
     if (!src_f) return false;
 
     uint64_t remaining = source_size;
@@ -1543,6 +1559,18 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     std::memcpy(h.magic, TARC_MAGIC, 4);
     h.version = TARC_VERSION;
 
+    // Un archivio esistente non viene sovrascritto senza --force.
+    // BUG FIX: prima 'tarc -c7 esistente.strk ...' distruggeva l'archivio
+    // precedente senza alcun avviso, e --force non aveva alcun ruolo qui.
+    if (!opts.overwrite) {
+        std::error_code ex_ec;
+        if (fs::exists(arch_path, ex_ec)) {
+            res.error = TarcError::AccessDenied;
+            res.message = "Archive already exists (use --force to overwrite): " + arch_path;
+            return res;
+        }
+    }
+
     FileGuard fg(fopen(arch_path.c_str(), "wb"));
     if (!fg.get()) {
         res.error = TarcError::AccessDenied;
@@ -1574,11 +1602,37 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         g_mem.max_solid * 2,
         static_cast<size_t>(256 * 1024 * 1024)
     );
+    // BUG FIX: solid_mode era ignorato: i blocchi solidi erano sempre attivi.
+    const bool solid_enabled = opts.solid_mode;
+
+    // Limite di memoria del pipeline: ogni chunk in volo trattiene il proprio
+    // buffer non compresso, quindi la profondita' non supera cio' che la RAM
+    // disponibile puo' sostenere (meta' della RAM stimata disponibile).
+    {
+        size_t mem_slots = CHUNK_THRESHOLD > 0
+            ? static_cast<size_t>((g_mem.avail_ram / 2) / CHUNK_THRESHOLD)
+            : 1;
+        if (mem_slots < 1) mem_slots = 1;
+        if (mem_slots < static_cast<size_t>(g_max_workers)) {
+            g_max_workers = static_cast<int>(mem_slots);
+        }
+        if (g_max_workers < 1) g_max_workers = 1;
+    }
     std::vector<char> solid_buf;
     solid_buf.reserve(CHUNK_THRESHOLD);
     
-    std::future<ChunkResult> future_chunk;
-    bool worker_active = false;
+    // ========================================================================
+    // Pipeline di compressione asincrona (--threads N)
+    // ========================================================================
+    // BUG FIX: prima esisteva un solo future e il chunk precedente veniva sempre
+    // atteso prima di lanciare il successivo, quindi g_active_workers non poteva
+    // mai raggiungere g_max_workers, il ciclo di attesa era codice morto e
+    // --threads non aveva alcun effetto (N>=3 si comportava come N=1).
+    // Ora i chunk in volo stanno in una coda FIFO: piu' blocchi vengono
+    // compressi in parallelo mentre il thread principale continua a leggere.
+    // La scrittura resta in ordine di coda, quindi gli offset nel TOC
+    // corrispondono alla posizione reale nel file.
+    std::deque<std::future<ChunkResult>> pending_futures;
     
     // FEATURE #5: track which toc indices belong to the pending chunk (solid async)
     std::deque<SolidChunkFiles> pending_solid_ranges;
@@ -1589,10 +1643,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     // Codec for the current solid buffer (first file of the chunk decides the codec)
     Codec solid_codec = Codec::LZMA;
 
-    auto write_pending_chunk = [&](std::future<ChunkResult>& fut) -> bool {
+    auto write_pending_chunk = [&]() -> bool {
+        if (pending_futures.empty()) return true;
         if (check_cancelled()) return false;
         
-        ChunkResult cr = fut.get();
+        ChunkResult cr = pending_futures.front().get();
+        pending_futures.pop_front();
         g_active_workers--;
         if (!cr.success) return false;
         
@@ -1613,11 +1669,21 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 // BUG FIX: Update ALSO the codec in TOC for files in the async chunk
                 // Previously the codec was not updated, causing inconsistency
                 final_toc[j].meta.codec = static_cast<uint8_t>(cr.codec);
+                final_toc[j].meta.comp_size = cr.compressed_data.size();
             }
         }
         
         return true;
     };
+
+    // Svuota la coda finche' non restano piu' di 'depth' chunk in volo.
+    auto drain_to_depth = [&](size_t depth) -> bool {
+        while (pending_futures.size() > depth) {
+            if (!write_pending_chunk()) return false;
+        }
+        return true;
+    };
+    auto drain_all = [&]() -> bool { return drain_to_depth(0); };
 
     auto start_time = TarcUtil::safe_now();
     
@@ -1694,7 +1760,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             continue;
         }
 
-        FileEntry fe;
+        // BUG FIX: 'FileEntry fe;' lasciava Entry default-inizializzato, quindi
+        // comp_size e duplicate_of_idx finivano su disco con valori indefiniti.
+        // Conseguenza: archivi non riproducibili byte-per-byte. Ora e' azzerato
+        // e ogni campo viene valorizzato esplicitamente nei rami sottostanti.
+        FileEntry fe{};
         fe.name = normalize_path(disk_path);
         fe.meta.orig_size = fsize;
         fe.meta.xxhash = h64;
@@ -1724,7 +1794,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             fe.meta.is_duplicate = 1;
             fe.meta.duplicate_of_idx = hash_map[h64];
             fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
-            fe.meta.offset = 0; // duplicates have no data
+            fe.meta.offset = 0;     // duplicates have no data
+            fe.meta.comp_size = 0;  // e nessun chunk proprio
             g_stats.duplicates_skipped++;
         } else {
             hash_map[h64] = static_cast<uint32_t>(final_toc.size());
@@ -1736,12 +1807,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             // ============================================================
             if (use_streaming && selected_codec != Codec::STORE) {
                 // Flush pending solid buffer before streaming
-                if (worker_active && !write_pending_chunk(future_chunk)) {
+                if (!drain_all()) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
                     return res;
                 }
-                worker_active = false;
 
                 if (!flush_solid_buffer(f, solid_buf, solid_has_files,
                                         solid_toc_begin, solid_codec, level,
@@ -1770,6 +1840,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 int64_t _data_tell = IO::tarc_ftell(f);
                 if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                 data_offset = static_cast<uint64_t>(_data_tell);
+                fe.meta.comp_size = data_offset - stream_offset;
             } else if (use_streaming && selected_codec == Codec::STORE) {
                 // ============================================================
                 // BUG FIX #15: Streaming STORE — large non-compressible files
@@ -1780,12 +1851,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 // with a 1MB buffer, without loading into RAM.
                 // ============================================================
                 // Flush pending solid buffer
-                if (worker_active && !write_pending_chunk(future_chunk)) {
+                if (!drain_all()) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
                     return res;
                 }
-                worker_active = false;
 
                 if (!flush_solid_buffer(f, solid_buf, solid_has_files,
                                         solid_toc_begin, solid_codec, level,
@@ -1812,6 +1882,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 int64_t _data_tell = IO::tarc_ftell(f);
                 if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                 data_offset = static_cast<uint64_t>(_data_tell);
+                fe.meta.comp_size = data_offset - store_offset;
             } else if (fsize <= STORE_THRESHOLD) {
                 // ============================================================
                 // BUG FIX: flush pending solid buffer BEFORE writing STORE chunk
@@ -1820,12 +1891,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                 // ============================================================
                 if (solid_has_files && !solid_buf.empty()) {
                     // Wait for any pending async compression
-                    if (worker_active && !write_pending_chunk(future_chunk)) {
+                    if (!drain_all()) {
                         res.error = TarcError::CompressionFailed;
                         res.message = "Chunk compression failed.";
                         return res;
                     }
-                    worker_active = false;
 
                     // Compress and write the accumulated solid buffer
                     ChunkResult solid_cr = compress_worker(std::move(solid_buf), level, solid_codec);
@@ -1843,15 +1913,14 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         return res;
                     }
 
-                    // Update Entry.offset for all files in this solid group
-                    for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
-                        final_toc[j].meta.offset = solid_offset;
-                    }
+                    // Update Entry.offset/comp_size for all files in this solid group
                     // Update TOC codec to the ACTUAL codec used
                     // (compress_worker may change codec to STORE for buffers < 4096)
                     Codec actual_codec = solid_cr.codec;
                     for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
+                        final_toc[j].meta.offset = solid_offset;
                         final_toc[j].meta.codec = static_cast<uint8_t>(actual_codec);
+                        final_toc[j].meta.comp_size = solid_cr.compressed_data.size();
                     }
 
                     solid_buf.clear();
@@ -1888,6 +1957,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     // FEATURE #5: offset of the STORE chunk
                     fe.meta.offset = data_offset;
                     fe.meta.codec = static_cast<uint8_t>(Codec::STORE);
+                    fe.meta.comp_size = data.size();
 
                     if (!write_chunk(f, cr.codec, cr.raw_size, cr.compressed_data, res.bytes_out)) {
                         res.error = TarcError::WriteFailed;
@@ -1898,36 +1968,40 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     g_stats.bytes_read += fsize;
                     solid_has_files = false; // reset solid tracking
                 }
-            } else if (solid_buf.size() + fsize > CHUNK_THRESHOLD && !solid_buf.empty()) {
+            } else if ((!solid_enabled || solid_buf.size() + fsize > CHUNK_THRESHOLD) && !solid_buf.empty()) {
+                // Solid buffer full (o modalita' solid disattivata: un file per chunk)
                 // Solid buffer full: flush the current block
                 
                 // Write the previous pending chunk (if async compress in progress)
-                if (worker_active && !write_pending_chunk(future_chunk)) {
+                if (!drain_to_depth(static_cast<size_t>(g_max_workers) - 1)) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed.";
                     return res;
                 }
-                worker_active = false;
                 
                 // Record the toc indices for this solid chunk about to be compressed
                 pending_solid_ranges.push_back({solid_toc_begin, final_toc.size() - 1});
                 
-                // Start async compression for the current solid buffer
-                // Respects the thread limit (--threads N)
-                while (g_active_workers >= g_max_workers) {
-                    std::this_thread::yield();
-                }
+                // Avvia la compressione asincrona del buffer corrente.
+                // Il numero di chunk in volo e' limitato da g_max_workers (--threads N).
                 g_active_workers++;
                 try {
-                    future_chunk = std::async(
+                    pending_futures.push_back(std::async(
                         std::launch::async,
                         compress_worker,
                         std::move(solid_buf),
                         level,
                         solid_codec  // FEATURE #1: use the solid buffer codec
-                    );
+                    ));
                 } catch (const std::system_error&) {
-                    // Thread creation failed: sync fallback
+                    // Creazione del thread fallita: fallback sincrono.
+                    // Si svuota prima la coda per non alterare l'ordine su disco.
+                    g_active_workers--;
+                    if (!drain_all()) {
+                        res.error = TarcError::CompressionFailed;
+                        res.message = "Chunk compression failed.";
+                        return res;
+                    }
                     pending_solid_ranges.pop_back();
                     ChunkResult cr = compress_worker(std::move(solid_buf), level, solid_codec);
                     if (!cr.success) {
@@ -1945,8 +2019,8 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
                         final_toc[j].meta.offset = chunk_off;
                         final_toc[j].meta.codec = static_cast<uint8_t>(cr.codec);
+                        final_toc[j].meta.comp_size = cr.compressed_data.size();
                     }
-                    worker_active = false;
                     solid_buf.clear();
                     solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
                     solid_toc_begin = final_toc.size();
@@ -1955,7 +2029,6 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     g_stats.bytes_read += fsize;
                     continue;
                 }
-                worker_active = true;
                 solid_buf.clear();
                 solid_buf.reserve(std::min(CHUNK_THRESHOLD, static_cast<size_t>(64 * 1024 * 1024)));
 
@@ -1979,12 +2052,11 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
             } catch (const std::bad_alloc&) {
                 // Solid buffer OOM: immediate flush and retry
                 report_warning("[MEMORY] Solid buffer OOM, flushing early");
-                if (worker_active && !write_pending_chunk(future_chunk)) {
+                if (!drain_all()) {
                     res.error = TarcError::CompressionFailed;
                     res.message = "Chunk compression failed (OOM).";
                     return res;
                 }
-                worker_active = false;
 
                 if (!flush_solid_buffer(f, solid_buf, solid_has_files,
                                         solid_toc_begin, solid_codec, level,
@@ -2011,6 +2083,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                     int64_t _data_tell = IO::tarc_ftell(f);
                     if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                     data_offset = static_cast<uint64_t>(_data_tell);
+                    fe.meta.comp_size = data_offset - store_offset;
                     solid_has_files = false;
                 } else {
                     // Retry after flush: single file as mini-chunk
@@ -2036,6 +2109,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
                         int64_t _data_tell = IO::tarc_ftell(f);
                         if (_data_tell < 0) { res.error = TarcError::CorruptedArchive; res.message = "Failed to get file position."; return res; }
                         data_offset = static_cast<uint64_t>(_data_tell);
+                        fe.meta.comp_size = data_offset - store_offset;
                         solid_has_files = false;
                     }
                 }
@@ -2057,13 +2131,12 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         g_stats.files_processed++;
     }
 
-    // Write the last pending chunk (if async compression in progress)
-    if (worker_active && !write_pending_chunk(future_chunk)) {
+    // Attende tutti i chunk ancora in volo prima di chiudere l'archivio
+    if (!drain_all()) {
         res.error = TarcError::CompressionFailed;
         res.message = "Final chunk failed.";
         return res;
     }
-    worker_active = false;
     
     // Write the final solid buffer (if not empty)
     if (!solid_buf.empty()) {
@@ -2086,6 +2159,7 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
         for (size_t j = solid_toc_begin; j < final_toc.size(); ++j) {
             final_toc[j].meta.offset = last_chunk_offset;
             final_toc[j].meta.codec = static_cast<uint8_t>(actual_last_codec);
+            final_toc[j].meta.comp_size = last.compressed_data.size();
         }
     }
 
@@ -2107,6 +2181,35 @@ TarcResult compress(const std::string& arch_path, const std::vector<std::string>
     res.bytes_in = g_stats.bytes_read;
     res.bytes_out = g_stats.bytes_out;
     res.message = "Compression completed.";
+
+    // Verifica post-creazione (--verify): rilegge l'archivio appena scritto e
+    // ne controlla header, TOC, checksum dei chunk e xxHash per file.
+    // Eseguita solo se richiesta esplicitamente: comporta una rilettura completa.
+    if (opts.verify) {
+        CompressionStats saved_stats = get_stats();
+        uint64_t saved_in = res.bytes_in;
+        uint64_t saved_out = res.bytes_out;
+
+        ExtractOptions vopts;
+        vopts.test_only = true;
+        vopts.verify = true;
+        TarcResult vr = extract(arch_path, {}, vopts);
+
+        // extract() azzera le statistiche globali: ripristina quelle di compressione
+        {
+            std::lock_guard<std::mutex> lock(g_stats_mtx);
+            g_stats = saved_stats;
+        }
+        res.bytes_in = saved_in;
+        res.bytes_out = saved_out;
+
+        if (!vr.ok) {
+            res.ok = false;
+            res.error = vr.error;
+            res.message = "Post-create verification failed: " + vr.message;
+            return res;
+        }
+    }
     return res;
 }
 
@@ -2161,7 +2264,9 @@ static bool match_pattern(const std::string& full_path, const std::string& patte
 // ARCH-001: Helper to read the next decompressed chunk
 // ============================================================================
 
-static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& block_pos) {
+static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& block_pos,
+                                 bool* end_marker = nullptr) {
+    if (end_marker) *end_marker = false;
     if (block_pos >= block.size()) {
         ChunkHeader ch;
         if (fread(&ch, sizeof(ch), 1, f) != 1) {
@@ -2170,8 +2275,11 @@ static TarcError read_next_block(FILE* f, std::vector<char>& block, size_t& bloc
 
         // End marker detection: {0,0,0,0} — no legitimate chunk can
         // have all 4 fields zero (Codec::ZSTD=0 but comp_size > 0).
+        // BUG FIX: prima era indistinguibile da un chunk corrotto, cosi' un
+        // archivio troncato poteva chiudersi con "Extract completed successfully".
         if (std::memcmp(&ch, &END_MARKER, sizeof(ChunkHeader)) == 0) {
-            return TarcError::CorruptedArchive;  // end marker raggiunto
+            if (end_marker) *end_marker = true;
+            return TarcError::CorruptedArchive;  // fine dati, non corruzione
         }
 
         if (ch.comp_size > TARC_MAX_CHUNK_SIZE || ch.raw_size > TARC_MAX_CHUNK_SIZE) {
@@ -2281,12 +2389,116 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
         }
     }
 
-    // Count real files (not duplicates, not empty) that must have chunk data
-    size_t expected_real_files = 0;
-    for (const auto& fe : toc) {
-        if (!fe.meta.is_duplicate && fe.meta.orig_size > 0) expected_real_files++;
+    // ========================================================================
+    // Deduplicazione in estrazione
+    // ========================================================================
+    // I file duplicati non hanno chunk propri: il loro contenuto e' quello
+    // dell'entry originale. Qui si risolve la catena duplicate_of_idx ->
+    // originale, si verifica che ogni duplicato richiesto abbia un originale
+    // valido, e si registra per ogni originale quali duplicati deve produrre.
+    // ========================================================================
+    auto resolve_original = [&toc](size_t idx) -> size_t {
+        size_t guard = 0;
+        while (toc[idx].meta.is_duplicate) {
+            if (++guard > toc.size()) return SIZE_MAX;  // catena ciclica
+            uint32_t o = toc[idx].meta.duplicate_of_idx;
+            if (o >= toc.size() || o == idx) return SIZE_MAX;
+            idx = o;
+        }
+        return idx;
+    };
+
+    auto matches = [&patterns](const FileEntry& fe) -> bool {
+        if (patterns.empty()) return true;
+        for (const auto& pat : patterns) {
+            if (match_pattern(fe.name, pat)) return true;
+        }
+        return false;
+    };
+
+    std::vector<std::vector<size_t>> dependents(toc.size());
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (!toc[i].meta.is_duplicate) continue;
+        size_t orig = resolve_original(i);
+        if (orig == SIZE_MAX) {
+            res.error = TarcError::InconsistentToc;
+            res.message = "Duplicate entry with invalid original: " + toc[i].name;
+            return res;
+        }
+        if (matches(toc[i])) dependents[orig].push_back(i);
     }
+
+    // produce[i] = l'entry i genera un file in uscita (sorgente dei dati per se'
+    // stessa, oppure originale di almeno un duplicato richiesto).
+    std::vector<char> produce(toc.size(), 0);
+    for (size_t j = 0; j < toc.size(); ++j) {
+        for (size_t d : dependents[j]) produce[d] = 1;
+    }
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (!toc[i].meta.is_duplicate && matches(toc[i])) produce[i] = 1;
+    }
+
+    // Path di destinazione, calcolati in ordine di TOC perche' il contatore
+    // di --flat deve restare deterministico.
+    std::vector<std::string> out_path(toc.size());
+    if (!opts.test_only) {
+        for (size_t i = 0; i < toc.size(); ++i) {
+            if (!produce[i]) continue;
+            std::string final_path = toc[i].name;
+            if (opts.flat_mode) {
+                fs::path p(toc[i].name);
+                std::string filename = p.filename().string();
+                auto it = flat_names_counter.find(filename);
+                if (it != flat_names_counter.end()) {
+                    it->second++;
+                    size_t dot_pos = filename.find_last_of('.');
+                    if (dot_pos != std::string::npos) {
+                        filename = filename.substr(0, dot_pos) + "_" +
+                                   std::to_string(it->second) + filename.substr(dot_pos);
+                    } else {
+                        filename += "_" + std::to_string(it->second);
+                    }
+                } else {
+                    flat_names_counter[filename] = 0;
+                }
+                final_path = filename;
+            }
+            std::string safe_path = IO::sanitize_extract_path(final_path);
+            if (safe_path.empty()) {
+                report_warning("Path traversal blocked: " + toc[i].name);
+                res.error = TarcError::PathTraversal;
+                res.message = "Unsafe path in archive: " + toc[i].name;
+                return res;
+            }
+            if (!opts.output_dir.empty()) {
+                std::string dir = opts.output_dir;
+                std::replace(dir.begin(), dir.end(), '\\', '/');
+                if (!dir.empty() && dir.back() != '/') dir += '/';
+                safe_path = dir + safe_path;
+            }
+            out_path[i] = safe_path;
+        }
+    }
+
+    // Numero di entry con dati da leggere davvero (i duplicati non ne hanno).
+    size_t data_units_expected = 0;
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (!toc[i].meta.is_duplicate && toc[i].meta.orig_size > 0 && produce[i]) {
+            data_units_expected++;
+        }
+    }
+    size_t data_units_read = 0;
     bool end_marker_hit = false;
+    size_t files_skipped_existing = 0;
+    size_t duplicates_recreated = 0;
+
+    struct Sink {
+        size_t      toc_index = 0;
+        std::string path;
+        std::ofstream out;
+        bool        open = false;
+        bool        skipped_existing = false;
+    };
 
     for (size_t i = 0; i < toc.size(); ++i) {
         if (check_cancelled()) {
@@ -2294,33 +2506,24 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             res.message = "Cancelled.";
             return res;
         }
-        
+
         auto& fe = toc[i];
         report_progress(i + 1, toc.size(), fe.name);
-        
-        bool should_extract = patterns.empty();
-        if (!should_extract) {
-            for (const auto& pat : patterns) {
-                if (match_pattern(fe.name, pat)) {
-                    should_extract = true;
-                    break;
-                }
-            }
-        }
 
-        if (!should_extract) {
-            if (fe.meta.is_duplicate) continue;
-            // BUG FIX #2: Empty files (orig_size==0) have no chunks on disk
+        // I duplicati non hanno dati propri: vengono prodotti quando si
+        // processa il loro originale (vedi 'targets' piu' sotto).
+        if (fe.meta.is_duplicate) continue;
+
+        if (!produce[i]) {
+            // Ne' richiesto ne' origine di un duplicato richiesto: consuma i
+            // chunk per non disallineare il flusso.
             if (fe.meta.orig_size == 0) continue;
-            // Skip ALL chunks for this file (potentially multi-chunk if >4GB)
             size_t remaining_skip = static_cast<size_t>(fe.meta.orig_size);
             while (remaining_skip > 0) {
-                TarcError err = read_next_block(f, current_block, block_pos);
-                if (err == TarcError::CorruptedArchive) {
-                    end_marker_hit = true;
-                    break;
-                }
+                bool em = false;
+                TarcError err = read_next_block(f, current_block, block_pos, &em);
                 if (err != TarcError::None) {
+                    if (em) { end_marker_hit = true; break; }
                     res.error = err;
                     res.message = "Chunk read failed.";
                     return res;
@@ -2334,156 +2537,148 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             continue;
         }
 
-        if (fe.meta.is_duplicate) continue;
+        // Entry da produrre: se stessa (se richiesta) piu' i suoi duplicati.
+        std::vector<size_t> targets;
+        if (matches(fe)) targets.push_back(i);
+        for (size_t d : dependents[i]) targets.push_back(d);
 
-        // BUG FIX #2: Empty files have no chunks on disk, skip reading
-        if (fe.meta.orig_size == 0) {
-            if (!opts.test_only) {
-                std::string safe_path = IO::sanitize_extract_path(fe.name);
-                if (!safe_path.empty()) {
-                    std::string full_path = safe_path;
-                    if (!opts.output_dir.empty()) {
-                        std::string dir = opts.output_dir;
-                        std::replace(dir.begin(), dir.end(), '\\', '/');
-                        if (!dir.empty() && dir.back() != '/') dir += '/';
-                        full_path = dir + safe_path;
-                    }
-                    fs::path p(full_path);
-                    if (p.has_parent_path()) {
-                        std::error_code ec;
-                        fs::create_directories(p.parent_path(), ec);
-                    }
-                    std::ofstream out(full_path, std::ios::binary);
-                }
+        // Se piu' target risolvono sullo stesso file (es. stesso nome, come in
+        // 'tarc -c arch f.txt f.txt') si scrive una volta sola: due stream
+        // aperti sullo stesso path lo corromperebbero.
+        if (!opts.test_only) {
+            std::vector<size_t> unique_targets;
+            std::vector<std::string> seen;
+            for (size_t t : targets) {
+                const std::string& p = out_path[t];
+                if (std::find(seen.begin(), seen.end(), p) != seen.end()) continue;
+                seen.push_back(p);
+                unique_targets.push_back(t);
             }
-            UI::print_extract(fe.name, fe.meta.orig_size, opts.test_only, true);
-            g_stats.files_processed++;
-            continue;
+            targets.swap(unique_targets);
         }
 
-        std::string final_path = fe.name;
-        if (opts.flat_mode) {
-            fs::path p(fe.name);
-            std::string filename = p.filename().string();
-            
-            if (flat_names_counter.count(filename)) {
-                flat_names_counter[filename]++;
-                size_t dot_pos = filename.find_last_of('.');
-                if (dot_pos != std::string::npos) {
-                    filename = filename.substr(0, dot_pos) + "_" + 
-                              std::to_string(flat_names_counter[filename]) + 
-                              filename.substr(dot_pos);
-                } else {
-                    filename += "_" + std::to_string(flat_names_counter[filename]);
+        // Apri tutti i file di destinazione.
+        std::vector<Sink> sinks;
+        if (!opts.test_only) {
+            for (size_t t : targets) {
+                Sink s;
+                s.toc_index = t;
+                s.path = out_path[t];
+                if (s.path.empty()) {
+                    res.error = TarcError::PathTraversal;
+                    res.message = "Unsafe path in archive: " + toc[t].name;
+                    return res;
                 }
-            } else {
-                flat_names_counter[filename] = 0;
+                if (!opts.overwrite && fs::exists(s.path)) {
+                    // BUG FIX: senza --force i file esistenti venivano troncati
+                    // in silenzio. Ora vengono saltati e segnalati.
+                    s.skipped_existing = true;
+                    files_skipped_existing++;
+                    report_warning("Exists, skipped (use --force to overwrite): " + s.path);
+                    sinks.push_back(std::move(s));
+                    continue;
+                }
+                fs::path p(s.path);
+                if (p.has_parent_path()) {
+                    std::error_code ec;
+                    fs::create_directories(p.parent_path(), ec);
+                }
+                s.out.open(s.path, std::ios::binary | (opts.overwrite ? std::ios::trunc : std::ios::app));
+                if (!s.out) {
+                    res.error = TarcError::AccessDenied;
+                    res.message = "Failed to write: " + s.path;
+                    return res;
+                }
+                s.open = true;
+                sinks.push_back(std::move(s));
             }
-            final_path = filename;
         }
 
-        // Potentially multi-chunk file reading
-        size_t bytes_remaining = static_cast<size_t>(fe.meta.orig_size);
-
+        // Verifica xxHash sul contenuto dell'entry (i duplicati condividono
+        // l'hash dell'originale, quindi la verifica e' la stessa).
         XXH64_state_t* vstate = nullptr;
         if (opts.verify && fe.meta.xxhash != 0) {
             vstate = XXH64_createState();
             if (vstate) XXH64_reset(vstate, 0);
         }
-
         auto cleanup_vstate = [&]() { if (vstate) XXH64_freeState(vstate); };
 
-        // Determine output path (only for test_only=false)
-        std::string full_output_path;
-        std::ofstream out_file;
-        bool file_written = false;
-
-        if (!opts.test_only) {
-            std::string safe_path = IO::sanitize_extract_path(final_path);
-            if (safe_path.empty()) {
-                cleanup_vstate();
-                report_warning("Path traversal blocked: " + fe.name);
-                res.error = TarcError::PathTraversal;
-                res.message = "Unsafe path in archive: " + fe.name;
-                return res;
+        // File vuoto: nessun chunk, si crea solo il file (una volta per target).
+        if (fe.meta.orig_size == 0) {
+            for (auto& s : sinks) {
+                if (s.open) s.out.close();
             }
-
-            full_output_path = safe_path;
-            if (!opts.output_dir.empty()) {
-                std::string dir = opts.output_dir;
-                std::replace(dir.begin(), dir.end(), '\\', '/');
-                if (!dir.empty() && dir.back() != '/') {
-                    dir += '/';
-                }
-                full_output_path = dir + safe_path;
+            for (size_t t : targets) {
+                UI::print_extract(toc[t].name, 0, opts.test_only, true);
+                g_stats.files_processed++;
+                if (t != i) duplicates_recreated++;
             }
+            cleanup_vstate();
+            continue;
         }
 
-        // Read chunks until we have the entire file
+        // Leggi i chunk fino a coprire l'intero file e scrivi su tutti i target.
+        size_t bytes_remaining = static_cast<size_t>(fe.meta.orig_size);
+        bool write_failed = false;
+        std::string failed_path;
+
         while (bytes_remaining > 0) {
-            TarcError err = read_next_block(f, current_block, block_pos);
-            if (err == TarcError::CorruptedArchive) {
-                cleanup_vstate();
-                end_marker_hit = true;
-                break;
-            }
+            bool em = false;
+            TarcError err = read_next_block(f, current_block, block_pos, &em);
             if (err != TarcError::None) {
+                if (em) {
+                    // Fine dei dati mentre serviva ancora contenuto: corruzione.
+                    end_marker_hit = true;
+                    break;
+                }
                 cleanup_vstate();
                 res.error = err;
-                res.message = "Chunk read failed.";
+                res.message = "Chunk read failed for " + fe.name;
                 return res;
             }
 
             size_t available = current_block.size() - block_pos;
             size_t to_consume = std::min(bytes_remaining, available);
 
-            if (!opts.test_only && to_consume > 0) {
-                if (!file_written) {
-                    fs::path p(full_output_path);
-                    if (p.has_parent_path()) {
-                        std::error_code ec;
-                        fs::create_directories(p.parent_path(), ec);
-                    }
-                    out_file.open(full_output_path, std::ios::binary);
-                    if (!out_file) {
-                        cleanup_vstate();
-                        res.error = TarcError::AccessDenied;
-                        res.message = "Failed to write: " + full_output_path;
-                        return res;
-                    }
-                    file_written = true;
+            if (to_consume > 0) {
+                for (auto& s : sinks) {
+                    if (!s.open) continue;
+                    s.out.write(current_block.data() + block_pos,
+                                static_cast<std::streamsize>(to_consume));
+                    if (!s.out) { write_failed = true; failed_path = s.path; break; }
                 }
-                out_file.write(current_block.data() + block_pos, static_cast<std::streamsize>(to_consume));
-                if (!out_file) {
-                    cleanup_vstate();
-                    res.error = TarcError::WriteFailed;
-                    res.message = "Write failed: " + full_output_path;
-                    return res;
-                }
+                if (write_failed) break;
             }
-
             if (vstate) {
                 XXH64_update(vstate, current_block.data() + block_pos, to_consume);
             }
-
             bytes_remaining -= to_consume;
             block_pos += to_consume;
         }
-        if (end_marker_hit) break;
 
-        // Close file and set timestamp
-        if (file_written) {
-            out_file.close();
-            if (fe.meta.timestamp != 0) {
-                try {
-                    auto ft = fs::file_time_type(std::chrono::seconds(
-                        static_cast<time_t>(fe.meta.timestamp)));
-                    fs::last_write_time(full_output_path, ft);
-                } catch (...) {}
+        if (write_failed) {
+            cleanup_vstate();
+            res.error = TarcError::WriteFailed;
+            res.message = "Write failed: " + failed_path;
+            return res;
+        }
+        if (end_marker_hit) { cleanup_vstate(); break; }
+
+        // Chiudi i file e applica il timestamp dell'entry a ciascuno.
+        for (auto& s : sinks) {
+            if (s.open) {
+                s.out.close();
+                if (toc[s.toc_index].meta.timestamp != 0) {
+                    try {
+                        auto ft = fs::file_time_type(std::chrono::seconds(
+                            static_cast<time_t>(toc[s.toc_index].meta.timestamp)));
+                        fs::last_write_time(s.path, ft);
+                    } catch (...) {}
+                }
             }
         }
 
-        // Verify xxHash integrity
+        // Verifica xxHash integrita'.
         if (vstate) {
             uint64_t extracted_hash = XXH64_digest(vstate);
             cleanup_vstate();
@@ -2496,11 +2691,17 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
             cleanup_vstate();
         }
 
-        UI::print_extract(fe.name, fe.meta.orig_size, opts.test_only, true);
-        res.bytes_out += fe.meta.orig_size;
-        g_stats.files_processed++;
+        data_units_read++;
+
+        for (size_t t : targets) {
+            UI::print_extract(toc[t].name, fe.meta.orig_size, opts.test_only, true);
+            res.bytes_out += fe.meta.orig_size;
+            g_stats.files_processed++;
+            if (t != i) duplicates_recreated++;
+        }
     }
-    if (end_marker_hit && g_stats.files_processed < expected_real_files) {
+
+    if (end_marker_hit && data_units_read < data_units_expected) {
         res.ok = false;
         res.error = TarcError::CorruptedArchive;
         res.message = "Unexpected end of archive data (possible corruption).";
@@ -2508,6 +2709,14 @@ TarcResult extract(const std::string& arch_path, const std::vector<std::string>&
     }
     res.ok = true;
     res.message = opts.test_only ? "Test completed." : "Extraction completed.";
+    if (files_skipped_existing > 0) {
+        res.warnings.push_back(std::to_string(files_skipped_existing) +
+                               " file esistenti non sovrascritti (usa --force)");
+    }
+    if (duplicates_recreated > 0) {
+        res.warnings.push_back(std::to_string(duplicates_recreated) +
+                               " duplicati ricreati per deduplicazione");
+    }
     return res;
 }
 

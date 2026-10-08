@@ -155,7 +155,9 @@ struct CompressOptions {
     int threads = 0;        // 0 = auto
     bool solid_mode = true;
     bool sfx_requested = false;
-    bool verify = true;
+    bool verify = false;    // verifica integrale dell'archivio dopo la creazione
+                            // (rilettura completa: opt-in, non attiva di default)
+    bool overwrite = false; // sovrascrive un archivio gia' esistente (--force)
     bool has_codec_override = false;
     size_t chunk_size = 256 * 1024 * 1024;
     Codec codec = Codec::LZMA;
@@ -165,6 +167,8 @@ struct ExtractOptions {
     bool test_only = false;
     bool flat_mode = false;
     bool verify = true;
+    // false = i file gia' presenti non vengono toccati (vengono saltati e
+    // segnalati); true = sovrascrittura (--force)
     bool overwrite = false;
     std::string output_dir;
 };

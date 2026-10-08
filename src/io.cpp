@@ -15,6 +15,7 @@
     #include <windows.h>
 #else
     #include <sys/time.h>
+    #include <unistd.h>   // mkstemp, close, getpid
 #endif
 
 #ifdef __APPLE__
@@ -205,6 +206,26 @@ bool IO::read_toc(FILE* f, Header& h, std::vector<FileEntry>& toc) {
     if (h.toc_offset == 0) return false;
     
     if (IO::tarc_fseek(f, static_cast<int64_t>(h.toc_offset), SEEK_SET) != 0) return false;
+
+    // SEC: 'file_count' arriva dall'header e non era validato contro la
+    // dimensione reale del file: un archivio malformato poteva far riservare
+    // centinaia di GB in un colpo solo (bad_alloc / OOM su overcommit).
+    // Ogni entry occupa almeno sizeof(Entry) + 1 byte di nome.
+    {
+        int64_t toc_start = IO::tarc_ftell(f);
+        if (toc_start < 0) return false;
+        if (IO::tarc_fseek(f, 0, SEEK_END) != 0) return false;
+        int64_t file_end = IO::tarc_ftell(f);
+        if (IO::tarc_fseek(f, toc_start, SEEK_SET) != 0) return false;
+        if (file_end < toc_start) return false;
+
+        uint64_t available = static_cast<uint64_t>(file_end - toc_start);
+        uint64_t min_entry = sizeof(Entry) + 1;
+        if (static_cast<uint64_t>(h.file_count) > available / min_entry) {
+            toc.clear();
+            return false;
+        }
+    }
     
     toc.clear();
     toc.reserve(h.file_count);
@@ -465,6 +486,41 @@ bool IO::write_bytes(FILE* f, const void* buf, size_t size) {
 // ============================================================================
 // Path of the current executable (cross-platform)
 // ============================================================================
+// ============================================================================
+// SEC: file temporaneo con nome non predicibile
+// ============================================================================
+// Prima i file temporanei SFX avevano nomi fissi (/tmp/tarc_sfx_temp.strk):
+// un attaccante locale poteva pre-creare quel path come symlink e far
+// sovrascrivere un file arbitrario dell'utente. Ora il file viene creato
+// davvero, con nome unico generato dal sistema.
+// ============================================================================
+std::string IO::unique_temp_path(const std::string& stem) {
+    std::error_code ec;
+    fs::path dir = fs::temp_directory_path(ec);
+    if (ec || dir.empty()) {
+        dir = fs::current_path(ec);
+    }
+
+#ifdef _WIN32
+    std::string base = dir.string();
+    char buf[MAX_PATH] = {0};
+    if (GetTempFileNameA(base.c_str(), "trc", 0, buf)) {
+        return std::string(buf);
+    }
+    return (dir / (stem + "_" + std::to_string(GetCurrentProcessId()) + ".tmp")).string();
+#else
+    std::string tmpl = (dir / (stem + "_XXXXXX")).string();
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    int fd = mkstemp(buf.data());
+    if (fd >= 0) {
+        close(fd);
+        return std::string(buf.data());
+    }
+    return (dir / (stem + "_" + std::to_string(getpid()) + ".tmp")).string();
+#endif
+}
+
 std::string IO::get_self_path() {
 #ifdef _WIN32
     wchar_t buf[MAX_PATH];
