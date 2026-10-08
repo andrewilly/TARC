@@ -1,5 +1,5 @@
 # ============================================================================
-# TARC STRIKE v2.10 — Cross-Platform Makefile
+# TARC STRIKE v2.12 — Cross-Platform Makefile
 # ============================================================================
 # Supporta: macOS (Intel + Apple Silicon), Linux, Windows (MinGW/MSYS2)
 #
@@ -147,7 +147,7 @@ all: info $(TARGET)
 
 info:
 	@echo ""
-	@echo "  TARC STRIKE v2.11 — Build"
+	@echo "  TARC STRIKE v2.12 — Build"
 	@echo "  OS:        $(MSG_OS)"
 	@echo "  Compiler:  $(CXX)"
 	@echo "  Flags:     $(CXXFLAGS)"

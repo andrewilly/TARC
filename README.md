@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/TARC_STRIKE-v2.11-2ea44f?style=for-the-badge" alt="TARC v2.11"/>
+  <img src="https://img.shields.io/badge/TARC_STRIKE-v2.12-2ea44f?style=for-the-badge" alt="TARC v2.12"/>
 </p>
 
 <h1 align="center">TARC STRIKE</h1>
@@ -12,7 +12,7 @@
   <a href="https://github.com/andrewilly/TARC/actions/workflows/main.yml"><img src="https://github.com/andrewilly/TARC/actions/workflows/main.yml/badge.svg" alt="CI"/></a>
   <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"/></a>
   <a href="https://isocpp.org/"><img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++17"/></a>
-  <a href="https://github.com/andrewilly/TARC/releases/tag/v2.11"><img src="https://img.shields.io/github/v/release/andrewilly/TARC?color=green&label=release" alt="Release"/></a>
+  <a href="https://github.com/andrewilly/TARC/releases/tag/v2.12"><img src="https://img.shields.io/github/v/release/andrewilly/TARC?color=green&label=release" alt="Release"/></a>
 </p>
 
 ---
@@ -67,9 +67,9 @@ Get the latest release from the [Releases page](https://github.com/andrewilly/TA
 
 | Platform | File |
 |---|---|
-| Linux x86_64 | `tarc-v2.11-linux-x86_64` |
-| macOS Universal (Intel + Apple Silicon) | `tarc-v2.11-macos-universal` |
-| Windows x64 | `tarc-v2.11-windows-x64.exe` |
+| Linux x86_64 | `tarc-v2.12-linux-x86_64` |
+| macOS Universal (Intel + Apple Silicon) | `tarc-v2.12-macos-universal` |
+| Windows x64 | `tarc-v2.12-windows-x64.exe` |
 
 ```bash
 chmod +x tarc-*
@@ -240,6 +240,7 @@ TARC maintains a **zero-warnings policy** with `-Wall -Wextra -Wpedantic`. CI bu
 
 ## Changelog
 
+- **v2.12** (2026-10-08) — Data-loss fixes (deduplication, `--force`), deterministic archives, real `--threads` parallelism [(details)](RELEASE_v2.12.md)
 - **v2.11** (2026-06-24) — Bug fixes, LTO optimization, CodecSelector improvements [(details)](RELEASE_v2.11.md)
 - **v2.10** (2026-05-12) — Initial release [(details)](RELEASE_v2.10.md)
 

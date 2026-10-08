@@ -86,7 +86,7 @@ void disable_vtp() {
 
 void show_banner() {
     std::cout << Color::CYAN << Color::BOLD
-              << "                       TARC STRIKE v2.11\n"
+              << "                       TARC STRIKE v2.12\n"
               << "                  Advanced Solid Compression Tool\n"
               << "                       (c) 2026 Andre Willy Rizzo\n"
               << Color::RESET << "\n";
@@ -97,7 +97,7 @@ void show_banner() {
 
 void show_compact_help() {
     std::cout << Color::CYAN << Color::BOLD
-              << "TARC STRIKE v2.11" << Color::RESET
+              << "TARC STRIKE v2.12" << Color::RESET
               << " — Advanced Solid Compression Tool\n\n";
     std::cout << Color::BOLD << "Usage:" << Color::RESET << "\n";
     std::cout << "  " << Color::GREEN << "tarc -c" << Color::RESET << "[level] " << Color::WHITE << "<archive> <file>..." << Color::RESET << "   Create archive\n";
