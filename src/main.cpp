@@ -54,7 +54,8 @@ struct Command {
     bool sfx = false;
     bool flat = false;
     bool force = false;
-    bool verify = true;
+    bool verify = true;          // verifica durante estrazione/test (default: attiva)
+    bool verify_requested = false; // --verify: verifica integrale dopo la creazione
     int threads = 0;
     std::string output_dir;
     Codec codec_override = Codec::LZMA;
@@ -141,6 +142,7 @@ static Command parse_args(int argc, char* argv[]) {
             cmd.force = true;
         } else if (val == "--verify") {
             cmd.verify = true;
+            cmd.verify_requested = true;
         } else if (val == "--no-verify") {
             cmd.verify = false;
         } else if (val == "--output-dir" && i + 1 < argc) {
@@ -208,6 +210,8 @@ static int run_command(const Command& cmd) {
             CompressOptions copts;
             copts.level = cmd.level;
             copts.threads = cmd.threads;
+            copts.overwrite = cmd.force;          // --force: sovrascrive l'archivio esistente
+            copts.verify = cmd.verify_requested;  // --verify: verifica dopo la creazione
             if (cmd.has_codec_override) {
                 copts.codec = cmd.codec_override;
                 copts.has_codec_override = true;
@@ -227,11 +231,18 @@ static int run_command(const Command& cmd) {
                 std::string sfx_ext = "";
 #endif
                 std::string sfx_exe = arch.substr(0, arch.find_last_of('.')) + sfx_ext;
-                auto sfx_res = Engine::create_sfx(arch, sfx_exe);
-                if (sfx_res.ok) {
-                    UI::print_success("SFX archive created: " + sfx_exe);
+                std::error_code sfx_ec;
+                if (!cmd.force && fs::exists(sfx_exe, sfx_ec)) {
+                    UI::print_error("SFX output already exists (use --force to overwrite): " + sfx_exe);
+                    result = 1;
                 } else {
-                    UI::print_error(sfx_res.message);
+                    auto sfx_res = Engine::create_sfx(arch, sfx_exe);
+                    if (sfx_res.ok) {
+                        UI::print_success("SFX archive created: " + sfx_exe);
+                    } else {
+                        UI::print_error(sfx_res.message);
+                        result = 1;
+                    }
                 }
             }
             
@@ -290,8 +301,10 @@ static int run_command(const Command& cmd) {
             
             UI::print_progress_end();
             UI::print_summary(res, "Test", elapsed);
-            
-            if (!res.ok || res.bytes_out == 0) {
+
+            // Un archivio che contiene solo file vuoti o duplicati produce
+            // bytes_out == 0 pur essendo valido: il criterio e' res.ok.
+            if (!res.ok) {
                 UI::print_error("Archive integrity check failed.");
                 result = 1;
             }
@@ -411,17 +424,33 @@ static bool sfx_extract_to_temp(const std::string& self_path,
         return false;
     }
 
-    std::ofstream out(temp_archive_path, std::ios::binary);
-    if (!out) {
-        UI::print_error("Cannot create temporary file.");
+    // Il trailer viene letto e validato PRIMA di creare il file temporaneo:
+    // prima veniva creato (e troncato) un file di output anche su input non
+    // valido, che restava poi su disco senza pulizia.
+    self.clear();
+    self.seekg(0, std::ios::end);
+    std::streamoff file_size = self.tellg();
+    if (file_size < static_cast<std::streamoff>(SFX_TRAILER_SIZE)) {
+        UI::print_error("Not a valid TARC SFX archive (too small).");
         return false;
     }
-
     self.clear();
     self.seekg(-static_cast<std::streamoff>(SFX_TRAILER_SIZE), std::ios::end);
     self.read(reinterpret_cast<char*>(&trailer), SFX_TRAILER_SIZE);
-    if (std::memcmp(trailer.magic, SFX_MAGIC, 8) != 0) {
+    if (self.gcount() != SFX_TRAILER_SIZE || std::memcmp(trailer.magic, SFX_MAGIC, 8) != 0) {
         UI::print_error("Invalid SFX archive.");
+        return false;
+    }
+    // Il payload dichiarato deve stare dentro il file
+    if (trailer.archive_offset > static_cast<uint64_t>(file_size) ||
+        trailer.archive_size > static_cast<uint64_t>(file_size) - trailer.archive_offset) {
+        UI::print_error("Invalid SFX archive (bad payload bounds).");
+        return false;
+    }
+
+    std::ofstream out(temp_archive_path, std::ios::binary);
+    if (!out) {
+        UI::print_error("Cannot create temporary file.");
         return false;
     }
 
@@ -434,7 +463,21 @@ static bool sfx_extract_to_temp(const std::string& self_path,
     while (remaining > 0) {
         size_t to_read = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BUF)));
         self.read(buf.data(), static_cast<std::streamsize>(to_read));
+        if (self.gcount() != static_cast<std::streamsize>(to_read)) {
+            out.close();
+            std::error_code ec;
+            fs::remove(temp_archive_path, ec);
+            UI::print_error("Truncated SFX archive (embedded data missing).");
+            return false;
+        }
         out.write(buf.data(), static_cast<std::streamsize>(to_read));
+        if (!out) {
+            out.close();
+            std::error_code ec;
+            fs::remove(temp_archive_path, ec);
+            UI::print_error("Failed to write temporary archive.");
+            return false;
+        }
         remaining -= to_read;
     }
     out.flush();
@@ -444,8 +487,7 @@ static bool sfx_extract_to_temp(const std::string& self_path,
 
 // List contents of the SFX archive (extract to temp, list, cleanup)
 static int sfx_do_list(const std::string& self_path) {
-    fs::path temp_dir = fs::temp_directory_path();
-    fs::path temp_archive = temp_dir / "tarc_sfx_list_temp.strk";
+    fs::path temp_archive = IO::unique_temp_path("tarc_sfx_list");
 
     // Extract the embedded archive to a temporary file
     if (!sfx_extract_to_temp(self_path, temp_archive.string())) {
@@ -464,8 +506,7 @@ static int sfx_do_list(const std::string& self_path) {
 
 // Test integrity of the SFX archive (WITHOUT extracting files to disk)
 static int sfx_do_test(const std::string& self_path) {
-    fs::path temp_dir = fs::temp_directory_path();
-    fs::path temp_archive = temp_dir / "tarc_sfx_test_temp.strk";
+    fs::path temp_archive = IO::unique_temp_path("tarc_sfx_test");
 
     // Extract the embedded archive to a temporary file
     if (!sfx_extract_to_temp(self_path, temp_archive.string())) {

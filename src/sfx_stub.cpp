@@ -92,8 +92,8 @@ static int extract_embedded(const std::string& self_path,
     }
 
     // Crea un file temporaneo con l'archivio TARC
-    fs::path temp_dir = fs::temp_directory_path();
-    fs::path temp_archive = temp_dir / "tarc_sfx_temp.strk";
+    // SEC: nome non predicibile generato dal sistema
+    fs::path temp_archive = IO::unique_temp_path("tarc_sfx");
 
     {
         std::ofstream out(temp_archive, std::ios::binary);

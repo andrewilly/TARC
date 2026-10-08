@@ -125,11 +125,11 @@ void show_help() {
     std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
     std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "           Create self-extracting archive\n";
     std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "          Flat extraction (no paths)\n";
-    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "         Overwrite existing files\n";
-    std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "        Verify integrity after operation\n";
-    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "     Skip integrity verification\n";
+    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "         Overwrite existing files and archives\n";
+    std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "        Verify the archive after creating it (full re-read)\n";
+    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "     Skip integrity verification on extract/test\n";
     std::cout << "  " << Color::WHITE << "--output-dir" << Color::RESET << " <path>  Extract to directory\n";
-    std::cout << "  " << Color::WHITE << "--threads" << Color::RESET << " N     Set compression threads (default: auto)\n";
+    std::cout << "  " << Color::WHITE << "--threads" << Color::RESET << " N     Parallel compression workers (default: auto)\n";
     std::cout << "  " << Color::WHITE << "--version, -v" << Color::RESET << "  Show version information\n";
     
     std::cout << "\n" << Color::BOLD << "Codec Override (create):" << Color::RESET << "\n";
@@ -146,7 +146,7 @@ void show_help() {
     std::cout << "  • Native ZSTD, LZ4, LZMA, Brotli codec support\n";
     std::cout << "  • Path traversal protection (Zip Slip safe)\n";
     std::cout << "  • xxHash integrity verification on extract\n";
-    std::cout << "  • SIMD-accelerated buffer operations (" << SimdOpt::simd_info_string() << ")";
+    std::cout << "  • CPU feature detection at runtime (" << SimdOpt::simd_info_string() << ")";
     std::cout << Color::RESET << "\n";
 }
 
@@ -170,9 +170,10 @@ void show_help_create() {
     std::cout << "  " << Color::DIM << "Without override, TARC auto-selects the best codec per file type.\n" << Color::RESET;
     
     std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
-    std::cout << "  " << Color::WHITE << "--threads N" << Color::RESET << "   Parallel compression threads (default: auto)\n";
-    std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "         Create self-extracting .exe archive\n";
-    std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "  Skip xxHash integrity verification\n";
+    std::cout << "  " << Color::WHITE << "--threads N" << Color::RESET << "   Parallel compression workers (default: auto)\n";
+    std::cout << "  " << Color::WHITE << "--sfx" << Color::RESET << "         Create self-extracting archive\n";
+    std::cout << "  " << Color::WHITE << "--verify" << Color::RESET << "      Verify the archive after creating it\n";
+    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "       Overwrite an existing archive\n";
     
     std::cout << "\n" << Color::BOLD << "Examples:" << Color::RESET << "\n";
     std::cout << "  " << Color::DIM << "tarc -c7 backup.strk docs/ images/     Create with default level\n";
@@ -192,7 +193,7 @@ void show_help_extract() {
     std::cout << "\n" << Color::BOLD << "Options:" << Color::RESET << "\n";
     std::cout << "  " << Color::WHITE << "--output-dir <path>" << Color::RESET << "  Extract to directory\n";
     std::cout << "  " << Color::WHITE << "--flat" << Color::RESET << "          Flatten paths (no subdirectories)\n";
-    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "         Overwrite existing files\n";
+    std::cout << "  " << Color::WHITE << "--force" << Color::RESET << "         Overwrite existing files (default: skip them)\n";
     std::cout << "  " << Color::WHITE << "--no-verify" << Color::RESET << "  Skip xxHash integrity check\n";
     
     std::cout << "\n" << Color::BOLD << "Examples:" << Color::RESET << "\n";
