@@ -53,7 +53,7 @@ tarc -x backup.strk "data/*.bin"             # Pattern matching
 |---|---|
 | `--output-dir <path>` | Extract to a specific directory |
 | `--flat` | Flatten directory structure (no subdirectories) |
-| `--force` | Overwrite existing files without prompting |
+| `--force` | Overwrite existing files (default: skipped with a warning) |
 | `--no-verify` | Skip xxHash integrity check |
 
 ### `-l` — List Contents
@@ -84,11 +84,12 @@ Reads and decompresses all data, verifying xxHash checksums without writing any 
 | `--brotli` | create | Force Brotli compression |
 | `--store` | create | No compression (store only) |
 | `--sfx` | create | Create self-extracting archive |
-| `--threads N` | create | Parallel compression threads (default: auto) |
-| `--no-verify` | create, extract, test | Skip xxHash verification |
+| `--threads N` | create | Parallel compression workers (default: auto) |
+| `--verify` | create | Verify the archive after writing it (full re-read) |
+| `--no-verify` | extract, test | Skip xxHash verification |
 | `--output-dir <path>` | extract | Extract to directory |
 | `--flat` | extract | Flatten directory structure |
-| `--force` | extract | Overwrite existing files |
+| `--force` | create, extract | Overwrite existing files and archives |
 
 ---
 

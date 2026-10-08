@@ -25,7 +25,7 @@ TARC uses [doctest](https://github.com/doctest/doctest) — a header-only C++ te
 make test
 ```
 
-This compiles and runs 38 test cases covering:
+This compiles and runs 48 test cases covering:
 - Round-trip compress/extract (all codecs)
 - Empty archives and zero-length files
 - Truncated and corrupt archives
@@ -99,18 +99,18 @@ python3 bench/benchmark.py --codecs zstd lz4        # Specific codecs
 │   ├── io.cpp          # Archive I/O: header, TOC, chunk read/write
 │   ├── ui.cpp          # Terminal UI: progress bars, colors, formatting
 │   ├── sfx_stub.cpp    # Self-extracting stub entry point
-│   ├── license.cpp     # License management
+│   ├── license.cpp     # Stub vuoto — la licenza e' stata rimossa (open source)
 │   └── xxhash.c        # XXH64 checksum library (bundled)
 ├── include/            # Headers
 │   ├── types.h         # TarcResult, Codec enum, binary structures
 │   ├── engine.h        # Engine API declarations
 │   ├── io.h            # I/O API declarations
 │   ├── ui.h            # UI API declarations
-│   ├── simd_opt.h      # SIMD-optimized buffer operations
-│   ├── license.h       # License interface
+│   ├── simd_opt.h      # CPU feature detection (AVX2/SSE4.2/NEON) + helper SIMD
+│   ├── license.h       # Stub vuoto — vedi license.cpp
 │   ├── xxhash.h        # xxHash header
 │   └── doctest/        # Doctest testing framework
-├── test/               # Test suite (38 tests, 191 assertions)
+├── test/               # Test suite (48 tests, 239 assertions)
 ├── fuzz/               # Fuzz target and OSS-Fuzz config
 ├── bench/              # Benchmark suite (Python)
 └── docs/               # Documentation website

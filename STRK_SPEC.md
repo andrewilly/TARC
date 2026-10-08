@@ -75,7 +75,8 @@ For SFX archives, the stub executable is prepended and a `SfxTrailer` is appende
 - `magic` must equal `"TRC2"`
 - `version` must be between `100` and `200` inclusive
 - `toc_offset` must be >= `sizeof(Header)` (20)
-- `file_count` should match the actual number of entries (not strictly validated at read)
+- `file_count` must be consistent with the file size: the reader rejects a TOC
+  that cannot fit in the remaining bytes (`file_count * (48 + 1) > available`)
 
 ---
 
@@ -124,19 +125,19 @@ The TOC is written at the end of the file. The `Header.toc_offset` field points 
 
 ### 5.1 Entry
 
-`sizeof(Entry) = 44 bytes`
+`sizeof(Entry) = 48 bytes` (packed, little-endian)
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0 | 8 | `offset` | File offset to this file's chunk data (0 for duplicates) |
+| 0 | 8 | `offset` | File offset of the chunk holding this entry's data (0 for duplicates) |
 | 8 | 8 | `orig_size` | Original uncompressed file size |
-| 16 | 8 | `comp_size` | Compressed size on disk (for solid: size of entire solid block) |
+| 16 | 8 | `comp_size` | Size on disk of the chunk that contains this entry (0 for duplicates) |
 | 24 | 8 | `xxhash` | XXH64 checksum of the original file data (0 = skip verification) |
-| 32 | 4 | `timestamp` | Unix timestamp of the original file (seconds since epoch) |
-| 36 | 4 | `duplicate_of_idx` | Index of the original file entry (valid only if `is_duplicate == 1`) |
-| 40 | 2 | `name_len` | Length of the filename in bytes (1–4096) |
-| 42 | 1 | `codec` | Codec identifier (see §6) |
-| 43 | 1 | `is_duplicate` | `0` = original file, `1` = duplicate (deduplicated) |
+| 32 | 8 | `timestamp` | Unix timestamp of the original file (seconds since epoch) |
+| 40 | 4 | `duplicate_of_idx` | Index of the original file entry (valid only if `is_duplicate == 1`) |
+| 44 | 2 | `name_len` | Length of the filename in bytes (1–4096) |
+| 46 | 1 | `codec` | Codec identifier (see §6) |
+| 47 | 1 | `is_duplicate` | `0` = original file, `1` = duplicate (deduplicated) |
 
 After each `Entry`, the filename is stored as `name_len` raw bytes (not null-terminated on disk).
 
@@ -237,7 +238,13 @@ Files with identical XXH64 checksums are detected during compression:
 - The first occurrence is stored normally
 - Subsequent duplicates get `is_duplicate = 1` and `duplicate_of_idx` pointing to the original
 - No chunk data is written for duplicates
-- On extraction, duplicates are recreated from the extracted original file
+- On extraction, every entry produces its file: the original is written from its
+  chunks, and each duplicate is written with the same content, read while the
+  original's chunks are processed (no re-read of the archive, no temp copy).
+  A duplicate whose original entry is not being extracted is still produced
+  correctly.
+- `duplicate_of_idx` must point to an entry with `is_duplicate == 0`; a chain of
+  duplicates or an out-of-range index makes the archive invalid (`InconsistentToc`)
 
 ---
 

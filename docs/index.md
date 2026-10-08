@@ -32,7 +32,7 @@ tarc -t backup.strk
 - **Self-extracting archives** — Create standalone executables with `--sfx`
 - **Streaming I/O** — Process files larger than available RAM
 - **Security** — Path traversal protection, xxHash integrity, anti-OOM safeguards
-- **Performance** — SIMD-accelerated (AVX2, SSE4.2, NEON) with LTO builds
+- **Performance** — LTO builds with runtime CPU feature detection (AVX2, SSE4.2, NEON)
 
 ## Codec Comparison
 

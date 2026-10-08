@@ -40,19 +40,23 @@ Create self-extracting archive (.exe).
 Extract files without directory structure.
 .TP
 .B \-\-force
-Overwrite existing files during extraction.
+Overwrite existing files during extraction, and an existing archive during
+creation. Without it, existing files are skipped (with a warning) and creating
+over an existing archive fails.
 .TP
 .B \-\-verify
-Verify integrity after operation (default).
+After creating an archive, re-read it and verify header, TOC, chunk checksums
+and per-file xxHash. Off by default (it doubles the I/O).
 .TP
 .B \-\-no-verify
-Skip integrity verification.
+Skip xxHash verification during extraction and test.
 .TP
 .B \-\-output-dir \fIpath\fR
 Extract files to the specified directory.
 .TP
 .B \-\-threads \fIN\fR
-Set compression threads (default: auto-detect CPU count).
+Number of parallel compression workers (default: auto-detect CPU count, capped
+by the available RAM).
 .SH CODECS
 .TP
 .B \-\-zstd

@@ -30,7 +30,7 @@ TARC is a high-performance, multi-codec archiving tool designed for reliability,
 | **Deduplication** | XXH64 content-hash — identical files stored once |
 | **Self-extracting** | `--sfx` creates standalone executables |
 | **Streaming I/O** | Files larger than RAM compress without loading fully |
-| **SIMD acceleration** | AVX2, SSE4.2, NEON for buffer ops and checksums |
+| **SIMD / CPU detection** | Runtime detection of AVX2, SSE4.2, NEON (shown in `--help`) |
 | **Anti-OOM** | Auto-detects available RAM, caps dictionary/window/buffer |
 | **Integrity verification** | xxHash checksums on every chunk, verified on extraction |
 | **Security** | Path traversal protection, filename validation, bounds checking |
@@ -151,11 +151,12 @@ Supports glob-style filters: `*.txt`, `dir/*`, `data/*.bin`.
 |---|---|---|
 | `--zstd` / `--lzma` / `--lz4` / `--brotli` / `--store` | create | Force codec override |
 | `--sfx` | create | Build self-extracting archive |
-| `--threads N` | create | Parallel threads (default: auto) |
+| `--threads N` | create | Number of parallel compression workers (default: auto, bounded by available RAM) |
 | `--output-dir <path>` | extract | Extract to directory |
 | `--flat` | extract | Flatten directory structure |
-| `--force` | extract | Overwrite existing files |
-| `--no-verify` | create, extract, test | Skip xxHash verification |
+| `--force` | create, extract | Overwrite existing files and archives (default: existing files are skipped) |
+| `--verify` | create | Verify the archive after writing it (full re-read; off by default) |
+| `--no-verify` | extract, test | Skip xxHash verification |
 
 ---
 
@@ -228,12 +229,12 @@ tarc/
 ## Testing & Quality
 
 ```bash
-make test              # Run all 38 test cases
+make test              # Run all 48 test cases
 make ASAN=1 test       # AddressSanitizer + UndefinedBehaviorSanitizer
 make fuzz              # Build fuzz target
 ```
 
-TARC maintains a **zero-warnings policy** with `-Wall -Wextra -Wpedantic`. The CI pipeline runs full builds, sanitizer tests, and fuzz targets on every push across three platforms.
+TARC maintains a **zero-warnings policy** with `-Wall -Wextra -Wpedantic`. CI builds on macOS, Linux and Windows on every push and runs the sanitizer test suite on Linux; the fuzz target is built and run locally (`make fuzz`), not in CI.
 
 ---
 
