@@ -71,6 +71,10 @@ Get the latest release from the [Releases page](https://github.com/andrewilly/TA
 | macOS Universal (Intel + Apple Silicon) | `tarc-v2.12-macos-universal` |
 | Windows x64 | `tarc-v2.12-windows-x64.exe` |
 
+The Windows build is a **single self-contained executable**: the C/C++ runtime is
+statically linked (`/MT`), so no Visual C++ Redistributable is required and it
+runs on a clean Windows Server 2016/2019/2022/2025 installation.
+
 ```bash
 chmod +x tarc-*
 ./tarc --help

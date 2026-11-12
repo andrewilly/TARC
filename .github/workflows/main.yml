@@ -79,6 +79,29 @@ jobs:
           fi
           echo "path=$exe" >> $GITHUB_OUTPUT
 
+      - name: Verify Windows binary is self-contained
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.locate.outputs.path }}"
+          if (-not (Get-Command dumpbin -ErrorAction SilentlyContinue)) {
+            Write-Error "dumpbin non trovato: il setup MSVC non ha propagato l'ambiente."
+            exit 1
+          }
+          Write-Host "Dipendenze di $exe :"
+          $deps = & dumpbin /dependents "$exe"
+          $deps | Write-Host
+
+          # Con /MT l'exe non deve richiedere la runtime MSVC ridistribuibile:
+          # MSVCP140.dll / VCRUNTIME140*.dll / api-ms-win-crt-*.dll non fanno
+          # parte di Windows e su un Server 2019 pulito non esistono.
+          $bad = @($deps | Select-String -Pattern 'MSVCP|VCRUNTIME|api-ms-win-crt')
+          if ($bad.Count -gt 0) {
+            Write-Error "Il binario dipende dalla runtime MSVC ($($bad.Line -join ' | ')). Serve /MT."
+            exit 1
+          }
+          Write-Host "OK: nessuna dipendenza dalla runtime MSVC ridistribuibile."
+
       - name: Quick smoke test
         shell: bash
         run: |

@@ -1,6 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
 project(tarc VERSION 2.12 LANGUAGES CXX C)
 
+# ============================================================================
+# Windows: runtime C/C++ statica (/MT) — eseguibile autosufficiente
+# ============================================================================
+# Il binario Windows viene distribuito come singolo file. Con il default MSVC
+# (/MD) dipenderebbe da MSVCP140.dll, VCRUNTIME140.dll e VCRUNTIME140_1.dll:
+# non fanno parte di Windows e su un Server 2019 appena installato non ci sono,
+# quindi l'exe non parte affatto. Con /MT la runtime e' linkata dentro l'exe.
+# Va impostata PRIMA di FetchContent e di ogni add_library/add_executable: la
+# proprieta' viene inizializzata alla creazione del target, e i target delle
+# dipendenze (zstd, lz4, xz, brotli) devono usare la stessa runtime, altrimenti
+# si mescolano /MT e /MD e il linker fallisce.
+# ============================================================================
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    message(STATUS "  MSVC runtime: static (/MT)")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
@@ -141,7 +158,8 @@ target_include_directories(tarc PRIVATE ${TARC_INCLUDE_DIRS})
 # Platform-specific definitions per il target principale tarc
 if(WIN32)
     target_compile_definitions(tarc PRIVATE
-        _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+        _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES
+        _WIN32_WINNT=0x0A00 WINVER=0x0A00)
     if(MSVC)
         target_compile_options(tarc PRIVATE /O2 /W4 /EHsc /utf-8 /permissive-)
     endif()
@@ -216,7 +234,8 @@ if(TARC_BUILD_SFX)
 
     if(WIN32)
         target_compile_definitions(tarc_sfx_stub PRIVATE
-            _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+            _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES
+            _WIN32_WINNT=0x0A00 WINVER=0x0A00)
         target_link_libraries(tarc_sfx_stub PRIVATE bcrypt user32)
     endif()
 
@@ -263,7 +282,8 @@ if(TARC_BUILD_TESTS)
 
     if(WIN32)
         target_compile_definitions(tarc_test PRIVATE
-            _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES)
+            _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _USE_MATH_DEFINES
+            _WIN32_WINNT=0x0A00 WINVER=0x0A00)
     endif()
     if(APPLE)
         target_compile_definitions(tarc_test PRIVATE _DARWIN_C_SOURCE)
