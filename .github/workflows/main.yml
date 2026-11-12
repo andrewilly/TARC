@@ -100,6 +100,14 @@ jobs:
             Write-Error "Il binario dipende dalla runtime MSVC ($($bad.Line -join ' | ')). Serve /MT."
             exit 1
           }
+
+          # Guardia non vacua: se dumpbin non avesse davvero letto il PE,
+          # l'assenza dei pattern sopra non proverebbe nulla. Un eseguibile
+          # Windows importa sempre almeno KERNEL32.dll.
+          if (-not ($deps | Select-String -Pattern 'KERNEL32\.dll' -Quiet)) {
+            Write-Error "dumpbin non ha elencato KERNEL32.dll: output non valido, verifica non attendibile."
+            exit 1
+          }
           Write-Host "OK: nessuna dipendenza dalla runtime MSVC ridistribuibile."
 
       - name: Quick smoke test
